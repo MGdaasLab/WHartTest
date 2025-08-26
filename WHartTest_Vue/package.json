@@ -1,0 +1,48 @@
+{
+  "name": "wharttest_vue",
+  "private": false,
+  "version": "0.0.0",
+  "type": "module",
+  "license": "MIT",
+  "author": "WHartTest Team",
+  "description": "A Vue.js based test automation management system",
+  "keywords": ["vue", "test-automation", "testing", "management", "typescript"],
+  "repository": {
+    "type": "git",
+    "url": "http://code.mgdaas-int.com/MGdaas-Lab/wharttest-vue.git"
+  },
+  "bugs": {
+    "url": "http://code.mgdaas-int.com/MGdaas-Lab/wharttest-vue/-/issues"
+  },
+  "homepage": "http://code.mgdaas-int.com/MGdaas-Lab/wharttest-vue#readme",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@arco-design/web-vue": "^2.57.0",
+    "@types/dompurify": "^3.0.5",
+    "@types/marked": "^5.0.2",
+    "@vueuse/core": "^13.1.0",
+    "axios": "^1.9.0",
+    "dompurify": "^3.2.6",
+    "marked": "^15.0.12",
+    "pinia": "^3.0.2",
+    "vue": "^3.5.13",
+    "vue-router": "^4.5.1",
+    "wired-elements": "^3.0.0-rc.6"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.1.6",
+    "@types/node": "^22.15.17",
+    "@vitejs/plugin-vue": "^5.2.3",
+    "@vue/tsconfig": "^0.7.0",
+    "autoprefixer": "^10.4.21",
+    "postcss": "^8.5.3",
+    "tailwindcss": "^4.1.6",
+    "typescript": "~5.8.3",
+    "vite": "^6.3.5",
+    "vue-tsc": "^2.2.8"
+  }
+}

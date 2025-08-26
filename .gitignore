@@ -1,0 +1,62 @@
+# Environment files
+.env
+.github
+.cunzhi-memory
+.env.local
+.env.*.local
+*.env.*
+!*.env.example
+
+# IDE / Editor
+.vscode/
+.idea/
+.cursor/
+.claude/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Cache directories
+.cache/
+.npm/
+.yarn/
+
+# Build artifacts
+build/
+dist/
+out/
+
+# Dependencies (handled by subdirectories, but backup)
+node_modules/
+
+# Python cache (handled by Django .gitignore, but backup)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Database files (project-wide)
+*.sqlite
+*.sqlite3
+*.db
+
+# Documentation build
+docs/_build/

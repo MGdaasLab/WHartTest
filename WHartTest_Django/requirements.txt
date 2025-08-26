@@ -1,0 +1,186 @@
+# Django Web框架 - BSD许可证 (当前版本: 5.2)
+# https://github.com/django/django/blob/main/LICENSE
+Django==5.2
+
+# Django REST框架 - BSD许可证 (当前版本: 3.16.0)
+# https://github.com/encode/django-rest-framework/blob/master/LICENSE.md
+djangorestframework==3.16.0
+
+# JWT认证支持 - MIT许可证 (当前版本: 5.3.1)
+# https://github.com/jazzband/djangorestframework-simplejwt/blob/master/LICENSE
+djangorestframework-simplejwt==5.3.1
+
+# API文档生成 - BSD许可证 (当前版本: 0.28.0)
+# https://github.com/tfranzel/drf-spectacular/blob/master/LICENSE
+drf-spectacular==0.28.0
+
+# CORS跨域支持 - MIT许可证 (当前版本: 4.3.1)
+# https://github.com/adamchainz/django-cors-headers/blob/main/LICENSE
+django-cors-headers==4.3.1
+
+# 环境变量管理 - BSD许可证 (当前版本: 1.1.1)
+# https://github.com/theskumar/python-dotenv/blob/main/LICENSE
+python-dotenv==1.1.1
+
+# MCP服务器框架 - MIT许可证 (当前版本: 2.4.0)
+# https://github.com/jlowin/fastmcp/blob/main/LICENSE
+fastmcp==2.4.0
+
+# HTTP客户端库 - BSD许可证 (当前版本: 0.28.1)
+# https://github.com/encode/httpx/blob/master/LICENSE.md
+httpx==0.28.1
+
+# OpenAI API客户端 - MIT许可证 (当前版本: 1.79.0)
+# https://github.com/openai/openai-python/blob/main/LICENSE
+openai==1.79.0
+
+# Django查询过滤器 - BSD许可证 (当前版本: 25.1)
+# https://github.com/carltongibson/django-filter/blob/main/LICENSE
+django-filter==25.1
+
+# DRF嵌套路由 - BSD许可证 (当前版本: 0.94.2)
+# https://github.com/alanjds/drf-nested-routers/blob/master/LICENSE
+drf-nested-routers==0.94.2
+
+# LangGraph工作流框架 - MIT许可证 (当前版本: 0.4.5)
+# https://github.com/langchain-ai/langgraph/blob/main/LICENSE
+langgraph==0.4.5
+
+# LangChain OpenAI集成 - MIT许可证 (当前版本: 0.3.17)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/openai/LICENSE
+langchain-openai==0.3.17
+
+# LangChain Anthropic/Claude支持 - MIT许可证 (当前版本: 0.2.4)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/anthropic/LICENSE
+langchain-anthropic==0.2.4
+
+# Anthropic API客户端 - MIT许可证 (当前版本: 0.48.0)
+# https://github.com/anthropics/anthropic-sdk-python/blob/main/LICENSE
+anthropic==0.48.0
+
+# LangChain核心库 - MIT许可证 (当前版本: 0.3.60)
+# https://github.com/langchain-ai/langchain/blob/master/libs/core/LICENSE
+langchain-core==0.3.60
+
+# LangGraph SQLite检查点 - MIT许可证 (当前版本: 2.0.10)
+# https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-sqlite/LICENSE
+langgraph-checkpoint-sqlite==2.0.10
+
+# LangChain MCP适配器 - MIT许可证 (当前版本: 0.1.7)
+# https://github.com/langchain-ai/langchain-mcp-adapters/blob/main/LICENSE
+langchain-mcp-adapters==0.1.7
+
+# Excel文件处理 - MIT许可证 (当前版本: 3.1.5)
+# https://github.com/theorchard/openpyxl/blob/master/LICENCE.rst
+openpyxl==3.1.5
+
+# 知识库依赖 - ChromaDB专用
+# LangChain社区库 - MIT许可证 (当前版本: 0.3.24)
+# https://github.com/langchain-ai/langchain/blob/master/libs/community/LICENSE
+langchain-community==0.3.24
+
+# 文本分割器 - MIT许可证 (当前版本: 0.3.8)
+# https://github.com/langchain-ai/langchain/blob/master/libs/text-splitters/LICENSE
+langchain-text-splitters==0.3.8
+
+# ChromaDB向量数据库 - Apache 2.0许可证 (当前版本: 1.0.12)
+# https://github.com/chroma-core/chroma/blob/main/LICENSE
+langchain-chroma==0.2.4
+
+# HuggingFace嵌入模型支持 - MIT许可证 (当前版本: 0.2.0)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/huggingface/LICENSE
+langchain-huggingface==0.2.0
+
+# Cohere AI支持 - MIT许可证 (当前版本: 0.3.5)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/cohere/LICENSE
+langchain-cohere==0.3.5
+
+# Cohere API客户端 - MIT许可证 (当前版本: 5.15.0)
+# https://github.com/cohere-ai/cohere-python/blob/main/LICENSE
+cohere==5.15.0
+
+# Fireworks AI支持 - MIT许可证 (当前版本: 0.2.7)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/fireworks/LICENSE
+langchain-fireworks==0.2.7
+
+# Fireworks AI客户端 - Apache 2.0许可证 (当前版本: 0.15.12)
+# https://github.com/fireworks-ai/fireworks-ai-python/blob/main/LICENSE
+fireworks-ai==0.15.12
+
+# Google Gemini支持 - MIT许可证 (当前版本: 2.0.8)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/google-genai/LICENSE
+langchain-google-genai==2.0.8
+
+# Google AI生成语言API - Apache 2.0许可证 (当前版本: 0.6.15)
+# https://github.com/googleapis/google-cloud-python/blob/main/LICENSE
+google-ai-generativelanguage==0.6.15
+
+# Google API核心库 - Apache 2.0许可证 (当前版本: 2.24.1)
+# https://github.com/googleapis/python-api-core/blob/main/LICENSE
+google-api-core==2.24.1
+
+# Google API客户端 - Apache 2.0许可证 (当前版本: 2.162.0)
+# https://github.com/googleapis/google-api-python-client/blob/main/LICENSE
+google-api-python-client==2.162.0
+
+# Google认证库 - Apache 2.0许可证 (当前版本: 2.38.0)
+# https://github.com/googleapis/google-auth-library-python/blob/main/LICENSE
+google-auth==2.38.0
+
+# Google生成式AI - Apache 2.0许可证 (当前版本: 0.8.4)
+# https://github.com/google/generative-ai-python/blob/main/LICENSE
+google-generativeai==0.8.4
+
+# Mistral AI支持 - MIT许可证 (当前版本: 0.2.4)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/mistralai/LICENSE
+langchain-mistralai==0.2.4
+
+# Ollama本地模型支持 - MIT许可证 (当前版本: 0.2.2)
+# https://github.com/langchain-ai/langchain/blob/master/libs/partners/ollama/LICENSE
+langchain-ollama==0.2.2
+
+# Ollama客户端 - MIT许可证 (当前版本: 0.4.7)
+# https://github.com/ollama/ollama-python/blob/main/LICENSE
+ollama==0.4.7
+
+# HTML/XML解析器 - MIT许可证 (当前版本: 4.13.3)
+# https://github.com/wention/BeautifulSoup4/blob/master/LICENSE
+beautifulsoup4==4.13.3
+
+# 文档处理依赖
+# PDF文件处理 - BSD许可证 (当前版本: 5.6.0)
+# https://github.com/py-pdf/pypdf/blob/main/LICENSE
+pypdf==5.6.0
+
+# Word文档处理 - MIT许可证 (当前版本: 1.1.2)
+# https://github.com/python-openxml/python-docx/blob/master/LICENSE
+python-docx==1.1.2
+
+# PowerPoint文档处理 - MIT许可证 (当前版本: 1.0.2)
+# https://github.com/scanny/python-pptx/blob/master/LICENSE
+python-pptx==1.0.2
+
+# Word文本提取 - MIT许可证 (当前版本: 0.9)
+# https://github.com/ankushshah89/python-docx2txt/blob/master/LICENSE
+docx2txt==0.9
+
+# 非结构化文档处理 - Apache 2.0许可证 (当前版本: 0.17.2)
+# https://github.com/Unstructured-IO/unstructured/blob/main/LICENSE.md
+unstructured==0.17.2
+
+# HuggingFace模型依赖（可选）
+# 句子嵌入模型 - Apache 2.0许可证 (当前版本: 4.1.0)
+# https://github.com/UKPLab/sentence-transformers/blob/master/LICENSE
+sentence-transformers==4.1.0  # ~90MB模型，需要网络下载
+
+# PyTorch深度学习框架 - BSD许可证 (当前版本: 2.7.1)
+# https://github.com/pytorch/pytorch/blob/main/LICENSE
+torch==2.7.1  # 修复CVE-2025-32434安全漏洞
+
+# HuggingFace transformers库 - Apache 2.0许可证 (当前版本: 4.52.4)
+# https://github.com/huggingface/transformers/blob/main/LICENSE
+transformers==4.52.4
+
+# HuggingFace模型中心 - Apache 2.0许可证 (当前版本: 0.32.4)
+# https://github.com/huggingface/huggingface_hub/blob/main/LICENSE
+huggingface-hub==0.32.4  # HuggingFace模型下载

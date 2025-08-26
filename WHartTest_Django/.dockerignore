@@ -1,0 +1,23 @@
+db.sqlite3
+*.sqlite3
+chat_history.sqlite
+chat_history.sqlite-shm
+chat_history.sqlite-wal
+__pycache__/
+*.pyc
+.env
+.DS_Store
+# 知识库数据
+knowledge/chroma_db/
+knowledge/documents/
+# 缓存目录（保留模型文件）
+.cache/pip/
+.cache/torch/
+.cache/transformers/checkpoints/
+# 用户上传文件
+media/
+# 旧版知识库数据
+knowledge_bases/
+# 日志文件
+*.log
+logs/

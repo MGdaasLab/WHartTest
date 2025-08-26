@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# Django
+*.log
+
+chat_history.sqlite  # LangGraph聊天历史数据库
+chroma.sqlite3  # ChromaDB数据库文件
+/static/
+/media/  # 包含用户上传的文档和知识库数据
+/logs/  # 应用日志文件
+browser_data/  # 浏览器用户数据
+knowledge_bases/  # 知识库数据（如果MEDIA_ROOT未正确设置时的位置）
+knowledge_bases
+# Virtualenv
+venv/
+env/
+.kilocode
+.cunzhi-memory
+.codebuddy
+.venv/
+.claude/
+.cursor/
+.roo
+# HuggingFace模型缓存
+.cache/
+media
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+*.env.*
+!*.env.example
+
+
+# Deployment / Model Packages
+deployment_package/
+chat_history.sqlite

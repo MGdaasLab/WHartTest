@@ -1,0 +1,96 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+:root {
+  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif; /* Tailwind 将覆盖这个，但保留以防万一 */
+  line-height: 1.5;
+  font-weight: 400;
+
+  color-scheme: light dark; /* 保持对用户系统偏好的支持 */
+  /* 默认文本颜色由 Tailwind 或组件特定样式处理 */
+  /* color: rgba(255, 255, 255, 0.87); */
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 移除了默认的 a 标签颜色，让 Tailwind 或组件控制 */
+/* a {
+  font-weight: 500;
+  color: #646cff;
+  text-decoration: inherit;
+}
+a:hover {
+  color: #535bf2;
+} */
+
+body {
+  margin: 0;
+  /* display: flex; */ /* LoginView 将自行处理其内容的居中 */
+  /* place-items: center; */
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #f5f7fa; /* 浅色背景 */
+  color: #333333; /* 默认文本颜色，确保对比度 */
+}
+
+/* h1 的样式由 Tailwind 或组件特定样式处理 */
+/* h1 {
+  font-size: 3.2em;
+  line-height: 1.1;
+} */
+
+/* 默认按钮样式由 Tailwind 或组件特定样式处理 */
+/* button {
+  border-radius: 8px;
+  border: 1px solid transparent;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  font-weight: 500;
+  font-family: inherit;
+  background-color: #1a1a1a;
+  cursor: pointer;
+  transition: border-color 0.25s;
+}
+button:hover {
+  border-color: #646cff;
+}
+button:focus,
+button:focus-visible {
+  outline: 4px auto -webkit-focus-ring-color;
+} */
+
+/* .card 样式由 Tailwind 或组件特定样式处理 */
+/* .card {
+  padding: 2em;
+} */
+
+#app {
+  /* max-width: 1280px; */ /* 移除以允许全宽布局，如登录页 */
+  margin: 0 auto;
+  /* padding: 2rem; */ /* 移除以允许组件控制自己的内边距 */
+  /* text-align: center; */ /* 移除以允许组件控制文本对齐 */
+  width: 100%; /* 确保 app 占据全部可用宽度 */
+  min-height: 100vh; /* 确保 app 占据全部可用高度 */
+  display: flex; /* 允许子路由视图填充 */
+  flex-direction: column; /* 允许子路由视图填充 */
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color: #213547;
+    background-color: #ffffff; /* 浅色模式下的背景 */
+  }
+  /* a:hover {
+    color: #747bff;
+  } */
+  /* button {
+    background-color: #f9f9f9;
+  } */
+  body {
+    background-color: #ffffff; /* 浅色模式下的 body 背景 */
+    color: #2c3e50; /* 浅色模式下的默认文本颜色 */
+  }
+}

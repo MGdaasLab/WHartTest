@@ -1,0 +1,40 @@
+{
+  "name": "WHartTest - 小麦智测管理平台",
+  "short_name": "WHartTest",
+  "description": "小麦智测管理平台 - 智能测试用例管理与自动化执行系统",
+  "theme_color": "#1890FF",
+  "background_color": "#0F1419",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "scope": "/",
+  "start_url": "/",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "32x32",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/app-icon.svg", 
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/logo.svg",
+      "sizes": "512x512", 
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/assets/beijing.png",
+      "sizes": "1200x800",
+      "type": "image/png"
+    }
+  ],
+  "categories": ["productivity", "developer", "utilities"],
+  "lang": "zh-CN"
+}

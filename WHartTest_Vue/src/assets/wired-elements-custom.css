@@ -1,0 +1,65 @@
+/* 
+ * Wired Elements 自定义样式
+ * 用于调整 Wired Elements 组件在应用中的显示
+ */
+
+/* 卡片样式 */
+wired-card {
+  background-color: white;
+  padding: 16px;
+  margin: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* 输入框样式 */
+wired-input {
+  width: 100%;
+  display: block;
+  margin-bottom: 8px;
+}
+
+/* 按钮样式 */
+wired-button {
+  display: inline-block;
+  background-color: #3b82f6;
+  color: white;
+  padding: 8px 16px;
+  text-align: center;
+  cursor: pointer;
+  margin: 8px 0;
+}
+
+wired-button:hover {
+  background-color: #2563eb;
+}
+
+wired-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* 复选框样式 */
+wired-checkbox {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 8px;
+}
+
+/* 链接样式 */
+wired-link {
+  color: #3b82f6;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+wired-link:hover {
+  color: #2563eb;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+  wired-card {
+    padding: 12px;
+  }
+}
