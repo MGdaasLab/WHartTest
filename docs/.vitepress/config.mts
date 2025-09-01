@@ -14,28 +14,29 @@ export default defineConfig({
     ['meta', { property: 'og:description', content: 'AI驱动的智能测试自动化平台，集成知识库、LangChain、MCP 工具与项目/用例/需求管理' }],
     ['style', {}, `
       :root {
-        --vp-c-brand-1: #3370ff;
-        --vp-c-brand-2: #4c7fff;
-        --vp-c-brand-3: #2b63e6;
-        --vp-button-brand-bg: linear-gradient(135deg, #3370ff 0%, #4c7fff 100%);
-        --vp-button-brand-hover-bg: linear-gradient(135deg, #2b63e6 0%, #3370ff 100%);
+        --vp-c-brand-1: #00a0e9;
+        --vp-c-brand-2: #1aaaeb;
+        --vp-c-brand-3: #0090d1;
+        --vp-button-brand-bg: linear-gradient(135deg, #00a0e9 0%, #1aaaeb 100%);
+        --vp-button-brand-hover-bg: linear-gradient(135deg, #0090d1 0%, #00a0e9 100%);
         --vp-button-brand-text: #ffffff;
       }
       
       .VPButton.brand {
-        background: linear-gradient(135deg, #3370ff 0%, #4c7fff 100%) !important;
-        border: 1px solid #3370ff !important;
+        background: linear-gradient(135deg, #00a0e9 0%, #1aaaeb 100%) !important;
+        border: 1px solid #00a0e9 !important;
         color: white !important;
       }
       
       .VPButton.brand:hover {
-        background: linear-gradient(135deg, #2b63e6 0%, #3370ff 100%) !important;
-        border: 1px solid #2b63e6 !important;
+        background: linear-gradient(135deg, #0090d1 0%, #00a0e9 100%) !important;
+        border: 1px solid #0090d1 !important;
       }
     `]
   ],
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
+    logo: '/img/WHartTest.png',
     
     nav: [
       { text: '首页', link: '/' },
