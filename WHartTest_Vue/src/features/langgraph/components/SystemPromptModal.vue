@@ -19,6 +19,18 @@
                 </a-tag>
               </div>
               <div class="header-right">
+                <a-button 
+                  type="outline" 
+                  size="small" 
+                  @click="handleInitializePrompts" 
+                  :loading="initializeLoading"
+                  style="margin-right: 8px;"
+                >
+                  <template #icon>
+                    <icon-settings />
+                  </template>
+                  初始化提示词
+                </a-button>
                 <a-button type="primary" size="small" @click="showCreatePromptForm">
                   <template #icon>
                     <icon-plus />
@@ -207,7 +219,7 @@
 <script setup lang="ts">
 import { ref, watch, onMounted, computed } from 'vue';
 import { Message, type FormInstance } from '@arco-design/web-vue';
-import { IconPlus, IconEdit, IconStar, IconDelete, IconCopy, IconInfoCircle } from '@arco-design/web-vue/es/icon';
+import { IconPlus, IconEdit, IconStar, IconDelete, IconCopy, IconInfoCircle, IconSettings } from '@arco-design/web-vue/es/icon';
 import {
   getUserPrompts,
   createUserPrompt,
@@ -217,6 +229,8 @@ import {
   getDefaultPrompt,
   getUserPrompt,
   duplicateUserPrompt,
+  initializeUserPrompts,
+  getInitializationStatus,
   // 新增需求评审相关方法
   getRequirementPrompts,
   getRequirementPrompt,
@@ -264,6 +278,7 @@ const isPromptFormVisible = ref(false);
 const promptFormLoading = ref(false);
 const isEditingPrompt = ref(false);
 const currentEditingPrompt = ref<UserPrompt | null>(null);
+const initializeLoading = ref(false);
 
 // 提示词表单数据
 const promptFormData = ref({
@@ -377,6 +392,48 @@ const showCreatePromptForm = () => {
 
   console.log('✅ 设置表单可见状态为:', isPromptFormVisible.value);
   console.log('📋 表单数据:', promptFormData.value);
+};
+
+// 初始化提示词
+const handleInitializePrompts = async () => {
+  try {
+    initializeLoading.value = true;
+    
+    // 先检查初始化状态
+    const statusResponse = await getInitializationStatus();
+    if (statusResponse.status !== 'success') {
+      Message.error(statusResponse.message || '获取初始化状态失败');
+      return;
+    }
+
+    const statusData = statusResponse.data;
+    const missingCount = statusData.summary?.missing_count || 0;
+    
+    if (missingCount === 0) {
+      Message.info('所有提示词类型已存在，无需初始化');
+      return;
+    }
+
+    // 执行初始化
+    const response = await initializeUserPrompts();
+    if (response.status === 'success') {
+      const data = response.data;
+      const createdCount = data.summary?.created_count || 0;
+      const skippedCount = data.summary?.skipped_count || 0;
+      
+      Message.success(`${response.message || '初始化完成！'}创建了 ${createdCount} 个提示词，跳过 ${skippedCount} 个`);
+      
+      // 重新加载用户提示词列表
+      await loadUserPrompts();
+    } else {
+      Message.error(response.message || '初始化失败');
+    }
+  } catch (error) {
+    console.error('初始化提示词失败:', error);
+    Message.error('初始化提示词失败');
+  } finally {
+    initializeLoading.value = false;
+  }
 };
 
 // 编辑提示词

@@ -586,7 +586,7 @@ onMounted(() => {
 .stat-value {
   font-size: 24px;
   font-weight: bold;
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 .stat-label {
@@ -706,7 +706,7 @@ onMounted(() => {
   padding: 8px;
   background: white;
   border-radius: 4px;
-  border-left: 3px solid #3370ff;
+  border-left: 3px solid #00a0e9;
 }
 
 .source-content {
@@ -727,7 +727,7 @@ onMounted(() => {
 }
 
 .document-title-link {
-  color: #3370ff;
+  color: #00a0e9;
   cursor: pointer;
   text-decoration: none;
   transition: color 0.2s;

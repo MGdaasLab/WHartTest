@@ -451,3 +451,59 @@ export async function getPromptByType(type: string): Promise<ApiResponse<UserPro
     };
   }
 }
+
+/**
+ * 初始化用户提示词
+ */
+export async function initializeUserPrompts(): Promise<ApiResponse<any>> {
+  const response = await request<any>({
+    url: `${API_BASE_URL}/initialize/`,
+    method: 'POST'
+  });
+
+  if (response.success) {
+    return {
+      status: 'success',
+      code: 200,
+      message: response.message || '初始化完成',
+      data: response.data!,
+      errors: null
+    };
+  } else {
+    return {
+      status: 'error',
+      code: 500,
+      message: response.error || '初始化失败',
+      data: null,
+      errors: { detail: response.error }
+    };
+  }
+}
+
+/**
+ * 获取初始化状态
+ */
+export async function getInitializationStatus(): Promise<ApiResponse<any>> {
+  const response = await request<any>({
+    url: `${API_BASE_URL}/init_status/`,
+    method: 'GET'
+  });
+
+  if (response.success) {
+    return {
+      status: 'success',
+      code: 200,
+      message: response.message || '获取状态成功',
+      data: response.data!,
+      errors: null
+    };
+  } else {
+    return {
+      status: 'error',
+      code: 500,
+      message: response.error || '获取状态失败',
+      data: null,
+      errors: { detail: response.error }
+    };
+  }
+}

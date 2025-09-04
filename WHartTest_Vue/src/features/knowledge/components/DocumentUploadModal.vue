@@ -348,7 +348,7 @@ const handleCancel = () => {
 }
 
 .upload-area:hover {
-  border-color: #3370ff;
+  border-color: #00a0e9;
 }
 
 .upload-text {

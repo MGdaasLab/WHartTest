@@ -41,6 +41,7 @@
 
       <ChatInput
         :is-loading="isLoading"
+        :has-prompts="hasPrompts"
         @send-message="handleSendMessage"
       />
     </div>
@@ -112,6 +113,7 @@ const topK = ref(5); // 检索结果数量
 
 // 提示词相关
 const selectedPromptId = ref<number | null>(null); // 用户选择的提示词ID
+const hasPrompts = ref(false); // 是否有可用的提示词
 
 // 系统提示词相关
 const isSystemPromptModalVisible = ref(false);
@@ -133,6 +135,34 @@ const saveSessionId = (id: string) => {
 // 从本地存储中获取会话ID
 const getSessionIdFromStorage = (): string | null => {
   return localStorage.getItem('langgraph_session_id');
+};
+
+// 保存知识库设置到本地存储
+const saveKnowledgeBaseSettings = () => {
+  const settings = {
+    useKnowledgeBase: useKnowledgeBase.value,
+    selectedKnowledgeBaseId: selectedKnowledgeBaseId.value,
+    similarityThreshold: similarityThreshold.value,
+    topK: topK.value
+  };
+  localStorage.setItem('langgraph_knowledge_settings', JSON.stringify(settings));
+};
+
+// 从本地存储加载知识库设置
+const loadKnowledgeBaseSettings = () => {
+  const settingsJson = localStorage.getItem('langgraph_knowledge_settings');
+  if (settingsJson) {
+    try {
+      const settings = JSON.parse(settingsJson);
+      useKnowledgeBase.value = settings.useKnowledgeBase ?? false;
+      selectedKnowledgeBaseId.value = settings.selectedKnowledgeBaseId ?? null;
+      similarityThreshold.value = settings.similarityThreshold ?? 0.3;
+      topK.value = settings.topK ?? 5;
+      console.log('✅ 知识库设置加载完成:', settings);
+    } catch (error) {
+      console.error('❌ 加载知识库设置失败:', error);
+    }
+  }
 };
 
 // 从本地存储加载会话列表
@@ -1015,8 +1045,33 @@ const showSystemPromptModal = async () => {
 };
 
 // 关闭系统提示词弹窗
-const closeSystemPromptModal = () => {
+const closeSystemPromptModal = async () => {
   isSystemPromptModalVisible.value = false;
+  
+  // 检查关闭弹窗后是否还没有提示词
+  await checkPromptStatusAfterClose();
+};
+
+// 关闭弹窗后检查提示词状态
+const checkPromptStatusAfterClose = async () => {
+  try {
+    const response = await getUserPrompts({
+      is_active: true,
+      page_size: 1
+    });
+
+    if (response.status === 'success') {
+      const prompts = Array.isArray(response.data) ? response.data : response.data.results || [];
+      hasPrompts.value = prompts.length > 0;
+      
+      // 如果还是没有提示词，提示用户
+      if (!hasPrompts.value) {
+        Message.warning('请添加或初始化提示词后才能开始对话');
+      }
+    }
+  } catch (error) {
+    console.error('❌ 关闭弹窗后检查提示词状态失败:', error);
+  }
 };
 
 // 更新系统提示词
@@ -1045,9 +1100,53 @@ const handleUpdateSystemPrompt = async (configId: number, systemPrompt: string) 
   }
 };
 
+// 检查提示词状态
+const checkPromptStatus = async () => {
+  try {
+    const response = await getUserPrompts({
+      is_active: true,
+      page_size: 1 // 只需要知道是否有提示词，不需要全部数据
+    });
+
+    if (response.status === 'success') {
+      const prompts = Array.isArray(response.data) ? response.data : response.data.results || [];
+      hasPrompts.value = prompts.length > 0;
+      console.log('📝 提示词状态检查完成:', { hasPrompts: hasPrompts.value, count: prompts.length });
+      
+      // 如果没有提示词，自动弹出管理弹窗
+      if (!hasPrompts.value) {
+        console.log('⚠️ 没有提示词，自动弹出管理弹窗');
+        isSystemPromptModalVisible.value = true;
+      }
+    } else {
+      hasPrompts.value = false;
+      console.warn('⚠️ 获取提示词状态失败:', response.message);
+    }
+  } catch (error) {
+    hasPrompts.value = false;
+    console.error('❌ 检查提示词状态失败:', error);
+  }
+};
+
 // 处理提示词数据更新
 const handlePromptsUpdated = async () => {
   console.log('🔄 收到提示词更新事件，开始刷新ChatHeader数据...');
+
+  // 重新检查提示词状态（不会自动弹窗，因为用户刚刚在管理页面操作过）
+  try {
+    const response = await getUserPrompts({
+      is_active: true,
+      page_size: 1
+    });
+
+    if (response.status === 'success') {
+      const prompts = Array.isArray(response.data) ? response.data : response.data.results || [];
+      hasPrompts.value = prompts.length > 0;
+      console.log('📝 提示词状态更新完成:', { hasPrompts: hasPrompts.value, count: prompts.length });
+    }
+  } catch (error) {
+    console.error('❌ 更新提示词状态失败:', error);
+  }
 
   // 先检查当前选中的提示词是否还存在
   if (selectedPromptId.value !== null) {
@@ -1080,7 +1179,15 @@ const handlePromptsUpdated = async () => {
   }
 };
 
+// 监听知识库设置变化，自动保存到本地存储
+watch([useKnowledgeBase, selectedKnowledgeBaseId, similarityThreshold, topK], () => {
+  saveKnowledgeBaseSettings();
+}, { deep: true });
+
 onMounted(async () => {
+  // 加载知识库设置
+  loadKnowledgeBaseSettings();
+  
   // 从服务器加载会话列表
   await loadSessionsFromServer();
 
@@ -1089,6 +1196,9 @@ onMounted(async () => {
 
   // 加载当前LLM配置
   await loadCurrentLlmConfig();
+  
+  // 检查提示词状态（如果没有会自动弹出管理弹窗）
+  await checkPromptStatus();
 });
 </script>
 

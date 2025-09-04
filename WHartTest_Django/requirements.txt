@@ -66,9 +66,9 @@ langchain-core==0.3.60
 # https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-sqlite/LICENSE
 langgraph-checkpoint-sqlite==2.0.10
 
-# LangChain MCP适配器 - MIT许可证 (当前版本: 0.1.7)
+# LangChain MCP适配器 - MIT许可证 (当前版本: 0.1.9)
 # https://github.com/langchain-ai/langchain-mcp-adapters/blob/main/LICENSE
-langchain-mcp-adapters==0.1.7
+langchain-mcp-adapters==0.1.9
 
 # Excel文件处理 - MIT许可证 (当前版本: 3.1.5)
 # https://github.com/theorchard/openpyxl/blob/master/LICENCE.rst

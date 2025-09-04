@@ -158,7 +158,7 @@ const getRatingColor = (rating: Rating) => {
 }
 
 .version-score {
-  color: #3370ff;
+  color: #00a0e9;
   font-weight: 600;
   flex-shrink: 0;
 }

@@ -3,7 +3,10 @@
     <!-- 顶部导航栏 -->
     <a-layout-header class="header">
       <div class="left-section">
-        <div class="logo" unselectable="on">WHartTest</div>
+        <div class="logo" unselectable="on">
+          <img src="/WHartTest.png" alt="WHartTest Logo" class="logo-icon" />
+          <span class="logo-text">WHartTest</span>
+        </div>
         <div class="project-selector" v-if="showProjectSelector">
           <a-select
             v-model="selectedProjectId"
@@ -24,7 +27,7 @@
         </div>
       </div>
       <div class="user-info">
-        <a-avatar class="avatar" style="background-color: #3370ff; color: white;">
+        <a-avatar class="avatar" style="background-color: #00a0e9; color: white;">
           <span>{{ userInitial }}</span>
         </a-avatar>
         <a-dropdown trigger="click" class="user-dropdown-wrapper">
@@ -390,13 +393,13 @@ onMounted(async () => {
 .left-section {
   display: flex;
   align-items: center;
-  margin-left: 30px; /* 添加左边距，与内容卡片对齐 */
+  margin-left: 0; /* 移除左边距，让logo顶着边缘 */
 }
 
 .logo {
   font-size: 1.2em;
   font-weight: bold;
-  color: #3370ff;
+  color: #333333;
   text-align: left;
   display: flex;
   justify-content: flex-start;
@@ -407,11 +410,23 @@ onMounted(async () => {
   margin: 0;
   margin-right: 20px;
   box-sizing: border-box;
-  width: 100px;
+  width: 140px;
   user-select: none;
   -webkit-user-select: none;
   -moz-user-select: none;
   -ms-user-select: none;
+}
+
+.logo-icon {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  border-radius: 3px;
+  margin-right: 8px;
+}
+
+.logo-text {
+  flex-shrink: 0;
 }
 
 .project-selector {
@@ -465,8 +480,8 @@ onMounted(async () => {
 
 .dropdown-role {
   font-size: 11px;
-  color: #3370ff;
-  background-color: rgba(51, 112, 255, 0.1);
+  color: #00a0e9;
+  background-color: rgba(0, 160, 233, 0.1);
   padding: 1px 4px;
   border-radius: 3px;
   display: inline-block;
@@ -552,11 +567,11 @@ onMounted(async () => {
 }
 
 :deep(.arco-menu-light .arco-menu-item:hover) {
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 :deep(.arco-menu-light .arco-menu-selected) {
-  color: #3370ff;
+  color: #00a0e9;
   background-color: transparent;
   border-left: none;
 }
@@ -569,11 +584,11 @@ onMounted(async () => {
 }
 
 :deep(.arco-menu-light .arco-menu-inline-header:hover) {
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 :deep(.arco-menu-light .arco-menu-inline-header.arco-menu-selected) {
-  color: #3370ff;
+  color: #00a0e9;
   background-color: transparent;
   border-left: none;
 }
@@ -658,7 +673,7 @@ onMounted(async () => {
 }
 
 .collapse-button:hover {
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 /* 收起状态下的按钮样式 */

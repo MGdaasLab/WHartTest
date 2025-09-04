@@ -241,6 +241,6 @@ onMounted(() => {
 
 .active {
   background-color: #e8f4ff;
-  color: #3370ff;
+  color: #00a0e9;
 }
 </style>

@@ -35,10 +35,21 @@
         :data="projectData"
         :pagination="pagination"
         :loading="loading"
+        :scroll="{ x: 900 }"
         @page-change="onPageChange"
         @page-size-change="onPageSizeChange"
         @row-click="handleRowClick"
       >
+        <template #name="{ record }">
+          <a-tooltip :content="record.name" position="top">
+            <div class="ellipsis-text">{{ record.name }}</div>
+          </a-tooltip>
+        </template>
+        <template #description="{ record }">
+          <a-tooltip :content="record.description || '无描述'" position="top">
+            <div class="ellipsis-text">{{ record.description || '无描述' }}</div>
+          </a-tooltip>
+        </template>
         <template #operations="{ record }">
           <a-space>
             <a-button type="primary" size="small" @click="viewProjectMembers(record, $event)">成员</a-button>
@@ -282,10 +293,14 @@ const columns = [
   {
     title: '项目名称',
     dataIndex: 'name',
+    slotName: 'name',
+    width: 200,
   },
   {
     title: '项目描述',
     dataIndex: 'description',
+    slotName: 'description',
+    width: 300,
   },
   {
     title: '创建者',
@@ -904,5 +919,36 @@ const deleteProject = (project: Project, event?: Event) => {
   color: #595959;
   margin-bottom: 24px;
   line-height: 1.5;
+}
+
+/* 文本省略样式 */
+.ellipsis-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+  display: block;
+  box-sizing: border-box;
+}
+
+/* 确保表格单元格也遵循省略规则 */
+:deep(.arco-table-td) {
+  overflow: hidden;
+}
+
+:deep(.arco-table-cell) {
+  overflow: hidden;
+}
+
+/* 强制表格使用固定布局以确保列宽度生效 */
+:deep(.arco-table-container .arco-table-element) {
+  table-layout: fixed;
+}
+
+/* 确保tooltip内容换行显示 */
+:deep(.arco-tooltip-content-inner) {
+  max-width: 300px;
+  white-space: normal;
+  word-break: break-word;
 }
 </style>

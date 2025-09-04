@@ -254,7 +254,7 @@ const getAverageChunksPerDocument = () => {
   padding: 20px;
   background: #f7f8fa;
   border-radius: 8px;
-  border-left: 4px solid #3370ff;
+  border-left: 4px solid #00a0e9;
 }
 
 .stat-icon {
@@ -270,7 +270,7 @@ const getAverageChunksPerDocument = () => {
 }
 
 .document-icon {
-  background: #3370ff;
+  background: #00a0e9;
 }
 
 .chunk-icon {
@@ -321,8 +321,8 @@ const getAverageChunksPerDocument = () => {
 }
 
 .status-item.processing {
-  border-color: #3370ff;
-  background: rgba(51, 112, 255, 0.1);
+  border-color: #00a0e9;
+  background: rgba(0, 160, 233, 0.1);
 }
 
 .status-item.failed {
@@ -410,7 +410,7 @@ const getAverageChunksPerDocument = () => {
 .metric-value {
   font-size: 18px;
   font-weight: bold;
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 .error-container {

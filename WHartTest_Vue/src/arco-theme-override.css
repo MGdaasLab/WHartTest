@@ -1,0 +1,348 @@
+/* Arco Design 主题颜色覆盖 */
+/* 覆盖 Arco Design 的默认主色调 rgb(64,128,255) 为新的蓝绿色方案 */
+
+/* 主要按钮颜色覆盖 */
+.arco-btn-primary {
+  background-color: #00a0e9 !important;
+  border-color: #00a0e9 !important;
+  color: #fff !important;
+}
+
+.arco-btn-primary:hover {
+  background-color: #1aaaeb !important;
+  border-color: #1aaaeb !important;
+  color: #fff !important;
+}
+
+.arco-btn-primary:active,
+.arco-btn-primary.arco-btn-status-active {
+  background-color: #0090d1 !important;
+  border-color: #0090d1 !important;
+  color: #fff !important;
+}
+
+.arco-btn-primary:focus {
+  background-color: #00a0e9 !important;
+  border-color: #1aaaeb !important;
+  box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.2) !important;
+}
+
+/* 禁用状态 */
+.arco-btn-primary:disabled,
+.arco-btn-primary.arco-btn-disabled {
+  background-color: rgba(0, 160, 233, 0.4) !important;
+  border-color: rgba(0, 160, 233, 0.4) !important;
+  color: #fff !important;
+}
+
+/* 加载状态 */
+.arco-btn-primary.arco-btn-loading {
+  background-color: #00a0e9 !important;
+  border-color: #00a0e9 !important;
+}
+
+/* 覆盖其他可能使用主色调的组件 */
+.arco-link {
+  color: #00a0e9 !important;
+}
+
+.arco-link:hover {
+  color: #1aaaeb !important;
+}
+
+.arco-link:active {
+  color: #0090d1 !important;
+}
+
+/* 标签组件的主色调 */
+.arco-tag-blue {
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: #00a0e9 !important;
+  color: #00a0e9 !important;
+}
+
+/* 进度条主色调 */
+.arco-progress-circle-path,
+.arco-progress-line-bar {
+  stroke: #00a0e9 !important;
+  background-color: #00a0e9 !important;
+}
+
+/* 选择器、输入框等组件的焦点色 */
+.arco-input-wrapper:focus-within,
+.arco-input-wrapper.arco-input-focus {
+  border-color: #00a0e9 !important;
+  box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.2) !important;
+}
+
+.arco-select-view-focus {
+  border-color: #00a0e9 !important;
+  box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.2) !important;
+}
+
+/* 复选框和单选框 */
+.arco-checkbox-checked .arco-checkbox-icon {
+  background-color: #00a0e9 !important;
+  border-color: #00a0e9 !important;
+}
+
+.arco-radio-checked .arco-radio-icon::before {
+  background-color: #00a0e9 !important;
+}
+
+.arco-radio-checked .arco-radio-icon {
+  border-color: #00a0e9 !important;
+}
+
+/* 开关组件 */
+.arco-switch-checked {
+  background-color: #00a0e9 !important;
+}
+
+/* 滑块组件 */
+.arco-slider-track {
+  background-color: #00a0e9 !important;
+}
+
+.arco-slider-btn {
+  border-color: #00a0e9 !important;
+}
+
+/* 分页组件 - 移除当前页颜色 */
+.arco-pagination-item-active {
+  background-color: transparent !important;
+  border-color: #d9d9d9 !important;
+  color: inherit !important;
+}
+
+/* 表格选中行 */
+.arco-table-tr-checked {
+  background-color: rgba(0, 160, 233, 0.05) !important;
+}
+
+/* 菜单激活项和选中状态 */
+.arco-menu-item-selected,
+.arco-menu-selected {
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  color: #00a0e9 !important;
+  border-left: 3px solid #00a0e9 !important;
+}
+
+.arco-menu-light .arco-menu-item-selected,
+.arco-menu-light .arco-menu-selected {
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  color: #00a0e9 !important;
+  border-left: 3px solid #00a0e9 !important;
+}
+
+.arco-menu-light .arco-menu-item:hover,
+.arco-menu-item:hover {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.05) !important;
+}
+
+/* 子菜单项选中状态 */
+.arco-menu-light .arco-menu-inline .arco-menu-item-selected,
+.arco-menu-light .arco-menu-inline .arco-menu-selected {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+}
+
+/* 子菜单标题选中状态 */
+.arco-menu-light .arco-menu-inline-header-selected,
+.arco-menu-light .arco-menu-inline-header.arco-menu-selected {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.05) !important;
+}
+
+.arco-menu-light .arco-menu-inline-header:hover {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.05) !important;
+}
+
+/* 收起状态下的菜单项选中 */
+.arco-menu-collapse .arco-menu-item-selected,
+.arco-menu-collapse .arco-menu-selected {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-left: none !important;
+}
+
+/* 菜单图标颜色 */
+.arco-menu-item-selected .arco-icon,
+.arco-menu-selected .arco-icon,
+.arco-menu-item:hover .arco-icon {
+  color: #00a0e9 !important;
+}
+
+/* 菜单链接颜色 */
+.arco-menu-item-selected a,
+.arco-menu-selected a,
+.arco-menu-item:hover a {
+  color: #00a0e9 !important;
+}
+
+/* 步骤条 */
+.arco-steps-item-process .arco-steps-item-icon {
+  background-color: #00a0e9 !important;
+  border-color: #00a0e9 !important;
+}
+
+/* 时间轴 */
+.arco-timeline-item-dot-blue {
+  background-color: #00a0e9 !important;
+}
+
+/* 徽标 */
+.arco-badge-dot {
+  background-color: #00a0e9 !important;
+}
+
+/* 通知和消息组件 */
+.arco-message-info .arco-message-icon,
+.arco-notification-info .arco-notification-icon {
+  color: #00a0e9 !important;
+}
+
+/* 文本按钮（type="text"）样式覆盖 */
+.arco-btn-text {
+  color: #00a0e9 !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+.arco-btn-text:hover {
+  color: #1aaaeb !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: transparent !important;
+}
+
+.arco-btn-text:active,
+.arco-btn-text.arco-btn-status-active {
+  color: #0090d1 !important;
+  background-color: rgba(0, 160, 233, 0.15) !important;
+  border-color: transparent !important;
+}
+
+.arco-btn-text:focus {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: transparent !important;
+  box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.2) !important;
+}
+
+/* 文本按钮禁用状态 */
+.arco-btn-text:disabled,
+.arco-btn-text.arco-btn-disabled {
+  color: rgba(0, 160, 233, 0.4) !important;
+  background-color: transparent !important;
+  border-color: transparent !important;
+}
+
+/* 轮廓按钮（type="outline"）样式覆盖 */
+.arco-btn-outline {
+  color: #00a0e9 !important;
+  background-color: transparent !important;
+  border-color: #00a0e9 !important;
+}
+
+.arco-btn-outline:hover {
+  color: #1aaaeb !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: #1aaaeb !important;
+}
+
+.arco-btn-outline:active,
+.arco-btn-outline.arco-btn-status-active {
+  color: #0090d1 !important;
+  background-color: rgba(0, 160, 233, 0.15) !important;
+  border-color: #0090d1 !important;
+}
+
+.arco-btn-outline:focus {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: #00a0e9 !important;
+  box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.2) !important;
+}
+
+/* 轮廓按钮禁用状态 */
+.arco-btn-outline:disabled,
+.arco-btn-outline.arco-btn-disabled {
+  color: rgba(0, 160, 233, 0.4) !important;
+  background-color: transparent !important;
+  border-color: rgba(0, 160, 233, 0.4) !important;
+}
+
+/* 虚线按钮（type="dashed"）样式覆盖 */
+.arco-btn-dashed {
+  color: #00a0e9 !important;
+  background-color: transparent !important;
+  border-color: #00a0e9 !important;
+  border-style: dashed !important;
+}
+
+.arco-btn-dashed:hover {
+  color: #1aaaeb !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: #1aaaeb !important;
+}
+
+.arco-btn-dashed:active,
+.arco-btn-dashed.arco-btn-status-active {
+  color: #0090d1 !important;
+  background-color: rgba(0, 160, 233, 0.15) !important;
+  border-color: #0090d1 !important;
+}
+
+.arco-btn-dashed:focus {
+  color: #00a0e9 !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+  border-color: #00a0e9 !important;
+  box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.2) !important;
+}
+
+/* 虚线按钮禁用状态 */
+.arco-btn-dashed:disabled,
+.arco-btn-dashed.arco-btn-disabled {
+  color: rgba(0, 160, 233, 0.4) !important;
+  background-color: transparent !important;
+  border-color: rgba(0, 160, 233, 0.4) !important;
+}
+
+/* 抽屉和模态框的主要按钮 */
+.arco-modal .arco-btn-primary,
+.arco-drawer .arco-btn-primary {
+  background-color: #00a0e9 !important;
+  border-color: #00a0e9 !important;
+}
+
+.arco-modal .arco-btn-primary:hover,
+.arco-drawer .arco-btn-primary:hover {
+  background-color: #1aaaeb !important;
+  border-color: #1aaaeb !important;
+}
+
+.arco-modal .arco-btn-primary:active,
+.arco-drawer .arco-btn-primary:active {
+  background-color: #0090d1 !important;
+  border-color: #0090d1 !important;
+}
+
+/* 抽屉和模态框的文本按钮 */
+.arco-modal .arco-btn-text,
+.arco-drawer .arco-btn-text {
+  color: #00a0e9 !important;
+}
+
+.arco-modal .arco-btn-text:hover,
+.arco-drawer .arco-btn-text:hover {
+  color: #1aaaeb !important;
+  background-color: rgba(0, 160, 233, 0.1) !important;
+}
+
+.arco-modal .arco-btn-text:active,
+.arco-drawer .arco-btn-text:active {
+  color: #0090d1 !important;
+  background-color: rgba(0, 160, 233, 0.15) !important;
+}

@@ -167,7 +167,7 @@
           />
         </a-form-item>
         <a-form-item label="上传方式" field="uploadType">
-          <a-radio-group v-model="uploadForm.uploadType">
+          <a-radio-group v-model="uploadForm.uploadType" @change="handleUploadTypeChange">
             <a-radio value="file">上传文件</a-radio>
             <a-radio value="content">直接输入</a-radio>
           </a-radio-group>
@@ -516,6 +516,22 @@ const handleFileChange = (fileListParam: any[], file: any) => {
   }
 };
 
+// 处理上传类型变化
+const handleUploadTypeChange = () => {
+  if (uploadForm.uploadType === 'content') {
+    // 切换到直接输入时，设置文档类型为txt
+    uploadForm.document_type = 'txt';
+    // 清空文件相关数据
+    uploadForm.file = undefined;
+    fileList.value = [];
+  } else if (uploadForm.uploadType === 'file') {
+    // 切换到文件上传时，重置文档类型为pdf
+    uploadForm.document_type = 'pdf';
+    // 清空内容
+    uploadForm.content = '';
+  }
+};
+
 // 上传处理
 const handleUpload = async () => {
   try {
@@ -801,7 +817,7 @@ projectStore.$subscribe((_mutation, state) => {
 }
 
 .upload-area:hover {
-  border-color: #3370ff;
+  border-color: #00a0e9;
   background: #f0f8ff;
 }
 

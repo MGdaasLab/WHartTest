@@ -138,7 +138,9 @@
         </div>
         <div v-if="document?.description" class="description">
           <span class="label">描述：</span>
-          <p>{{ document.description }}</p>
+          <a-tooltip :content="document.description" position="top">
+            <p class="description-text">{{ document.description }}</p>
+          </a-tooltip>
         </div>
 
         <!-- 上传状态提示 -->
@@ -1038,7 +1040,7 @@ const toggleModuleSelection = (moduleId: string) => {
 
 const getModuleColor = (index: number, alpha: number = 1) => {
   const colors = [
-    `rgba(51, 112, 255, ${alpha})`,   // 蓝色
+    `rgba(0, 160, 233, ${alpha})`,   // 蓝色
     `rgba(0, 180, 42, ${alpha})`,     // 绿色
     `rgba(255, 125, 0, ${alpha})`,    // 橙色
     `rgba(245, 63, 63, ${alpha})`,    // 红色
@@ -1163,6 +1165,7 @@ onMounted(() => {
   background: white;
   border-radius: 8px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  gap: 24px; /* 增加左侧和右侧区域之间的间距 */
 }
 
 .header-left {
@@ -1189,6 +1192,7 @@ onMounted(() => {
 
 .status-tag {
   flex-shrink: 0; /* 防止标签被压缩 */
+  margin-right: 8px; /* 增加状态标签右侧额外间距 */
 }
 
 .header-actions {
@@ -1234,11 +1238,32 @@ onMounted(() => {
 .description {
   border-top: 1px solid #f2f3f5;
   padding-top: 16px;
+  max-width: 100%;
+  overflow: hidden; /* 确保容器不溢出 */
 }
 
-.description p {
+.description p,
+.description .description-text {
   margin: 8px 0 0 0;
   line-height: 1.6;
+  /* 添加文本省略处理 */
+  max-height: 4.8em; /* 限制最多显示3行文本 (1.6 * 3) */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3; /* 标准属性 */
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+  word-wrap: break-word;
+  cursor: pointer; /* 添加鼠标指针提示 */
+}
+
+/* 确保tooltip内容正确换行 */
+:deep(.arco-tooltip-content-inner) {
+  max-width: 400px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .modules-section {
@@ -1277,19 +1302,19 @@ onMounted(() => {
 }
 
 .module-item:hover {
-  border-color: #3370ff;
-  box-shadow: 0 2px 8px rgba(51, 112, 255, 0.1);
+  border-color: #00a0e9;
+  box-shadow: 0 2px 8px rgba(0, 160, 233, 0.1);
 }
 
 
 
 .module-item.editing {
-  border-color: #3370ff;
+  border-color: #00a0e9;
   background: #f0f8ff;
 }
 
 .module-item.selected {
-  border-color: #3370ff;
+  border-color: #00a0e9;
   background: #e6f4ff;
 }
 
@@ -1317,7 +1342,7 @@ onMounted(() => {
   justify-content: center;
   width: 24px;
   height: 24px;
-  background: #3370ff;
+  background: #00a0e9;
   color: white;
   border-radius: 50%;
   font-size: 12px;
@@ -1421,7 +1446,7 @@ onMounted(() => {
 }
 
 .content-display:hover {
-  border-color: #3370ff;
+  border-color: #00a0e9;
   background: #f8faff;
 }
 
@@ -1540,26 +1565,26 @@ onMounted(() => {
 }
 
 .content-segment:hover {
-  border-color: rgba(51, 112, 255, 0.4);
-  background: rgba(51, 112, 255, 0.05);
-  box-shadow: 0 2px 8px rgba(51, 112, 255, 0.1);
+  border-color: rgba(0, 160, 233, 0.4);
+  background: rgba(0, 160, 233, 0.05);
+  box-shadow: 0 2px 8px rgba(0, 160, 233, 0.1);
 }
 
 .content-segment.selected {
-  background: rgba(51, 112, 255, 0.1);
-  border: 2px solid rgba(51, 112, 255, 0.5);
-  box-shadow: 0 4px 12px rgba(51, 112, 255, 0.2);
+  background: rgba(0, 160, 233, 0.1);
+  border: 2px solid rgba(0, 160, 233, 0.5);
+  box-shadow: 0 4px 12px rgba(0, 160, 233, 0.2);
 }
 
 .content-segment.highlighted {
-  background: rgba(51, 112, 255, 0.08);
-  border-color: rgba(51, 112, 255, 0.3);
+  background: rgba(0, 160, 233, 0.08);
+  border-color: rgba(0, 160, 233, 0.3);
 }
 
 .content-segment.editing {
   background: #fff;
-  border: 2px solid #3370ff;
-  box-shadow: 0 4px 16px rgba(51, 112, 255, 0.25);
+  border: 2px solid #00a0e9;
+  box-shadow: 0 4px 16px rgba(0, 160, 233, 0.25);
 }
 
 .module-label {

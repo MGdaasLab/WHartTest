@@ -594,7 +594,7 @@ onMounted(() => {
   opacity: 0.1;
 }
 
-.score-icon { color: #3370ff; }
+.score-icon { color: #00a0e9; }
 .issues-icon { color: #ff7d00; }
 .high-priority-icon { color: #f53f3f; }
 .date-icon { color: #00b42a; }
@@ -652,7 +652,7 @@ onMounted(() => {
 
 .priority-item.high { background: rgba(245, 63, 63, 0.1); }
 .priority-item.medium { background: rgba(255, 125, 0, 0.1); }
-.priority-item.low { background: rgba(51, 112, 255, 0.1); }
+.priority-item.low { background: rgba(0, 160, 233, 0.1); }
 
 .priority-count {
   font-size: 28px;
@@ -662,7 +662,7 @@ onMounted(() => {
 
 .priority-item.high .priority-count { color: #f53f3f; }
 .priority-item.medium .priority-count { color: #ff7d00; }
-.priority-item.low .priority-count { color: #3370ff; }
+.priority-item.low .priority-count { color: #00a0e9; }
 
 .priority-label {
   font-size: 14px;
@@ -760,8 +760,8 @@ onMounted(() => {
 }
 
 .issue-item:hover {
-  border-color: #3370ff;
-  box-shadow: 0 2px 8px rgba(51, 112, 255, 0.1);
+  border-color: #00a0e9;
+  box-shadow: 0 2px 8px rgba(0, 160, 233, 0.1);
 }
 
 .issue-item.resolved {

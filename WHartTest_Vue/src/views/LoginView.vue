@@ -12,12 +12,10 @@
       <!-- 品牌标识区域 -->
       <div class="brand-section">
         <div class="brand-logo">
-          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="logo-icon">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75L22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3l-4.5 16.5" />
-          </svg>
+          <img src="/WHartTest.png" alt="WHartTest Logo" class="logo-icon" />
         </div>
         <h1 class="brand-title">WHartTest</h1>
-        <p class="brand-subtitle">小麦智测管理平台</p>
+        <p class="brand-subtitle">小麦智测自动化平台</p>
       </div>
 
       <!-- 登录表单 -->
@@ -79,9 +77,6 @@
               class="form-checkbox"
             />
             <label for="remember-me" class="checkbox-label">记住我</label>
-          </div>
-          <div class="forgot-password">
-            <a href="#" class="link">忘记密码?</a>
           </div>
         </div>
 
@@ -212,7 +207,7 @@ onMounted(() => {
 .decoration-circle {
   position: absolute;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(51, 112, 255, 0.1) 0%, rgba(51, 112, 255, 0.05) 100%);
+  background: linear-gradient(135deg, rgba(0, 160, 233, 0.1) 0%, rgba(0, 160, 233, 0.05) 100%);
   animation: float 6s ease-in-out infinite;
 }
 
@@ -289,37 +284,25 @@ onMounted(() => {
   justify-content: center;
   width: 70px;
   height: 70px;
-  background: linear-gradient(135deg, #3370ff 0%, #4c7fff 100%);
-  border-radius: 18px;
   margin-bottom: 20px;
-  box-shadow:
-    0 8px 16px rgba(51, 112, 255, 0.25),
-    0 4px 8px rgba(51, 112, 255, 0.15);
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .brand-logo:hover {
   transform: translateY(-3px) scale(1.05);
-  box-shadow:
-    0 12px 24px rgba(51, 112, 255, 0.35),
-    0 6px 12px rgba(51, 112, 255, 0.25);
 }
 
 .logo-icon {
-  width: 36px;
-  height: 36px;
+  width: 48px;
+  height: 48px;
   color: #ffffff;
 }
 
 .brand-title {
   font-size: 28px;
   font-weight: 700;
-  color: #1a1a1a;
+  color: #333333;
   margin: 0 0 6px 0;
-  background: linear-gradient(135deg, #3370ff 0%, #4c7fff 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
   letter-spacing: -0.5px;
 }
 
@@ -378,15 +361,15 @@ onMounted(() => {
 
 .form-input:focus {
   outline: none;
-  border-color: #3370ff;
+  border-color: #00a0e9;
   background: #ffffff;
-  box-shadow: 0 0 0 4px rgba(51, 112, 255, 0.08);
+  box-shadow: 0 0 0 4px rgba(0, 160, 233, 0.08);
   transform: translateY(-1px);
 }
 
 .form-input:focus + .input-icon,
 .input-wrapper:focus-within .input-icon {
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 .password-toggle {
@@ -399,7 +382,7 @@ onMounted(() => {
 }
 
 .password-toggle:hover {
-  color: #3370ff;
+  color: #00a0e9;
 }
 
 .password-toggle svg {
@@ -432,8 +415,8 @@ onMounted(() => {
 }
 
 .form-checkbox:checked {
-  background: #3370ff;
-  border-color: #3370ff;
+  background: #00a0e9;
+  border-color: #00a0e9;
 }
 
 .checkbox-label {
@@ -445,14 +428,14 @@ onMounted(() => {
 
 .forgot-password .link {
   font-size: 15px;
-  color: #3370ff;
+  color: #00a0e9;
   text-decoration: none;
   font-weight: 500;
   transition: color 0.2s ease;
 }
 
 .forgot-password .link:hover {
-  color: #1d4ed8;
+  color: #0090d1;
   text-decoration: underline;
 }
 
@@ -460,7 +443,7 @@ onMounted(() => {
 .login-button {
   width: 100%;
   padding: 12px 24px;
-  background: linear-gradient(135deg, #3370ff 0%, #4c7fff 100%);
+  background: #00a0e9;
   border: none;
   border-radius: 14px;
   color: #ffffff;
@@ -468,7 +451,7 @@ onMounted(() => {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  box-shadow: 0 6px 16px rgba(51, 112, 255, 0.25);
+  box-shadow: 0 6px 16px rgba(0, 160, 233, 0.25);
   position: relative;
   overflow: hidden;
   min-height: 48px;
@@ -477,12 +460,13 @@ onMounted(() => {
 
 .login-button:hover:not(:disabled) {
   transform: translateY(-2px);
-  box-shadow: 0 10px 25px rgba(51, 112, 255, 0.35);
-  background: linear-gradient(135deg, #1d4ed8 0%, #3370ff 100%);
+  box-shadow: 0 10px 25px rgba(26, 170, 235, 0.35);
+  background: #1aaaeb;
 }
 
 .login-button:active:not(:disabled) {
   transform: translateY(0);
+  background: #0090d1;
 }
 
 .login-button:disabled {
@@ -542,14 +526,14 @@ onMounted(() => {
 }
 
 .register-link .link {
-  color: #3370ff;
+  color: #00a0e9;
   text-decoration: none;
   font-weight: 500;
   transition: color 0.2s ease;
 }
 
 .register-link .link:hover {
-  color: #1d4ed8;
+  color: #0090d1;
   text-decoration: underline;
 }
 
@@ -697,14 +681,14 @@ onMounted(() => {
 
 @keyframes inputFocus {
   0% {
-    box-shadow: 0 0 0 0 rgba(51, 112, 255, 0.3);
+    box-shadow: 0 0 0 0 rgba(0, 160, 233, 0.3);
     transform: translateY(0);
   }
   50% {
-    box-shadow: 0 0 0 2px rgba(51, 112, 255, 0.15);
+    box-shadow: 0 0 0 2px rgba(0, 160, 233, 0.15);
   }
   100% {
-    box-shadow: 0 0 0 4px rgba(51, 112, 255, 0.08);
+    box-shadow: 0 0 0 4px rgba(0, 160, 233, 0.08);
     transform: translateY(-1px);
   }
 }
