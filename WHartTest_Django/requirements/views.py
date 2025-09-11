@@ -8,6 +8,7 @@ import logging
 import os
 
 from wharttest_django.viewsets import BaseModelViewSet
+from prompts.models import UserPrompt
 from .models import (
     RequirementDocument, RequirementModule, ReviewReport,
     ReviewIssue, ModuleReviewResult
@@ -190,6 +191,36 @@ class RequirementDocumentViewSet(BaseModelViewSet):
         GET /api/requirements/documents/{id}/check-context-limit/?model=gpt-4
         """
         document = self.get_object()
+
+        # 检查用户是否初始化了所有必需的程序调用提示词
+        required_prompt_types = [
+            'document_structure', 'direct_analysis', 'global_analysis',
+            'module_analysis', 'consistency_analysis'
+        ]
+        
+        missing_prompts = []
+        for p_type in required_prompt_types:
+            if not UserPrompt.objects.filter(user=request.user, prompt_type=p_type).exists():
+                missing_prompts.append(p_type)
+
+        if missing_prompts:
+            # 获取提示词类型的中英文映射
+            prompt_type_display = dict(UserPrompt.PROMPT_TYPE_CHOICES)
+            
+            # 将缺失的提示词类型转换为中文名称
+            missing_prompts_display = [
+                prompt_type_display.get(pt, pt) for pt in missing_prompts
+            ]
+            
+            error_message = (
+                f"缺少必要的程序调用提示词: {', '.join(missing_prompts_display)}。"
+                "请在“提示词管理”页面中，点击“初始化程序调用提示词”按钮来完成配置。"
+            )
+            
+            return Response(
+                {'error': error_message},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         # 如果文档内容为空，尝试提取
         if not document.content and document.file:

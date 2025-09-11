@@ -46,6 +46,7 @@
         </a-button>
       </div>
       <div class="action-buttons">
+        <a-button type="primary" @click="handleGenerateTestCases" style="margin-right: 10px;">生成用例</a-button>
         <a-button type="primary" @click="handleAddTestCase">添加用例</a-button>
       </div>
     </div>
@@ -140,6 +141,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'addTestCase'): void;
+  (e: 'generate-test-cases'): void;
   (e: 'editTestCase', testCase: TestCase): void;
   (e: 'viewTestCase', testCase: TestCase): void;
   (e: 'testCaseDeleted'): void;
@@ -307,6 +309,14 @@ const handleAddTestCase = () => {
     return;
   }
   emit('addTestCase');
+};
+
+const handleGenerateTestCases = () => {
+  if (!currentProjectId.value) {
+    Message.warning('请先选择一个项目');
+    return;
+  }
+  emit('generate-test-cases');
 };
 
 const handleViewTestCase = (testCase: TestCase) => {

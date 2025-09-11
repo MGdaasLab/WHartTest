@@ -157,7 +157,11 @@
 
       <!-- 右侧内容区域 -->
       <a-layout-content class="content">
-        <router-view></router-view>
+        <router-view v-slot="{ Component }">
+          <keep-alive include="LangGraphChat">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </a-layout-content>
     </a-layout>
   </a-layout>

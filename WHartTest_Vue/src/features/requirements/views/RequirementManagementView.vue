@@ -190,7 +190,7 @@
               <div class="upload-area">
                 <icon-upload />
                 <div>点击上传文件</div>
-                <div class="upload-tip">支持 PDF、Word、PPT、文本、Markdown、HTML</div>
+                <div class="upload-tip">支持 PDF、Word、文本、HTML</div>
               </div>
             </template>
             <template #upload-item="{ fileItem, index }">

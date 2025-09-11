@@ -17,6 +17,7 @@
           :current-project-id="currentProjectId"
           :selected-module-id="selectedModuleId"
           @add-test-case="showAddTestCaseForm"
+          @generate-test-cases="showGenerateCasesModal"
           @edit-test-case="showEditTestCaseForm"
           @view-test-case="showViewTestCaseDetail"
           @test-case-deleted="handleTestCaseDeleted"
@@ -47,23 +48,35 @@
         />
       </div>
     </div>
+
+    <GenerateCasesModal
+      v-model:visible="isGenerateCasesModalVisible"
+      :test-case-module-tree="moduleTreeForForm"
+      @submit="handleGenerateCasesSubmit"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue';
+import { h, ref, computed, watch, onMounted } from 'vue';
+import { useRouter } from 'vue-router';
 import { useProjectStore } from '@/store/projectStore';
 import type { TestCase } from '@/services/testcaseService';
 import type { TestCaseModule } from '@/services/testcaseModuleService';
 import type { TreeNodeData } from '@arco-design/web-vue';
 import { getTestCaseModules } from '@/services/testcaseModuleService';
-import { Message } from '@arco-design/web-vue';
+import { Message, Notification } from '@arco-design/web-vue';
 
 import ModuleManagementPanel from '@/components/testcase/ModuleManagementPanel.vue';
 import TestCaseList from '@/components/testcase/TestCaseList.vue';
 import TestCaseForm from '@/components/testcase/TestCaseForm.vue';
 import TestCaseDetail from '@/components/testcase/TestCaseDetail.vue';
+import GenerateCasesModal from '@/components/testcase/GenerateCasesModal.vue';
+import {
+  sendChatMessageStream
+} from '@/features/langgraph/services/chatService';
 
+const router = useRouter();
 const projectStore = useProjectStore();
 const currentProjectId = computed(() => projectStore.currentProjectId || null);
 
@@ -71,6 +84,7 @@ const viewMode = ref<'list' | 'add' | 'edit' | 'view'>('list');
 const selectedModuleId = ref<number | null>(null);
 const currentEditingTestCaseId = ref<number | null>(null);
 const currentViewingTestCaseId = ref<number | null>(null);
+const isGenerateCasesModalVisible = ref(false);
 
 const modulePanelRef = ref<InstanceType<typeof ModuleManagementPanel> | null>(null);
 const testCaseListRef = ref<InstanceType<typeof TestCaseList> | null>(null);
@@ -169,6 +183,102 @@ const handleViewDetailTestCaseDeleted = () => {
     backToList();
     testCaseListRef.value?.refreshTestCases();
     modulePanelRef.value?.refreshModules();
+};
+
+const showGenerateCasesModal = () => {
+  isGenerateCasesModalVisible.value = true;
+};
+
+const handleGenerateCasesSubmit = async (formData: {
+  requirementDocumentId: string,
+  requirementModuleId: string,
+  promptId: number,
+  useKnowledgeBase: boolean,
+  knowledgeBaseId?: string | null,
+  testCaseModuleId: number,
+  selectedModule: { title: string, content: string }
+}) => {
+  if (!currentProjectId.value) {
+    Message.error('没有有效的项目ID');
+    return;
+  }
+
+  isGenerateCasesModalVisible.value = false;
+
+  // 构造一个结构清晰、更接近自然语言的 message
+  const message = `
+请根据以下需求模块信息，为我生成测试用例。
+
+---
+[需求模块标题]
+${formData.selectedModule.title}
+
+---
+[需求模块内容]
+${formData.selectedModule.content}
+---
+
+请注意：生成的测试用例最终需要被保存在 **项目ID "${currentProjectId.value}"** 下的 **测试用例模块ID "${formData.testCaseModuleId}"** 中。
+(此需求模块来源于需求文档ID: ${formData.requirementDocumentId})
+  `.trim();
+
+  const requestData: any = {
+    message: message,
+    project_id: String(currentProjectId.value),
+    prompt_id: formData.promptId,
+    use_knowledge_base: formData.useKnowledgeBase,
+  };
+
+  // 如果启用了知识库并且选择了具体的知识库，则添加ID
+  if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
+    requestData.knowledge_base_id = formData.knowledgeBaseId;
+  }
+
+  // 使用改造后的 service，它将自动处理全局流状态
+  sendChatMessageStream(
+    requestData,
+    (sessionId) => {
+      // onStart 回调，在收到 session_id 后立即执行
+      // 将会话ID保存到 localStorage，以便聊天页面可以加载它
+      localStorage.setItem('langgraph_session_id', sessionId);
+      
+      const notificationReturn = Notification.info({
+        title: '任务已开始',
+        content: '用例生成任务已在后台开始处理。',
+        footer: () => h(
+          'div',
+          {
+            style: 'text-align: right; margin-top: 12px;',
+          },
+          [
+            h(
+              'a',
+              {
+                href: 'javascript:;',
+                onClick: () => {
+                  // 点击后，跳转到聊天页面
+                  router.push({ name: 'LangGraphChat' });
+                  // 关闭通知
+                  if (notificationReturn) {
+                    notificationReturn.close();
+                  }
+                },
+              },
+              '点此查看生成过程'
+            ),
+          ]
+        ),
+        duration: 10000, // 10秒后自动关闭
+        id: `gen-case-${sessionId}`, // 使用唯一的通知ID
+      });
+
+      // 这里不再需要手动处理 onComplete 和 onError,
+      // 因为流的状态被全局管理了。
+      // 可以在 LangGraphChatView 的 onActivated 或 watch 中处理完成后的逻辑，
+      // 例如刷新用例列表。
+      // 为了保持简单，我们暂时让用户手动刷新。
+    }
+  );
 };
 
 

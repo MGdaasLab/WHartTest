@@ -4,7 +4,7 @@
       <div class="empty-icon">
         <icon-message />
       </div>
-      <p>开始与 LLM 的对话吧</p>
+      <p>开始与 WHartTest 的对话吧</p>
     </div>
 
     <MessageItem

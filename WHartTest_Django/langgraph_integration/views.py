@@ -369,8 +369,10 @@ class ChatAPIView(APIView):
                 "errors": {"project_id": ["Permission denied or project not found."]}
             }, status=status.HTTP_403_FORBIDDEN)
 
+        is_new_session = False
         if not session_id:
             session_id = uuid.uuid4().hex
+            is_new_session = True
             logger.info(f"ChatAPIView: Generated new session_id: {session_id}")
 
         if not user_message_content:
@@ -382,6 +384,19 @@ class ChatAPIView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            # 如果是新会话，立即创建ChatSession对象
+            if is_new_session:
+                try:
+                    await sync_to_async(ChatSession.objects.create)(
+                        user=request.user,
+                        session_id=session_id,
+                        project=project,
+                        title=f"新对话 - {user_message_content[:30]}" # 使用消息内容作为临时标题
+                    )
+                    logger.info(f"ChatAPIView: Created new ChatSession entry for session_id: {session_id}")
+                except Exception as e:
+                    logger.error(f"ChatAPIView: Failed to create ChatSession entry: {e}", exc_info=True)
+
             active_config = await sync_to_async(LLMConfig.objects.get)(is_active=True)
             logger.info(f"ChatAPIView: Using active LLMConfig: {active_config.name}")
         except LLMConfig.DoesNotExist:
@@ -1503,9 +1518,25 @@ class ChatStreamAPIView(View):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        is_new_session = False
         if not session_id:
             session_id = uuid.uuid4().hex
+            is_new_session = True
             logger.info(f"ChatStreamAPIView: Generated new session_id: {session_id}")
+
+        # 如果是新会话，立即创建ChatSession对象
+        if is_new_session:
+            try:
+                await sync_to_async(ChatSession.objects.create)(
+                    user=request.user,
+                    session_id=session_id,
+                    project=project,
+                    title=f"新对话 - {user_message_content[:30]}" # 使用消息内容作为临时标题
+                )
+                logger.info(f"ChatStreamAPIView: Created new ChatSession entry for session_id: {session_id}")
+            except Exception as e:
+                logger.error(f"ChatStreamAPIView: Failed to create ChatSession entry: {e}", exc_info=True)
+
 
         if not user_message_content:
             logger.warning("ChatStreamAPIView: Message content is required but not provided.")

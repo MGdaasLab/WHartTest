@@ -200,16 +200,29 @@ export class RequirementDocumentService {
         status: 'success',
         code: 200,
         message: response.message || 'success',
-        data: response.data!,
-        errors: null
+        data: response.data!
       };
     } else {
+      // 尝试获取更详细的错误信息，包括嵌套的errors对象
+      let detailedError = response.error || 'Failed to check context limit';
+      
+      // 如果错误信息中包含嵌套的errors对象，尝试提取更详细的信息
+      if (response.error && typeof response.error === 'object') {
+        const errorObj = response.error as any;
+        if (errorObj.errors && errorObj.errors.error) {
+          detailedError = errorObj.errors.error;
+        } else if (errorObj.message) {
+          detailedError = errorObj.message;
+        } else if (errorObj.detail) {
+          detailedError = errorObj.detail;
+        }
+      }
+      
       return {
         status: 'error',
         code: 500,
-        message: response.error || 'Failed to check context limit',
-        data: null,
-        errors: { detail: response.error }
+        message: detailedError,
+        data: {} as ContextCheckResponse // 返回空对象而不是null，以符合类型要求
       };
     }
   }

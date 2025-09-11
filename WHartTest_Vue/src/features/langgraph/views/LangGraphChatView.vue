@@ -34,8 +34,8 @@
       />
 
       <ChatMessages
-        :messages="messages"
-        :is-loading="isLoading"
+        :messages="displayedMessages"
+        :is-loading="isLoading && messages.length === 0"
         @toggle-expand="toggleExpand"
       />
 
@@ -59,9 +59,17 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, onMounted, onActivated, watch, onUnmounted, computed } from 'vue';
 import { Message, Modal } from '@arco-design/web-vue';
-import { sendChatMessage, sendChatMessageStream, getChatHistory, deleteChatHistory, getChatSessions } from '@/features/langgraph/services/chatService';
+import {
+  sendChatMessage,
+  sendChatMessageStream,
+  getChatHistory,
+  deleteChatHistory,
+  getChatSessions,
+  activeStreams,
+  clearStreamState
+} from '@/features/langgraph/services/chatService';
 import { listLlmConfigs, partialUpdateLlmConfig } from '@/features/langgraph/services/llmConfigService';
 import { getUserPrompts } from '@/features/prompts/services/promptService';
 import type { ChatRequest } from '@/features/langgraph/types/chat';
@@ -115,6 +123,7 @@ const topK = ref(5); // 检索结果数量
 const selectedPromptId = ref<number | null>(null); // 用户选择的提示词ID
 const hasPrompts = ref(false); // 是否有可用的提示词
 
+
 // 系统提示词相关
 const isSystemPromptModalVisible = ref(false);
 const isSystemPromptLoading = ref(false);
@@ -125,6 +134,9 @@ const projectStore = useProjectStore();
 
 // 组件引用
 const chatHeaderRef = ref<{ refreshPrompts: () => Promise<void> } | null>(null);
+
+// 终止控制器
+let abortController = new AbortController();
 
 // 在本地存储中保存会话ID
 const saveSessionId = (id: string) => {
@@ -439,6 +451,9 @@ const updateSessionInList = (id: string, firstMessage?: string, updateTime: bool
 const switchSession = async (id: string) => {
   if (id === sessionId.value) return;
 
+  // 终止正在进行的流式请求
+  // abortController.abort(); // 🔴 不再需要终止请求
+
   sessionId.value = id;
   saveSessionId(id);
   messages.value = [];
@@ -490,6 +505,9 @@ const switchSession = async (id: string) => {
 
 // 创建新对话
 const createNewChat = () => {
+  // 终止正在进行的流式请求
+  // abortController.abort(); // 🔴 不再需要终止请求
+
   // 清除当前会话ID和消息
   sessionId.value = '';
   localStorage.removeItem('langgraph_session_id');
@@ -646,252 +664,67 @@ const handleSendMessage = async (message: string) => {
   }
 };
 
-// 处理流式消息
-const handleStreamMessage = async (requestData: ChatRequest, originalMessage: string) => {
-  let currentAiContent = '';
-  let currentAiMessageIndex = -1;
-  let isCurrentlyStreaming = false;
+// 计算用于显示的最终消息列表
+const displayedMessages = computed(() => {
+  const combined = [...messages.value];
+  // 从共享状态中获取当前会话的流
+  const stream = sessionId.value ? activeStreams.value[sessionId.value] : null;
 
-  // 🆕 立即添加一个加载中的AI回复框
-  currentAiMessageIndex = messages.value.length;
-  messages.value.push({
-    content: '',
-    isUser: false,
-    time: getCurrentTime(),
-    messageType: 'ai',
-    isLoading: true,
-    isStreaming: false
-  });
-
-  try {
-    await sendChatMessageStream(
-      requestData,
-      // onMessage - 处理流式数据块
-      (chunk: string) => {
-        // 检查是否是工具消息
-        if (chunk.startsWith('__TOOL_MESSAGE__')) {
-          const toolContent = chunk.replace('__TOOL_MESSAGE__', '');
-
-          // 工具消息出现时，结束当前AI消息的流式输出
-          if (isCurrentlyStreaming && currentAiMessageIndex >= 0) {
-            messages.value[currentAiMessageIndex].isStreaming = false;
-            isCurrentlyStreaming = false;
-            // 🆕 重置索引，后续AI内容将创建新消息
-            currentAiMessageIndex = -1;
-          }
-
-          // 直接按顺序添加工具消息
-          messages.value.push({
-            content: toolContent,
-            isUser: false,
-            time: getCurrentTime(),
-            messageType: 'tool',
-            isExpanded: false
-          });
-        } else if (chunk.startsWith('__TOOL_CALL__')) {
-          const toolCallContent = chunk.replace('__TOOL_CALL__', '');
-
-          // 工具调用出现时，结束当前AI消息的流式输出
-          if (isCurrentlyStreaming && currentAiMessageIndex >= 0) {
-            messages.value[currentAiMessageIndex].isStreaming = false;
-            isCurrentlyStreaming = false;
-            // 🆕 重置索引，后续AI内容将创建新消息
-            currentAiMessageIndex = -1;
-          }
-
-          // 直接按顺序添加工具调用消息
-          messages.value.push({
-            content: toolCallContent,
-            isUser: false,
-            time: getCurrentTime(),
-            messageType: 'tool',
-            isExpanded: false
-          });
-        } else {
-          // 这是AI消息内容
-          console.log('📥 [前端流式] 接收到内容块:', { chunk, length: chunk.length });
-
-          // 跳过空的chunk，避免创建空消息
-          if (chunk.trim() === '') {
-            console.log('⏭️ [前端流式] 跳过空内容块');
-            return;
-          }
-
-          // 如果当前没有在流式输出，开始流式输出
-          if (!isCurrentlyStreaming) {
-            // 开始新的AI消息流式输出
-            currentAiContent = chunk;
-            isCurrentlyStreaming = true;
-            console.log('🚀 [前端流式] 开始新的AI消息流式输出');
-
-            // 🆕 如果当前索引为-1（工具消息后），创建新的AI消息
-            if (currentAiMessageIndex === -1) {
-              currentAiMessageIndex = messages.value.length;
-              messages.value.push({
-                content: currentAiContent,
-                isUser: false,
-                time: getCurrentTime(),
-                messageType: 'ai',
-                isLoading: false,
-                isStreaming: true
-              });
-            } else {
-              // 更新预先创建的AI消息
-              if (messages.value[currentAiMessageIndex]) {
-                messages.value[currentAiMessageIndex].content = currentAiContent;
-                messages.value[currentAiMessageIndex].isLoading = false;
-                messages.value[currentAiMessageIndex].isStreaming = true;
-              }
-            }
-          } else {
-            // 更新当前AI消息内容
-            currentAiContent += chunk;
-            if (messages.value[currentAiMessageIndex]) {
-              messages.value[currentAiMessageIndex].content = currentAiContent;
-              console.log('🔄 [前端流式] 更新消息内容:', { totalLength: currentAiContent.length });
-            }
-          }
-        }
-      },
-      // onComplete - 流式完成
-      (response: any) => {
-        if (response.status === 'success') {
-          // 保存会话ID
-          if (response.data.session_id) {
-            saveSessionId(response.data.session_id);
-            updateSessionInList(response.data.session_id, messages.value.length === 1 ? originalMessage : undefined);
-          }
-
-          // 确保移除最后一个AI消息的流式状态
-          if (isCurrentlyStreaming && currentAiMessageIndex >= 0 && messages.value[currentAiMessageIndex]) {
-            // 检查AI消息是否为空，如果为空则移除
-            if (currentAiContent.trim() === '') {
-              console.log('🗑️ [前端流式] 移除空的AI消息');
-              messages.value.splice(currentAiMessageIndex, 1);
-            } else {
-              messages.value[currentAiMessageIndex].isLoading = false;
-              messages.value[currentAiMessageIndex].isStreaming = false;
-              response.data.llm_response = currentAiContent;
-            }
-          }
-
-          // 模拟非流式模式的conversation_flow处理
-          // 构建conversation_flow，包含用户消息和AI回复
-          const conversationFlow = [
-            {
-              type: 'human',
-              content: originalMessage
-            },
-            {
-              type: 'ai',
-              content: currentAiContent
-            }
-          ];
-
-          // 流式模式下不需要重新处理conversation_flow，因为消息已经按正确顺序添加了
-          // 只需要保存conversation_flow数据供其他地方使用
-          if (!response.data.conversation_flow || response.data.conversation_flow.length === 0) {
-            response.data.conversation_flow = conversationFlow;
-          }
-        } else {
-          const errorMessages = response.errors ? Object.values(response.errors).flat().join('; ') : '';
-          const errorMessage = `${response.message}${errorMessages ? ` (${errorMessages})` : ''}` || '发送消息失败';
-          Message.error(errorMessage);
-
-          if (isCurrentlyStreaming && currentAiMessageIndex >= 0 && messages.value[currentAiMessageIndex]) {
-            // 如果当前AI消息为空，移除它并添加错误消息
-            if (currentAiContent.trim() === '') {
-              messages.value.splice(currentAiMessageIndex, 1);
-              messages.value.push({
-                content: `错误: ${response.message || '发送失败'}`,
-                isUser: false,
-                time: getCurrentTime(),
-                messageType: 'ai'
-              });
-            } else {
-              messages.value[currentAiMessageIndex].isLoading = false;
-              messages.value[currentAiMessageIndex].isStreaming = false;
-              messages.value[currentAiMessageIndex].content = `错误: ${response.message || '发送失败'}`;
-            }
-          } else {
-            // 如果没有AI消息，添加一个错误消息
-            messages.value.push({
-              content: `错误: ${response.message || '发送失败'}`,
-              isUser: false,
-              time: getCurrentTime(),
-              messageType: 'ai'
-            });
-          }
-        }
-        isLoading.value = false;
-      },
-      // onError - 错误处理
-      (error: any) => {
-        console.error('Error sending stream message:', error);
-        const errorDetail = error.message || '发送消息失败';
-        Message.error(errorDetail);
-
-        if (isCurrentlyStreaming && currentAiMessageIndex >= 0 && messages.value[currentAiMessageIndex]) {
-          // 如果当前AI消息为空，移除它并添加错误消息
-          if (currentAiContent.trim() === '') {
-            messages.value.splice(currentAiMessageIndex, 1);
-            messages.value.push({
-              content: `错误: ${errorDetail}`,
-              isUser: false,
-              time: getCurrentTime(),
-              messageType: 'ai'
-            });
-          } else {
-            messages.value[currentAiMessageIndex].isLoading = false;
-            messages.value[currentAiMessageIndex].isStreaming = false;
-            messages.value[currentAiMessageIndex].content = `错误: ${errorDetail}`;
-          }
-        } else {
-          // 如果没有AI消息，添加一个错误消息
-          messages.value.push({
-            content: `错误: ${errorDetail}`,
-            isUser: false,
-            time: getCurrentTime(),
-            messageType: 'ai'
-          });
-        }
-        isLoading.value = false;
-      }
-    );
-  } catch (error: any) {
-    console.error('Stream error:', error);
-    Message.error('流式消息发送失败');
-
-    if (isCurrentlyStreaming && currentAiMessageIndex >= 0 && messages.value[currentAiMessageIndex]) {
-      // 如果当前AI消息为空，移除它并添加错误消息
-      if (currentAiContent.trim() === '') {
-        messages.value.splice(currentAiMessageIndex, 1);
-        messages.value.push({
-          content: '错误: 流式消息发送失败',
-          isUser: false,
-          time: getCurrentTime(),
-          messageType: 'ai'
-        });
-      } else {
-        messages.value[currentAiMessageIndex].isLoading = false;
-        messages.value[currentAiMessageIndex].isStreaming = false;
-        messages.value[currentAiMessageIndex].content = '错误: 流式消息发送失败';
-      }
-    } else {
-      // 如果没有AI消息，添加一个错误消息
-      messages.value.push({
-        content: '错误: 流式消息发送失败',
+  // 如果当前会话有正在进行的流，则添加一个临时的流式消息用于显示
+  if (stream && !stream.isComplete) {
+    // 如果流式内容为空，则显示为加载中状态
+    if (stream.content.trim() === '' && !stream.error) {
+      combined.push({
+        content: '',
         isUser: false,
         time: getCurrentTime(),
-        messageType: 'ai'
+        messageType: 'ai',
+        isLoading: true,
+      });
+    } else {
+      // 否则，显示流式内容或错误
+      combined.push({
+        content: stream.error || stream.content,
+        isUser: false,
+        time: getCurrentTime(),
+        messageType: 'ai',
+        isStreaming: !stream.error, // 如果有错误则不显示流式效果
       });
     }
-    isLoading.value = false;
   }
+  return combined;
+});
+
+// 处理流式消息
+const handleStreamMessage = async (requestData: ChatRequest) => {
+  abortController = new AbortController();
+  const isNewSession = !sessionId.value;
+
+  isLoading.value = true;
+
+  // onStart 回调，在收到 session_id 后立即处理
+  const handleStart = async (newSessionId: string) => {
+    if (isNewSession) {
+      sessionId.value = newSessionId;
+      saveSessionId(newSessionId);
+      // 创建新会话后，立即刷新左侧列表
+      await loadSessionsFromServer();
+    }
+  };
+
+  await sendChatMessageStream(
+    requestData,
+    handleStart,
+    abortController.signal
+  );
+
+  // sendChatMessageStream 现在是异步的，但我们不在这里等待它完成
+  // 使用 watch 监视 isComplete 状态
 };
 
 // 处理非流式消息
 const handleNormalMessage = async (requestData: ChatRequest, originalMessage: string) => {
+  const isNewSession = !sessionId.value; // 检查是否是新会话
   // 添加loading占位消息
   const loadingMessageIndex = messages.value.length;
   messages.value.push({
@@ -912,7 +745,12 @@ const handleNormalMessage = async (requestData: ChatRequest, originalMessage: st
       // 保存会话ID
       if (response.data.session_id) {
         saveSessionId(response.data.session_id);
-        updateSessionInList(response.data.session_id, messages.value.length === 1 ? originalMessage : undefined);
+        // 如果是新会话，则从服务器刷新列表，否则只在本地更新
+        if (isNewSession) {
+          await loadSessionsFromServer();
+        } else {
+          updateSessionInList(response.data.session_id, undefined);
+        }
       }
 
       // 处理conversation_flow中的新消息
@@ -1180,6 +1018,27 @@ const handlePromptsUpdated = async () => {
 };
 
 // 监听知识库设置变化，自动保存到本地存储
+// 监视当前会话的流是否完成
+watch(
+  () => (sessionId.value ? activeStreams.value[sessionId.value] : null),
+  (stream) => {
+    if (stream && stream.isComplete) {
+      console.log(`会话 ${sessionId.value} 的流已完成。`);
+      // 流结束后，刷新历史记录以持久化最终消息
+      loadChatHistory();
+      
+      // 清理已完成的流状态，避免不必要的内存占用
+      clearStreamState(sessionId.value!);
+
+      // 如果是通过本页面发送的消息，则需要在这里设置 isLoading = false
+      if (isLoading.value) {
+        isLoading.value = false;
+      }
+    }
+  },
+  { deep: true }
+);
+
 watch([useKnowledgeBase, selectedKnowledgeBaseId, similarityThreshold, topK], () => {
   saveKnowledgeBaseSettings();
 }, { deep: true });
@@ -1188,7 +1047,7 @@ onMounted(async () => {
   // 加载知识库设置
   loadKnowledgeBaseSettings();
   
-  // 从服务器加载会话列表
+  // 从服务器加载会话列表 - 仅在首次挂载时加载
   await loadSessionsFromServer();
 
   // 尝试加载当前会话的历史记录
@@ -1200,6 +1059,43 @@ onMounted(async () => {
   // 检查提示词状态（如果没有会自动弹出管理弹窗）
   await checkPromptStatus();
 });
+
+onActivated(async () => {
+  // 每次组件被激活时（从其他页面切回来）
+  console.log('✅ Chat component activated.');
+
+  // 1. 刷新左侧的会话列表
+  await loadSessionsFromServer();
+
+  // 2. 检查localStorage，看是否有指定的会话需要加载
+  const storedSessionId = getSessionIdFromStorage();
+
+  // 3. 如果存储的ID和当前组件活跃的ID不一致，则强制切换到新会话
+  if (storedSessionId && storedSessionId !== sessionId.value) {
+    console.log(`Detected session change from localStorage: ${storedSessionId}. Switching...`);
+    await switchSession(storedSessionId);
+  }
+  // 4. 如果是同一个会话，检查是否有正在进行的流需要恢复显示
+  else if (storedSessionId && activeStreams.value[storedSessionId]) {
+    console.log(`Resuming stream display for current session ${storedSessionId}.`);
+    // 如果流在后台已经完成，但UI没有及时更新，这里重新加载历史记录
+    if (activeStreams.value[storedSessionId].isComplete) {
+      await loadChatHistory();
+      clearStreamState(storedSessionId);
+    }
+  }
+});
+
+onUnmounted(() => {
+  // 组件卸载时，终止任何正在进行的流式请求
+  abortController.abort();
+});
+</script>
+
+<script lang="ts">
+export default {
+  name: 'LangGraphChat'
+}
 </script>
 
 <style scoped>

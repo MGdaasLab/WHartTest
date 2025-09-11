@@ -164,8 +164,11 @@ service.interceptors.response.use(
         if (response.data) {
           if (typeof response.data === 'string') {
             message = response.data;
+          } else if (response.data.errors && response.data.errors.error) {
+            // 优先检查是否有errors.error字段（用户报告的错误格式）
+            message = response.data.errors.error;
           } else if (response.data.errors && response.data.errors.message) {
-            // 优先使用嵌套的详细错误信息
+            // 然后检查是否有errors.message字段
             message = response.data.errors.message;
           } else if (response.data.detail) {
             message = response.data.detail;

@@ -1,3 +1,4 @@
+import { ref } from 'vue';
 import { request } from '@/utils/request';
 import { useAuthStore } from '@/store/authStore';
 import type { ApiResponse } from '@/features/langgraph/types/api';
@@ -7,6 +8,22 @@ import type {
   ChatHistoryResponseData,
   ChatSessionsResponseData
 } from '@/features/langgraph/types/chat';
+
+// --- 全局流式状态管理 ---
+interface StreamState {
+  content: string;
+  error?: string;
+  isComplete: boolean;
+}
+
+export const activeStreams = ref<Record<string, StreamState>>({});
+
+export const clearStreamState = (sessionId: string) => {
+  if (activeStreams.value[sessionId]) {
+    delete activeStreams.value[sessionId];
+  }
+};
+// --- 全局流式状态管理结束 ---
 
 const API_BASE_URL = '/lg/chat';
 
@@ -41,15 +58,15 @@ export async function sendChatMessage(
       code: 200,
       message: response.message || 'success',
       data: response.data!,
-      errors: null
+      errors: undefined
     };
   } else {
     return {
       status: 'error',
       code: 500,
       message: response.error || 'Failed to send chat message',
-      data: null,
-      errors: { detail: response.error }
+      data: {} as ChatResponseData,
+      errors: { detail: [response.error || 'Unknown error'] }
     };
   }
 }
@@ -101,16 +118,24 @@ async function refreshAccessToken(): Promise<string | null> {
  */
 export async function sendChatMessageStream(
   data: ChatRequest,
-  onMessage: (chunk: string) => void,
-  onComplete: (response: ApiResponse<ChatResponseData>) => void,
-  onError: (error: any) => void
+  onStart: (sessionId: string) => void, // 简化回调，只保留 onStart
+  signal?: AbortSignal
 ): Promise<void> {
   const authStore = useAuthStore();
   let token = authStore.getAccessToken;
+  let streamSessionId: string | null = data.session_id || null;
 
-  // 如果没有token，直接返回错误
+  // 错误处理函数，用于更新全局状态
+  const handleError = (error: any, sessionId: string | null) => {
+    console.error('Stream error:', error);
+    if (sessionId && activeStreams.value[sessionId]) {
+      activeStreams.value[sessionId].error = error.message || '流式请求失败';
+      activeStreams.value[sessionId].isComplete = true;
+    }
+  };
+
   if (!token) {
-    onError(new Error('未登录或登录已过期'));
+    handleError(new Error('未登录或登录已过期'), streamSessionId);
     return;
   }
 
@@ -123,24 +148,25 @@ export async function sendChatMessageStream(
         'Authorization': `Bearer ${token}`,
       },
       body: JSON.stringify(data),
+      signal,
     });
 
-    // 如果是401错误，尝试刷新token
     if (response.status === 401) {
       const newToken = await refreshAccessToken();
       if (newToken) {
-        // 使用新token重试请求
+        token = newToken;
         response = await fetch(`${getApiBaseUrl()}${API_BASE_URL}/stream/`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Accept': 'text/event-stream',
-            'Authorization': `Bearer ${newToken}`,
+            'Authorization': `Bearer ${token}`,
           },
           body: JSON.stringify(data),
+          signal,
         });
       } else {
-        onError(new Error('登录已过期，请重新登录'));
+        handleError(new Error('登录已过期，请重新登录'), streamSessionId);
         return;
       }
     }
@@ -157,12 +183,13 @@ export async function sendChatMessageStream(
     }
 
     let buffer = '';
-    let finalResponse: ApiResponse<ChatResponseData> | null = null;
-
     while (true) {
       const { done, value } = await reader.read();
-
       if (done) {
+        // 流结束时，如果会话仍在进行中，则标记为完成
+        if (streamSessionId && activeStreams.value[streamSessionId] && !activeStreams.value[streamSessionId].isComplete) {
+            activeStreams.value[streamSessionId].isComplete = true;
+        }
         break;
       }
 
@@ -171,146 +198,61 @@ export async function sendChatMessageStream(
       buffer = lines.pop() || '';
 
       for (const line of lines) {
-        if (line.trim() === '') continue;
-
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6);
-
-          if (data === '[DONE]') {
-            if (finalResponse) {
-              onComplete(finalResponse);
+        if (line.trim() === '' || !line.startsWith('data: ')) continue;
+        
+        const jsonData = line.slice(6);
+        if (jsonData === '[DONE]') {
+            if (streamSessionId && activeStreams.value[streamSessionId]) {
+                activeStreams.value[streamSessionId].isComplete = true;
             }
+            continue;
+        }
+
+        try {
+          const parsed = JSON.parse(jsonData);
+
+          if (parsed.type === 'error') {
+            handleError(new Error(parsed.message || '流式请求失败'), streamSessionId);
             return;
           }
 
-          try {
-            const parsed = JSON.parse(data);
-
-            // 处理错误消息
-            if (parsed.type === 'error') {
-              onError(new Error(parsed.message || '流式请求失败'));
-              return;
-            }
-
-            // 处理开始消息，保存session信息
-            if (parsed.type === 'start') {
-              finalResponse = {
-                status: 'success',
-                code: 200,
-                message: 'Message processed successfully.',
-                data: {
-                  user_message: '',
-                  llm_response: '',
-                  conversation_flow: [],
-                  active_llm: 'gpt-4o-mini',
-                  thread_id: parsed.thread_id,
-                  session_id: parsed.session_id,
-                  project_id: parsed.project_id,
-                  project_name: ''
-                },
-                errors: undefined
+          if (parsed.type === 'start' && parsed.session_id) {
+            streamSessionId = parsed.session_id;
+            if (streamSessionId) {
+              // 初始化或重置此会话的流状态
+              activeStreams.value[streamSessionId] = {
+                content: '',
+                isComplete: false,
               };
+              onStart(streamSessionId);
             }
-
-            // 处理消息内容
-            if (parsed.type === 'message') {
-              // 解析消息数据，提取实际的文本内容
-              const messageData = parsed.data;
-              console.log('🔍 [流式数据] 接收到消息:', { type: parsed.type, data: messageData });
-              if (typeof messageData === 'string') {
-                // 检查是否是工具消息返回结果
-                if (messageData.includes('ToolMessage(')) {
-                  // 这是工具消息，提取工具消息内容
-                  const toolMatch = messageData.match(/ToolMessage\(content='([^']*)'[^)]*\)/);
-                  if (toolMatch && toolMatch[1]) {
-                    // 解析工具消息内容，可能是JSON格式
-                    let toolContent = toolMatch[1];
-                    try {
-                      // 尝试解析转义的JSON
-                      toolContent = toolContent.replace(/\\n/g, '\n').replace(/\\"/g, '"');
-                      const jsonData = JSON.parse(toolContent);
-                      toolContent = JSON.stringify(jsonData, null, 2);
-                    } catch (e) {
-                      // 如果不是JSON，保持原样
-                    }
-
-                    // 发送工具消息，使用特殊标记
-                    onMessage(`__TOOL_MESSAGE__${toolContent}`);
-                  }
-                } else if (messageData.includes('tool_calls') && messageData.includes('AIMessageChunk')) {
-                  // 这是工具调用开始，提取工具名称
-                  const toolCallMatch = messageData.match(/'name': '([^']*)'[^}]*'args': \{([^}]*)\}/);
-                  if (toolCallMatch && toolCallMatch[1]) {
-                    const toolName = toolCallMatch[1];
-                    const toolArgs = toolCallMatch[2] || '';
-
-                    // 发送工具调用信息
-                    onMessage(`__TOOL_CALL__正在调用工具: ${toolName}${toolArgs ? ` (参数: ${toolArgs})` : ''}`);
-                  }
-                } else {
-                  // 这是AI消息，提取文本内容
-                  let content = '';
-
-                  // 匹配 AIMessageChunk(content='...', ...)
-                  let match = messageData.match(/AIMessageChunk\(content='([^']*)'[^)]*\)/);
-                  if (match && match[1] !== undefined) {
-                    content = match[1];
-                  } else {
-                    // 匹配 AIMessageChunk(content="...", ...)
-                    match = messageData.match(/AIMessageChunk\(content="([^"]*)"[^)]*\)/);
-                    if (match && match[1] !== undefined) {
-                      content = match[1];
-                    } else {
-                      // 匹配没有引号的情况
-                      match = messageData.match(/AIMessageChunk\(content=([^,)]*)[,)]/);
-                      if (match && match[1] !== undefined) {
-                        content = match[1].trim();
-                      }
-                    }
-                  }
-
-                  // 发送内容，包括空字符串（用于流式输出）
-                  console.log('📤 [流式输出] 发送内容块:', { content, length: content.length });
-                  onMessage(content);
-                }
-              }
-            }
-
-            // 处理完成消息
-            if (parsed.type === 'complete') {
-              // 流式完成，获取完整的conversation_flow
-              if (finalResponse && finalResponse.data.session_id && finalResponse.data.project_id) {
-                try {
-                  // 获取完整的对话历史
-                  const historyResponse = await getChatHistory(
-                    finalResponse.data.session_id,
-                    finalResponse.data.project_id
-                  );
-                  if (historyResponse.status === 'success' && historyResponse.data.history) {
-                    finalResponse.data.conversation_flow = historyResponse.data.history;
-                  }
-                } catch (error) {
-                  console.warn('Failed to get conversation history:', error);
-                }
-              }
-
-              if (finalResponse) {
-                onComplete(finalResponse);
-              }
-              return;
-            }
-          } catch (e) {
-            console.warn('Failed to parse SSE data:', data);
           }
+
+          if (parsed.type === 'message' && streamSessionId && activeStreams.value[streamSessionId]) {
+            const messageData = parsed.data;
+            if (typeof messageData === 'string') {
+              let content = '';
+              if (messageData.includes('AIMessageChunk')) {
+                 const match = messageData.match(/content='((?:\\'|[^'])*)'/);
+                 if(match && match[1] !== undefined) {
+                    content = match[1].replace(/\\'/g, "'");
+                 }
+              }
+              // 在这里直接更新全局状态
+              activeStreams.value[streamSessionId].content += content;
+            }
+          }
+
+          if (parsed.type === 'complete' && streamSessionId && activeStreams.value[streamSessionId]) {
+            activeStreams.value[streamSessionId].isComplete = true;
+          }
+        } catch (e) {
+          console.warn('Failed to parse SSE data:', jsonData);
         }
       }
     }
-
-    if (finalResponse) {
-      onComplete(finalResponse);
-    }
   } catch (error) {
-    onError(error);
+    handleError(error, streamSessionId);
   }
 }
 
@@ -338,15 +280,15 @@ export async function getChatHistory(
       code: 200,
       message: response.message || 'success',
       data: response.data!,
-      errors: null
+      errors: undefined
     };
   } else {
     return {
       status: 'error',
       code: 500,
       message: response.error || 'Failed to get chat history',
-      data: null,
-      errors: { detail: response.error }
+      data: {} as ChatHistoryResponseData,
+      errors: { detail: [response.error || 'Unknown error'] }
     };
   }
 }
@@ -375,7 +317,7 @@ export async function deleteChatHistory(
       code: 200,
       message: response.message || '聊天历史记录已成功删除',
       data: null,
-      errors: null
+      errors: undefined
     };
   } else {
     return {
@@ -383,7 +325,7 @@ export async function deleteChatHistory(
       code: 500,
       message: response.error || 'Failed to delete chat history',
       data: null,
-      errors: { detail: response.error }
+      errors: { detail: [response.error || 'Unknown error'] }
     };
   }
 }
@@ -407,15 +349,15 @@ export async function getChatSessions(projectId: number): Promise<ApiResponse<Ch
       code: 200,
       message: response.message || 'success',
       data: response.data!,
-      errors: null
+      errors: undefined
     };
   } else {
     return {
       status: 'error',
       code: 500,
       message: response.error || 'Failed to get chat sessions',
-      data: null,
-      errors: { detail: response.error }
+      data: {} as ChatSessionsResponseData,
+      errors: { detail: [response.error || 'Unknown error'] }
     };
   }
 }

@@ -24,11 +24,11 @@
       @row-click="handleRowClick"
     >
       <template #operations="{ record }">
-        <a-space>
-          <a-button type="primary" size="small" @click="viewOrganizationMembers(record, $event)">成员</a-button>
-          <a-button type="primary" size="small" @click="viewOrganizationPermissions(record, $event)">权限</a-button>
-          <a-button type="primary" size="small" @click="editOrganization(record, $event)">编辑</a-button>
-          <a-button type="primary" status="danger" size="small" @click="deleteOrganization(record, $event)">删除</a-button>
+        <a-space :size="4">
+          <a-button type="primary" size="mini" @click="viewOrganizationMembers(record, $event)">成员</a-button>
+          <a-button type="primary" size="mini" @click="viewOrganizationPermissions(record, $event)">权限</a-button>
+          <a-button type="primary" size="mini" @click="editOrganization(record, $event)">编辑</a-button>
+          <a-button type="primary" status="danger" size="mini" @click="deleteOrganization(record, $event)">删除</a-button>
         </a-space>
       </template>
     </a-table>
@@ -143,7 +143,8 @@ const columns = [
   {
     title: '操作',
     slotName: 'operations',
-    width: 150,
+    width: 240,
+    fixed: 'right',
   },
 ];
 
@@ -452,5 +453,30 @@ const deleteOrganization = (organization: Organization, event?: Event) => {
 .action-buttons {
   display: flex;
   gap: 10px;
+}
+
+/* 操作按钮样式优化 */
+:deep(.arco-table-th.operations-header) {
+  white-space: nowrap;
+}
+
+:deep(.arco-table-td.operations-cell) {
+  padding: 8px 4px;
+}
+
+:deep(.arco-btn-size-mini) {
+  padding: 0 8px;
+  font-size: 12px;
+  height: 24px;
+  line-height: 22px;
+}
+
+/* 确保操作列按钮不溢出 */
+:deep(.arco-space-item) {
+  margin-right: 2px !important;
+}
+
+:deep(.arco-space-item:last-child) {
+  margin-right: 0 !important;
 }
 </style>

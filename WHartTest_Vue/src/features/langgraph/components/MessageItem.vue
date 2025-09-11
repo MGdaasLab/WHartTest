@@ -1,10 +1,11 @@
 <template>
   <div :class="['message-wrapper', messageClass]">
     <div class="avatar">
-      <div class="avatar-img" :class="avatarClass">
-        {{ avatarText }}
-      </div>
-    </div>
+          <img v-if="message.messageType === 'ai'" :src="logo" alt="AI Avatar" class="avatar-img" />
+          <div v-else class="avatar-img" :class="avatarClass">
+            {{ avatarText }}
+          </div>
+        </div>
     <div class="message-content">
       <div class="message-bubble">
         <div v-if="message.isLoading" class="typing-indicator">
@@ -44,19 +45,21 @@
 import { computed } from 'vue';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
+import logo from '/WHartTest.png';
 
 // 配置marked以确保代码块正确渲染
+// marked v5+ API发生了变化，许多选项被移除或更改。
+// 此处我们依赖默认配置，并使用DOMPurify进行XSS净化。
+/*
 marked.setOptions({
   breaks: true,
   gfm: true,
-  highlight: null, // 不使用代码高亮，保持简单
-  langPrefix: 'language-', // 为代码块添加语言前缀
   pedantic: false,
-  sanitize: false, // 我们使用DOMPurify来净化
   smartLists: true,
   smartypants: false,
   xhtml: false
 });
+*/
 
 interface ChatMessage {
   content: string;
@@ -95,8 +98,8 @@ const avatarClass = computed(() => {
 // 头像文本
 const avatarText = computed(() => {
   if (props.message.isUser) return '你';
-  if (props.message.messageType === 'tool') return '工具';
-  return 'LLM';
+  if (props.message.messageType === 'tool') return 'MCP';
+  return ''; // AI消息使用图片，不需要文本
 });
 
 // 判断是否为正在流式更新的消息
@@ -373,20 +376,21 @@ const formatToolMessage = (content: string) => {
 
 
 .avatar {
-  width: 40px;
-  height: 40px;
+  width: 35px;
+  height: 35px;
   flex-shrink: 0;
 }
 
 .avatar-img {
-  width: 40px;
-  height: 40px;
+  width: 35px;
+  height: 35px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: bold;
   color: white;
+  object-fit: cover; /* 确保图片能被正确裁剪和缩放 */
 }
 
 .user-avatar {
@@ -394,7 +398,8 @@ const formatToolMessage = (content: string) => {
 }
 
 .ai-avatar {
-  background-color: #00b42a;
+  /* 当使用img标签时，这个类主要用于定位，背景色可以去掉 */
+  background-color: transparent;
 }
 
 .tool-avatar {

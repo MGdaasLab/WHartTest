@@ -164,6 +164,10 @@ python-pptx==1.0.2
 # https://github.com/ankushshah89/python-docx2txt/blob/master/LICENSE
 docx2txt==0.9
 
+# Markdown文档处理 - BSD许可证 (当前版本: 3.9)
+# https://github.com/Python-Markdown/markdown/blob/master/LICENSE.md
+markdown==3.9
+
 # 非结构化文档处理 - Apache 2.0许可证 (当前版本: 0.17.2)
 # https://github.com/Unstructured-IO/unstructured/blob/main/LICENSE.md
 unstructured==0.17.2

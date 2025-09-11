@@ -360,7 +360,24 @@ watch(() => projectStore.currentProjectId, (newProjectId, oldProjectId) => {
 }, { immediate: false });
 
 // 生命周期
-onMounted(() => {
+onMounted(async () => {
+  // 等待项目store初始化完成
+  if (projectStore.loading) {
+    await new Promise((resolve) => {
+      const unwatch = watch(() => projectStore.loading, (loading) => {
+        if (!loading) {
+          unwatch();
+          resolve(void 0);
+        }
+      });
+    });
+  }
+  
+  // 如果项目store没有项目列表，主动获取一次
+  if (projectStore.projectList.length === 0) {
+    await projectStore.fetchProjects();
+  }
+  
   fetchKnowledgeBases();
 });
 </script>

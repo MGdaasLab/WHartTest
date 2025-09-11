@@ -17,7 +17,7 @@
         <a-button
           v-if="document?.status === 'uploaded' && !contextCheckResult"
           type="primary"
-          @click="checkContextLimit"
+          @click="() => checkContextLimit()"
           :loading="loading"
         >
           <template #icon><icon-robot /></template>
@@ -108,10 +108,6 @@
             <a-tag color="blue">{{ getTypeText(document?.document_type) }}</a-tag>
           </div>
           <div class="info-item">
-            <span class="label">版本：</span>
-            <span>{{ document?.version || 'v1.0' }}</span>
-          </div>
-          <div class="info-item">
             <span class="label">字数：</span>
             <span>{{ document?.word_count || 0 }} 字</span>
           </div>
@@ -160,7 +156,7 @@
       <ContextCheckAlert
         :context-result="contextCheckResult"
         @direct-review="handleDirectReview"
-        @show-split-options="handleShowSplitOptions"
+        @show-split-options="handleShowSplitOptionsWithDefault"
       />
     </div>
 
@@ -487,7 +483,7 @@
         <a-button
           v-if="document?.status === 'uploaded' && !contextCheckResult"
           type="primary"
-          @click="checkContextLimit"
+          @click="() => checkContextLimit()"
           :loading="loading"
         >
           <template #icon><icon-robot /></template>
@@ -857,6 +853,17 @@ const checkContextLimit = async (modelName = 'gpt-4') => {
     const response = await RequirementDocumentService.checkContextLimit(document.value.id, modelName);
     if (response.status === 'success') {
       contextCheckResult.value = response.data;
+    } else {
+      // 显示具体的错误信息，而不是通用的"上下文检测失败"
+      const errorMessage = response.message || '上下文检测失败';
+      console.error('上下文检测失败:', errorMessage);
+      
+      // 使用Message.error显示错误信息，会自动在几秒后消失
+      Message.error({
+        content: errorMessage,
+        duration: 5000, // 5秒后自动消失
+        closable: true
+      });
     }
   } catch (error) {
     console.error('上下文检测失败:', error);
@@ -1228,6 +1235,7 @@ onMounted(() => {
   font-weight: 500;
   color: #86909c;
   font-size: 14px;
+  white-space: nowrap;
 }
 
 .info-item span:not(.label) {
@@ -1236,6 +1244,9 @@ onMounted(() => {
 }
 
 .description {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
   border-top: 1px solid #f2f3f5;
   padding-top: 16px;
   max-width: 100%;
@@ -1244,13 +1255,13 @@ onMounted(() => {
 
 .description p,
 .description .description-text {
-  margin: 8px 0 0 0;
+  margin: 0;
   line-height: 1.6;
   /* 添加文本省略处理 */
   max-height: 4.8em; /* 限制最多显示3行文本 (1.6 * 3) */
   overflow: hidden;
   text-overflow: ellipsis;
-  display: -webkit-box;
+  display: -webkit-inline-box;
   -webkit-line-clamp: 3;
   line-clamp: 3; /* 标准属性 */
   -webkit-box-orient: vertical;

@@ -51,10 +51,10 @@
           </a-tooltip>
         </template>
         <template #operations="{ record }">
-          <a-space>
-            <a-button type="primary" size="small" @click="viewProjectMembers(record, $event)">成员</a-button>
-            <a-button type="primary" size="small" @click="editProject(record, $event)">编辑</a-button>
-            <a-button type="primary" status="danger" size="small" @click="deleteProject(record, $event)">删除</a-button>
+          <a-space :size="4">
+            <a-button type="primary" size="mini" @click="viewProjectMembers(record, $event)">成员</a-button>
+            <a-button type="primary" size="mini" @click="editProject(record, $event)">编辑</a-button>
+            <a-button type="primary" status="danger" size="mini" @click="deleteProject(record, $event)">删除</a-button>
           </a-space>
         </template>
       </a-table>
@@ -78,7 +78,14 @@
         <div v-if="projectMembers.length === 0" class="no-data">
           暂无成员数据
         </div>
-        <a-table v-else :columns="memberColumns" :data="projectMembers" :pagination="false" row-key="id">
+        <a-table
+          v-else
+          :columns="memberColumns"
+          :data="projectMembers"
+          :pagination="false"
+          row-key="id"
+          :scroll="{ x: 760 }"
+        >
           <template #role="{ record }">
             <a-tag :color="record.role === 'owner' ? 'red' : record.role === 'admin' ? 'orange' : 'blue'">
               {{ record.role === 'owner' ? '拥有者' : record.role === 'admin' ? '管理员' : '成员' }}
@@ -88,9 +95,10 @@
             {{ record.joined_at ? new Date(record.joined_at).toLocaleString() : '-' }}
           </template>
           <template #operations="{ record }">
-            <a-space>
+            <a-space :size="4">
               <a-button
                 type="text"
+                size="mini"
                 @click="showUpdateRoleModal(record)"
                 :disabled="record.role === 'owner'"
               >
@@ -98,6 +106,7 @@
               </a-button>
               <a-button
                 type="text"
+                size="mini"
                 status="danger"
                 @click="removeMember(record)"
                 :disabled="record.role === 'owner'"
@@ -320,7 +329,8 @@ const columns = [
   {
     title: '操作',
     slotName: 'operations',
-    width: 150,
+    width: 180,
+    fixed: 'right',
   },
 ];
 
@@ -420,28 +430,35 @@ const memberColumns = [
   {
     title: '用户ID',
     dataIndex: 'user',
+    width: 80,
   },
   {
     title: '用户名',
     dataIndex: 'user_detail.username',
+    width: 120,
   },
   {
     title: '邮箱',
     dataIndex: 'user_detail.email',
+    width: 180,
   },
   {
     title: '角色',
     dataIndex: 'role',
     slotName: 'role',
+    width: 80,
   },
   {
     title: '加入时间',
     dataIndex: 'joined_at',
     slotName: 'joined_at',
+    width: 150,
   },
   {
     title: '操作',
     slotName: 'operations',
+    width: 150,
+    fixed: 'right',
   }
 ];
 
@@ -950,5 +967,66 @@ const deleteProject = (project: Project, event?: Event) => {
   max-width: 300px;
   white-space: normal;
   word-break: break-word;
+}
+
+/* 操作按钮样式优化 */
+:deep(.arco-table-th.operations-header) {
+  white-space: nowrap;
+}
+
+:deep(.arco-table-td.operations-cell) {
+  padding: 8px 4px;
+}
+
+:deep(.arco-btn-size-mini) {
+  padding: 0 8px;
+  font-size: 12px;
+  height: 24px;
+  line-height: 22px;
+}
+
+/* 确保操作列按钮不溢出 */
+:deep(.arco-space-item) {
+  margin-right: 2px !important;
+}
+
+:deep(.arco-space-item:last-child) {
+  margin-right: 0 !important;
+}
+
+/* 成员管理表格样式优化 */
+:deep(.arco-table-th) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.arco-table-th-title) {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 操作按钮区域样式 */
+:deep(.arco-table-td.operations-cell) {
+  padding: 8px 4px;
+}
+
+:deep(.arco-space-item) {
+  margin-right: 4px !important;
+}
+
+:deep(.arco-space-item:last-child) {
+  margin-right: 0 !important;
+}
+
+/* 确保表格在模态框中的宽度合适 */
+:deep(.arco-modal-body) {
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+:deep(.arco-table-container) {
+  overflow-x: auto;
 }
 </style>

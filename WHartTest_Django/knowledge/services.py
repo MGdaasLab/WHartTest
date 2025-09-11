@@ -6,6 +6,17 @@ import os
 import time
 import hashlib
 from typing import List, Dict, Any
+import nltk
+from django.conf import settings
+
+# --- NLTK 数据路径配置 ---
+# 将项目内部的 'nltk_data' 目录添加到 NLTK 的搜索路径中
+# 这使得项目在任何环境中都能找到必要的数据，无需系统级安装
+LOCAL_NLTK_DATA_PATH = os.path.join(settings.BASE_DIR, 'nltk_data')
+if os.path.exists(LOCAL_NLTK_DATA_PATH):
+    if LOCAL_NLTK_DATA_PATH not in nltk.data.path:
+        nltk.data.path.insert(0, LOCAL_NLTK_DATA_PATH)
+        print(f"NLTK data path prepended with: {LOCAL_NLTK_DATA_PATH}")
 
 # 设置完全离线模式，避免任何网络请求
 os.environ['TRANSFORMERS_OFFLINE'] = '1'

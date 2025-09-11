@@ -1,56 +1,68 @@
 <template>
-  <a-card class="module-panel" :bordered="false" title="模块管理">
-    <a-input-search
-      v-model="moduleSearchKeyword"
-      placeholder="请输入模块名称"
-      allow-clear
-      style="margin-bottom: 16px; flex-shrink: 0;"
-      @search="onModuleSearch"
-      @input="onModuleSearch"
-    />
-    <div class="module-actions">
-      <a-dropdown @select="handleModuleAction" trigger="hover" position="bottom" :popup-max-width="false" class="module-dropdown">
-        <a-button type="primary" size="small" class="module-action-button">
-          操作
-        </a-button>
-        <template #content>
-          <a-doption value="addRoot" class="centered-dropdown-item">添加根模块</a-doption>
-          <a-doption value="addChild" :disabled="!selectedModuleKey" class="centered-dropdown-item">添加子模块</a-doption>
-          <a-doption value="edit" :disabled="!selectedModuleKey" class="centered-dropdown-item">编辑模块</a-doption>
-          <a-doption value="delete" :disabled="!selectedModuleKey" class="centered-dropdown-item">删除模块</a-doption>
-        </template>
-      </a-dropdown>
-    </div>
-    <div v-if="moduleLoading" class="module-loading-container">
-      <a-spin />
-    </div>
-    <a-tree
-      v-else-if="moduleTreeData.length > 0"
-      :data="filteredModuleTreeData"
-      :field-names="{ key: 'id', title: 'name' }"
-      show-line
-      block-node
-      @select="onModuleSelect"
-      v-model:selected-keys="selectedModuleKeys"
+  <div class="module-panel-wrapper">
+    <a-card
+      class="module-panel"
+      :bordered="false"
+      title="模块管理"
     >
-      <template #title="nodeData">
-        <span>{{ nodeData.name }}</span>
-        <span class="module-count"> ({{ nodeData.testcase_count || nodeData.test_case_count || 0 }})</span>
-      </template>
-    </a-tree>
-    <a-empty v-else description="暂无模块数据" />
-
-    <!-- 模块管理模态框 -->
-    <ModuleEditModal
-      :visible="moduleModalVisible"
-      :is-editing="isEditingModule"
-      :initial-data="moduleForm"
-      :module-tree="moduleTreeForSelect"
-      :project-id="currentProjectId"
-      @submit="handleModuleSubmit"
-      @close="closeModuleModal"
-    />
-  </a-card>
+      <div class="module-panel-content">
+        <div class="module-panel-header">
+          <a-input-search
+            v-model="moduleSearchKeyword"
+            placeholder="请输入模块名称"
+            allow-clear
+            @search="onModuleSearch"
+            @input="onModuleSearch"
+          />
+          <div class="module-actions">
+            <a-dropdown @select="handleModuleAction" trigger="hover" position="bottom" :popup-max-width="false" class="module-dropdown">
+              <a-button type="primary" size="small" class="module-action-button">
+                操作
+              </a-button>
+              <template #content>
+                <a-doption value="addRoot" class="centered-dropdown-item">添加根模块</a-doption>
+                <a-doption value="addChild" :disabled="!selectedModuleKey" class="centered-dropdown-item">添加子模块</a-doption>
+                <a-doption value="edit" :disabled="!selectedModuleKey" class="centered-dropdown-item">编辑模块</a-doption>
+                <a-doption value="delete" :disabled="!selectedModuleKey" class="centered-dropdown-item">删除模块</a-doption>
+              </template>
+            </a-dropdown>
+          </div>
+        </div>
+        <div class="tree-container">
+          <div v-if="moduleLoading" class="module-loading-container">
+            <a-spin />
+          </div>
+          <a-tree
+            v-else-if="moduleTreeData.length > 0"
+            :data="filteredModuleTreeData"
+            :field-names="{ key: 'id', title: 'name' }"
+            show-line
+            block-node
+            @select="onModuleSelect"
+            v-model:selected-keys="selectedModuleKeys"
+            v-model:expanded-keys="expandedKeys"
+            @expand="onTreeExpand"
+          >
+            <template #title="nodeData">
+              <span>{{ nodeData.name }}</span>
+              <span class="module-count"> ({{ nodeData.testcase_count || nodeData.test_case_count || 0 }})</span>
+            </template>
+          </a-tree>
+          <a-empty v-else description="暂无模块数据" />
+        </div>
+      </div>
+      <!-- 模块管理模态框 -->
+      <ModuleEditModal
+        :visible="moduleModalVisible"
+        :is-editing="isEditingModule"
+        :initial-data="moduleForm"
+        :module-tree="moduleTreeForSelect"
+        :project-id="currentProjectId"
+        @submit="handleModuleSubmit"
+        @close="closeModuleModal"
+      />
+    </a-card>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -89,6 +101,7 @@ const moduleSearchKeyword = ref(''); // 模块搜索关键词
 const testCaseModules = ref<TestCaseModule[]>([]);
 const selectedModuleKey = ref<number | null>(null);
 const selectedModuleKeys = ref<(number|string)[]>([]); // For a-tree v-model:selected-keys
+const expandedKeys = ref<(string | number)[]>([]); // 树节点展开状态 - 默认收起
 
 // 模块编辑模态框相关
 const moduleModalVisible = ref(false);
@@ -130,7 +143,7 @@ const buildModuleTree = (modules: TestCaseModule[], parentId: number | null = nu
       key: module.id, // for a-tree
       title: module.name, // for a-tree
       children: buildModuleTree(modules, module.id),
-      test_case_count: module.testcase_count || module.test_case_count || 0,
+      test_case_count: module.test_case_count || 0,
     }));
 };
 
@@ -205,6 +218,11 @@ const onModuleSelect = (
     selectedModuleKey.value = null;
     emit('moduleSelected', null);
   }
+};
+
+// 树节点展开/收起处理
+const onTreeExpand = (newExpandedKeys: (string | number)[], info: any) => {
+  expandedKeys.value = newExpandedKeys;
 };
 
 // 模块操作处理
@@ -331,10 +349,17 @@ defineExpose({
 </script>
 
 <style scoped>
-.module-panel {
-  width: 280px; /* 固定宽度，类似菜单栏 */
+.module-panel-wrapper {
+  width: 280px;
   min-width: 240px;
-  height: 100%; /* 占满父容器高度 */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.module-panel {
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   background-color: #fff;
@@ -346,26 +371,41 @@ defineExpose({
 :deep(.module-panel .arco-card-header) {
   border-bottom: 1px solid var(--color-border-2);
   padding: 12px 16px;
-  flex-shrink: 0; /* 防止头部被压缩 */
+  flex-shrink: 0;
 }
+
 :deep(.module-panel .arco-card-body) {
-  padding: 16px;
-  overflow-y: auto; /* 模块列表过长时可滚动 */
-  flex-grow: 1; /* 占据剩余空间 */
-  height: 0; /* 关键：强制flex-grow生效 */
+  padding: 0;
+  flex-grow: 1;
+  min-height: 0; /* Crucial for flex-grow in a nested flex container */
   display: flex;
   flex-direction: column;
 }
 
-/* 确保树组件占据卡片内容区域的全部可用高度 */
-:deep(.module-panel .arco-card-body .arco-tree) {
-  flex-grow: 1;
-  overflow-y: auto;
+.module-panel-content {
+  display: flex;
+  flex-direction: column;
   height: 100%;
 }
 
+.tree-container {
+  flex-grow: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
+.tree-container::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera*/
+}
+
+/* 确保树组件占据卡片内容区域的全部可用高度 */
+
+
 /* 确保空状态也能正确显示 */
-:deep(.module-panel .arco-card-body .arco-empty) {
+:deep(.tree-container .arco-empty) {
   margin: auto;
 }
 
@@ -383,12 +423,18 @@ defineExpose({
   margin-left: 4px;
 }
 
+.module-panel-header {
+  flex-shrink: 0;
+  padding: 16px;
+  border-bottom: 1px solid var(--color-border-2);
+}
+
 .module-actions {
   display: flex;
   justify-content: center; /* 居中对齐 */
   margin-top: 8px;
   margin-bottom: 16px;
-  flex-shrink: 0; /* 防止被压缩 */
+  /* flex-shrink is now on the parent .module-panel-header */
 }
 
 /* 下拉菜单相关样式 */

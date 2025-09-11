@@ -48,3 +48,4 @@ Thumbs.db
 # Deployment / Model Packages
 deployment_package/
 chat_history.sqlite
+
