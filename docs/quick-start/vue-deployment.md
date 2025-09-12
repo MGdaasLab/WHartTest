@@ -37,7 +37,7 @@ npm install
 安装完依赖后，运行构建命令来生成用于生产环境的优化版本。
 
 ```bash
-npm run build
+npx vite build
 ```
 
 此命令会在项目根目录下创建一个 `dist` 文件夹，其中包含了所有构建好的静态文件（HTML, CSS, JavaScript 等）。
@@ -77,6 +77,31 @@ server {
     location ~* \.(?:jpg|jpeg|gif|png|ico|css|js)$ {
         expires 7d;
         add_header Cache-Control "public";
+    }
+}
+```
+
+
+### 4. 主要添加配置
+```
+server
+{    
+    
+    #CERT-APPLY-CHECK--END
+    try_files $uri $uri/ /index.html;
+    
+    # 添加后端 API 代理配置
+    location /api {
+        proxy_pass http://127.0.0.1:8000;  # Django 后端地址
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket 支持
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
     }
 }
 ```

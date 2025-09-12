@@ -1,4 +1,4 @@
-# 🏢 后端生产环境部署指南
+# 🏢 后端部署指南
 
 本指南将引导您完成 WHartTest 后端服务的生产环境部署。系统已改为使用API方式调用嵌入模型，无需本地下载模型文件。
 
@@ -25,6 +25,7 @@ docker build -t wharttest-django .
 # 确保 .env 文件在项目根目录中
 # 运行容器，并将 .env 文件传递给容器
 docker run -d \
+  --restart always \
   -p 8000:8000 \
   --env-file .env \
   -v ./whart_data:/app/data \
@@ -39,8 +40,10 @@ docker run -d \
 version: '3.8'
 services:
   web:
-    build: .
-  container_name: wharttest_backend
+    build:
+      context: ./WHartTest_Django
+    container_name: wharttest_backend
+    restart: always
     ports:
       - "8000:8000"
     env_file:
@@ -79,18 +82,8 @@ pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-#### 5. 配置 AI 模型 API
-系统现已改为使用API方式调用嵌入模型，请在环境变量中配置相应的API密钥。
+#### 5. 数据库配置
 ```bash
-# 在 .env 文件中配置API密钥
-# 具体配置请参考环境变量配置部分
-```
-
-#### 6. 数据库配置
-```bash
-# 生成迁移文件
-python manage.py makemigrations
-
 # 执行迁移
 python manage.py migrate
 
@@ -98,18 +91,19 @@ python manage.py migrate
 python manage.py createsuperuser
 ```
 
-#### 7. 收集静态文件
+#### 6. 收集静态文件
+在生产环境中，静态文件（如 CSS, JavaScript, 图片）应由 Nginx 等 Web 服务器直接提供，以获得更好的性能。`collectstatic` 命令会将项目所有应用中的静态文件收集到 `STATIC_ROOT` 指定的单个目录中，以便于部署。
 ```bash
 python manage.py collectstatic --noinput
 ```
 
-#### 8. 使用 Gunicorn 启动服务
+#### 7. 使用 Gunicorn 启动服务
 ```bash
 # 安装 gunicorn
 pip install gunicorn
 
 # 启动服务
-gunicorn WHartTest_Django.wsgi:application \
+gunicorn wharttest_django.wsgi:application \
   --bind 0.0.0.0:8000 \
   --workers 4 \
   --timeout 120 \
@@ -117,138 +111,6 @@ gunicorn WHartTest_Django.wsgi:application \
 ```
 *   `--preload` 会在启动时预加载模型，减少首次请求的延迟。
 
-### 🔌 方案三：离线部署
-
-适用于无法直接访问互联网的生产服务器。
-
-#### 步骤 1: 在有网机器上准备物料
-
-1.  **下载 Python 依赖包**
-    ```bash
-    pip download -r requirements.txt -d /path/to/packages
-    ```
-2.  **配置 API 密钥**
-    ```bash
-    # 在项目目录中配置 .env 文件
-    # 添加必要的API密钥配置
-    ```
-3.  **打包所有文件**
-    ```bash
-    # 打包项目代码
-    tar -czf project.tar.gz .
-    # 打包依赖包
-    tar -czf packages.tar.gz /path/to/packages
-    # 打包模型文件
-    tar -czf models.tar.gz .cache
-    ```
-
-#### 步骤 2: 在生产服务器上部署
-
-1.  **传输并解压文件**
-    将 `project.tar.gz`, `packages.tar.gz`, `models.tar.gz` 上传到服务器并解压。
-
-2.  **安装依赖**
-    ```bash
-    # 进入解压后的项目目录
-    pip install --no-index --find-links=/path/to/packages -r requirements.txt
-    ```
-
-3.  **恢复模型文件**
-    将解压后的 `.cache` 文件夹移动到项目根目录。
-
-4.  **完成后续步骤**
-    参考**方案二**中的数据库配置、静态文件收集和 Gunicorn 启动步骤。
-
-## ⚙️ 环境配置
-
-### 环境变量 (`.env` 文件)
-在项目根目录创建 `.env` 文件是管理配置的最佳实践。
-
-```dotenv
-# --- 基础配置 ---
-# 生产环境必须设置为 False
-DEBUG=False
-# 生产环境必须设置一个长且随机的字符串
-SECRET_KEY=your-super-strong-and-random-secret-key
-# 允许访问的域名或IP，用逗号分隔
-ALLOWED_HOSTS=your-domain.com,www.your-domain.com
-
-# --- 数据库配置 ---
-# 推荐使用 PostgreSQL
-DATABASE_URL=postgresql://user:password@localhost:5432/whartdb
-
-# --- AI 模型 API 配置 ---
-# 配置嵌入模型 API 密钥
-EMBEDDING_API_KEY=your-embedding-api-key
-EMBEDDING_API_BASE_URL=https://api.your-provider.com
-
-# --- CORS 跨域配置 ---
-# 允许您的前端应用访问后端API
-DJANGO_CORS_ALLOWED_ORIGINS=https://your-frontend-domain.com,http://localhost:3000
-
-# --- LLM API Keys ---
-# 根据您使用的模型提供商配置
-OPENAI_API_KEY=sk-your-openai-key
-# ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
-```
-
-### Nginx 反向代理
-使用 Nginx 作为反向代理可以提高性能和安全性。
-
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-
-    # 强制跳转到 HTTPS
-    location / {
-        return 301 https://$host$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    server_name your-domain.com;
-
-    # SSL 证书路径
-    ssl_certificate /etc/letsencrypt/live/your-domain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
-
-    location /static/ {
-        alias /path/to/your/WHartTest_Django/staticfiles/;
-    }
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 300s;
-        proxy_connect_timeout 75s;
-    }
-}
-```
-
-## 🛡️ 安全配置
-
-### 防火墙 (UFW on Ubuntu)
-```bash
-# 只开放必要的端口
-sudo ufw allow 22/tcp  # SSH
-sudo ufw allow 80/tcp   # HTTP (用于SSL证书续期)
-sudo ufw allow 443/tcp  # HTTPS
-sudo ufw enable
-```
-
-### SSL 证书 (Let's Encrypt)
-```bash
-# 安装 Certbot
-sudo apt install certbot python3-certbot-nginx
-
-# 获取并自动配置 SSL 证书
-sudo certbot --nginx -d your-domain.com
-```
 
 ## 🔍 部署验证
 
