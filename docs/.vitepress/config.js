@@ -1,6 +1,4 @@
-import { defineConfig } from 'vitepress'
-
-export default defineConfig({
+export default {
   // site-level configs
   title: 'SentinelTest',
   description: 'AI-driven test automation platform.',
@@ -12,4 +10,4 @@ export default defineConfig({
 
   // build-level configs
   base: '/WHartTest/',
-})
+}
