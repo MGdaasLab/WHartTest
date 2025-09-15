@@ -59,3 +59,4 @@ __pycache__/
 
 # Documentation build
 docs/_build/
+docs/.vitepress/cache/
