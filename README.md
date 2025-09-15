@@ -5,20 +5,8 @@
 WHartTest 是一个基于 Django REST Framework 构建的AI驱动测试自动化平台，核心功能是通过AI智能生成测试用例。平台集成了 LangChain、MCP（Model Context Protocol）工具调用、项目管理、需求评审、测试用例管理以及先进的知识库管理和文档理解功能。利用大语言模型和HuggingFace嵌入模型的能力，自动化生成高质量的测试用例，并结合知识库提供更精准的测试辅助，为测试团队提供一个完整的智能测试管理解决方案。
 
 
-## 🚀 快速部署
-
-
-
-### 1. 后端部署文档
-[后端部署文档](./WHartTest_Django/README.md)
-### 2. 前端部署
-[前端部署文档](./WHartTest_Vue/README.md)
-### 3. MCP 部署
-[MCP 部署文档](./WHartTest_MCP/README.md)
-### 4.访问地址
-默认地址：http://localhost:5173/
-默认账户：admin
-默认密码：123456
+## 文档
+详细文档请访问：https://mgdaaslab.github.io/WHartTest/
 
 ## 页面展示
 
