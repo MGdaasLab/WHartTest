@@ -1,6 +1,5 @@
 # Environment files
 .env
-.github
 .cunzhi-memory
 .env.local
 .env.*.local
