@@ -11,5 +11,5 @@ export default defineConfig({
   },
 
   // build-level configs
-  base: '/',
+  base: '/WHartTest/',
 })
