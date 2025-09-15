@@ -11,11 +11,25 @@ class KnowledgeConfig(AppConfig):
 
     def ready(self):
         """应用启动时的初始化"""
-        # 预热向量存储缓存（在后台线程中执行，避免阻塞启动）
-        import threading
-        thread = threading.Thread(target=self.warmup_vector_stores)
-        thread.daemon = True
-        thread.start()
+        import sys
+        from django.db import connection
+        from django.db.utils import OperationalError
+
+        # 只有在运行服务器时才执行预热，避免在迁移等命令中执行
+        if 'runserver' in sys.argv:
+            try:
+                # 检查数据库连接和表是否存在
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1 FROM knowledge_knowledgebase LIMIT 1;")
+                
+                # 预热向量存储缓存（在后台线程中执行，避免阻塞启动）
+                import threading
+                thread = threading.Thread(target=self.warmup_vector_stores)
+                thread.daemon = True
+                thread.start()
+            except OperationalError:
+                # 数据库或表不存在，跳过预热
+                logger.info("数据库或表不存在，跳过向量存储预热。")
 
     def warmup_vector_stores(self):
         """预热向量存储缓存"""
