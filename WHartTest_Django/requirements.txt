@@ -8,7 +8,7 @@ djangorestframework==3.16.0
 
 # JWT认证支持 - MIT许可证 (当前版本: 5.3.1)
 # https://github.com/jazzband/djangorestframework-simplejwt/blob/master/LICENSE
-djangorestframework-simplejwt==5.3.1
+djangorestframework-simplejwt==5.5.1
 
 # API文档生成 - BSD许可证 (当前版本: 0.28.0)
 # https://github.com/tfranzel/drf-spectacular/blob/master/LICENSE
@@ -77,7 +77,7 @@ openpyxl==3.1.5
 # 知识库依赖 - ChromaDB专用
 # LangChain社区库 - MIT许可证 (当前版本: 0.3.24)
 # https://github.com/langchain-ai/langchain/blob/master/libs/community/LICENSE
-langchain-community==0.3.24
+langchain-community==0.3.27
 
 # 文本分割器 - MIT许可证 (当前版本: 0.3.8)
 # https://github.com/langchain-ai/langchain/blob/master/libs/text-splitters/LICENSE
@@ -150,7 +150,7 @@ beautifulsoup4==4.13.3
 # 文档处理依赖
 # PDF文件处理 - BSD许可证 (当前版本: 5.6.0)
 # https://github.com/py-pdf/pypdf/blob/main/LICENSE
-pypdf==5.6.0
+pypdf==6.0.0
 
 # Word文档处理 - MIT许可证 (当前版本: 1.1.2)
 # https://github.com/python-openxml/python-docx/blob/master/LICENSE
@@ -179,11 +179,11 @@ sentence-transformers==4.1.0  # ~90MB模型，需要网络下载
 
 # PyTorch深度学习框架 - BSD许可证 (当前版本: 2.7.1)
 # https://github.com/pytorch/pytorch/blob/main/LICENSE
-torch==2.7.1  # 修复CVE-2025-32434安全漏洞
+torch==2.8.0  # 修复CVE-2025-32434安全漏洞
 
 # HuggingFace transformers库 - Apache 2.0许可证 (当前版本: 4.52.4)
 # https://github.com/huggingface/transformers/blob/main/LICENSE
-transformers==4.52.4
+transformers==4.53.0
 
 # HuggingFace模型中心 - Apache 2.0许可证 (当前版本: 0.32.4)
 # https://github.com/huggingface/huggingface_hub/blob/main/LICENSE
