@@ -12,21 +12,18 @@ import ast  # ast 模块用于安全地解析 Python 字符串文字，因为您
 import doctest
 import time
 from pydantic import Field
+from pydantic.v1.networks import host_regex
 
 # mcp 初始化
 mcp = FastMCP(
-    name="testauto_tools",
-    host="0.0.0.0",
-    port=8006,
-    description="测试用例工具",
-    sse_path='/mcp'
+    name="WHartTest_tools"
 )
 
 base_url = "http://127.0.0.1:8000"
 
 headers = {
     "accept": "application/json, text/plain,*/*",
-    "X-API-Key": "_-fn1ON99gkZ0JfLjNlRExvpCgDnydP32VTILvidKzs"
+    "X-API-Key": "aTfSDZQD3y1ELuLMXViY31utaALXMOqtzbURhwb7VPQ"
 }
 
 
@@ -59,9 +56,9 @@ def generate_custom_id():
     return str(generate_custom_id.last_ts) + "00000"
 
 
-@mcp.tool(description="获取项目的名称和对应id")
+@mcp.tool(description="获取WHartTest平台项目的名称和对应id")
 def get_project_name_and_id() -> str:
-    """获取项目的名称和对应id"""
+    """获取WHartTest平台项目的名称和对应id"""
     url = base_url + "/api/projects/"
 
     data_dict = requests.get(url, headers=headers).json()
@@ -113,9 +110,9 @@ def get_project_name_and_id() -> str:
     return output_json_string
 
 
-@mcp.tool(description="根据项目id去获取模块及id")
+@mcp.tool(description="根据WHartTest平台项目id去获取模块及id")
 def module_to_which_it_belongs(project_id: int) -> str:
-    """根据项目id去获取模块及id"""
+    """根据WHartTest平台项目id去获取模块及id"""
     url = base_url + f"/api/projects/{project_id}/testcase-modules/"
 
     data_dict = requests.get(url, headers=headers).json()
@@ -166,18 +163,18 @@ def module_to_which_it_belongs(project_id: int) -> str:
 
     return output_json_string
 
-@mcp.tool(description="获取用例等级")
+@mcp.tool(description="获取WHartTest平台用例等级")
 def obtain_use_case_level() -> list:
     """
-    获取用例等级
+    获取WHartTest平台用例等级
     """
     return ["P0","P1","P2","P3"]
 
-@mcp.tool(description="获取用例名称和对应id")
+@mcp.tool(description="获取WHartTest平台用例名称和对应id")
 def get_the_list_of_use_cases(
         project_id: int = Field(description='项目id'),
         module_id: int= Field(description='模块id')):
-    """获取用例"""
+    """获取WHartTest平台用例"""
     url = base_url + f"/api/projects/{project_id}/testcases/?page=1&page_size=1000&search=&module_id={module_id}"
 
     data_dict = requests.get(url, headers=headers).json()
@@ -190,11 +187,11 @@ def get_the_list_of_use_cases(
     return  json.dumps(extracted_data, indent=4, ensure_ascii=False)
 
 
-@mcp.tool(description="获取用例详情")
+@mcp.tool(description="获取WHartTest平台用例详情")
 def get_case_details(
         project_id: int = Field(description='项目id'),
         case_id: int= Field(description='用例id')):
-    """获取用例详情"""
+    """获取WHartTest平台用例详情"""
     url = base_url + f"/api/projects/{project_id}/testcases/{case_id}/"
 
     data_dict = requests.get(url, headers=headers).json()
@@ -204,7 +201,7 @@ def get_case_details(
     return json.dumps(extracted_data, indent=4, ensure_ascii=False)
 
 
-@mcp.tool(description="保存操作截图到对应用例中")
+@mcp.tool(description="WHartTest平台保存操作截图到对应用例中")
 def save_operation_screenshots_to_the_application_case(
         project_id: int = Field(description='项目id'),
         case_id: int= Field(description='用例id'),
@@ -214,7 +211,7 @@ def save_operation_screenshots_to_the_application_case(
         step_number: int = Field(description='步骤编号'),
         page_url: str = Field(description='截图页面URL')):
     """
-    保存操作截图到对应用例中
+    WHartTest平台保存操作截图到对应用例中
     """
     try:
         # 参数验证
@@ -277,7 +274,7 @@ def save_operation_screenshots_to_the_application_case(
     except Exception as e:
         return f"上传截图时发生错误: {str(e)}"
 
-@mcp.tool(description='保存功能测试用例')
+@mcp.tool(description='保存WHartTest平台功能测试用例')
 def add_functional_case(
         project_id: int = Field(description='项目id'),
         name: str = Field(description='用例名称'),
@@ -287,7 +284,7 @@ def add_functional_case(
         steps: list = Field(description='用例步骤,示例：,[{"step_number": 1,"description": "步骤描述1","expected_result": "预期结果1"},{"step_number": 2,"description": "步骤描述2","expected_result": "预期结果2"}]'),
         notes: str = Field(description='备注')):
     """
-    保存功能测试用例
+    保WHartTest平台存WHartTest平台功能测试用例
     """
     try:
         if not project_id:
@@ -329,6 +326,5 @@ def add_functional_case(
         print("HTTPError =", e)
         return e
 
-
 if __name__ == "__main__":  # 3️⃣ 用 stdio 启动
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", port=8006)
