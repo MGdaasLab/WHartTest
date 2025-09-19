@@ -23,7 +23,7 @@ base_url = "http://127.0.0.1:8000"
 
 headers = {
     "accept": "application/json, text/plain,*/*",
-    "X-API-Key": "aTfSDZQD3y1ELuLMXViY31utaALXMOqtzbURhwb7VPQ"
+    "X-API-Key": "EWKVLxe5zyBG3g5g9c2fygTiotoKAxxCR5zAxcSEh7s"
 }
 
 
