@@ -47,7 +47,7 @@ python ms_mcp_api.py
 #### 启动测试用例工具
 
 ```bash
-python testauto_tools.py
+python WHartTest_tools.py
 ```
 
 服务将在 `http://0.0.0.0:8006` 启动
@@ -89,7 +89,7 @@ python testauto_tools.py
     },
     "testauto-tools": {
       "command": "python",
-      "args": ["path/to/testauto_tools.py"],
+      "args": ["path/to/WHartTest_tools.py"],
       "env": {}
     }
   }
