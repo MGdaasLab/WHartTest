@@ -6,7 +6,7 @@ from rest_framework import filters
 
 from wharttest_django.viewsets import BaseModelViewSet
 from wharttest_django.permissions import HasModelPermission
-from .models import UserPrompt, PromptType
+from .models import UserPrompt
 from .serializers import (
     UserPromptSerializer,
     UserPromptListSerializer
@@ -97,7 +97,7 @@ class UserPromptViewSet(BaseModelViewSet):
                 'label': choice[1],
                 'is_program_call': choice[0] in UserPrompt.PROGRAM_CALL_TYPES
             }
-            for choice in PromptType.choices
+            for choice in UserPrompt.PROMPT_TYPE_CHOICES
         ]
         return Response({
             "status": "success",
@@ -487,82 +487,6 @@ class UserPromptViewSet(BaseModelViewSet):
   "recommendations": ["建立统一的数据字典", "明确模块间接口规范"]
 }}
 ```"""
-            },
-            'test_case_execution': {
-                'name': '测试用例执行提示词',
-                'description': '用于驱动测试用例自动执行的系统提示词',
-                'content': """# 角色
-你是一个专业的软件测试执行引擎。
-
-# 任务
-根据下面提供的测试用例信息,使用你可用的工具(特别是Playwright浏览器工具和WHartTest MCP工具)来执行UI自动化测试。
-
-# 测试用例信息
-- **用例ID**: {testcase_id}
-- **用例名称**: {testcase_name}
-- **前置条件**: {precondition}
-
-# 执行步骤
-{steps}
-
-# 执行要求
-1. **浏览器管理**
-   - 在开始执行前，如果需要请打开浏览器
-   - **重要**：在所有步骤执行完毕后，必须关闭浏览器
-
-2. **截图和上传（重要）**
-   - **每个步骤执行后都必须截屏并上传**
-   - **截图文件名必须唯一**：使用格式 `testcase-{{testcase_id}}-step-{{step_number}}-{{timestamp}}.png`
-   - 步骤流程：
-     a. 使用 Playwright 的 `take_screenshot` 工具截屏
-        - 指定唯一文件名，例如：`testcase-{testcase_id}-step-1-1234567890.png`
-        - 避免使用默认文件名，防止并发测试时文件冲突
-     b. **立即使用 WHartTest MCP 工具的 `save_operation_screenshots_to_the_application_case` 上传截图**
-     c. 记录上传后返回的截图路径
-   - 参数示例：
-     ```
-     project_id: 项目ID
-     case_id: {testcase_id}
-     file_path: 截图的本地文件路径（必须是唯一的）
-     title: "步骤X执行截图"
-     description: 步骤描述
-     step_number: 当前步骤编号
-     page_url: 当前页面URL
-     ```
-
-3. **错误处理**
-   - 如果步骤执行失败，记录详细的错误信息
-   - 失败时也要截屏并上传
-   - 失败后不要继续执行后续步骤
-
-# 输出格式
-在所有步骤执行完毕后,你**必须**返回一个JSON对象,格式如下:
-```json
-{{
-  "testcase_id": {testcase_id},
-  "status": "pass" | "fail",
-  "summary": "对执行过程的简短总结。",
-  "steps": [
-    {{
-      "step_number": 1,
-      "description": "步骤的描述",
-      "status": "pass" | "fail",
-      "screenshot": "上传后的截图访问路径（来自upload_testcase_screenshot的返回值）",
-      "error": "如果失败,记录错误信息" | null
-    }},
-    ...
-  ]
-}}
-```
-
-**重要提示**：
-- **截图文件名唯一性**：必须为每个截图使用唯一的文件名，格式：`testcase-{{testcase_id}}-step-{{step_number}}-{{timestamp}}.png`
-- **工具名称修正**：上传截图使用 `save_operation_screenshots_to_the_application_case` 工具
-- **每个步骤都必须调用 WHartTest 的工具上传截图**
-- 每个步骤的screenshot字段必须包含上传后的截图路径
-- 执行完所有步骤后，务必关闭浏览器
-- 确保JSON格式正确，可以被程序解析
-- **并发安全**：使用唯一文件名避免多个测试用例同时执行时的文件冲突"""
             }
         }
 
@@ -622,7 +546,7 @@ class UserPromptViewSet(BaseModelViewSet):
         ).values_list('prompt_type', flat=True))
 
         # 所有可用的提示词类型
-        all_types = dict(PromptType.choices)
+        all_types = dict(UserPrompt.PROMPT_TYPE_CHOICES)
         
         status_info = []
         for prompt_type, display_name in all_types.items():
@@ -634,7 +558,7 @@ class UserPromptViewSet(BaseModelViewSet):
             })
 
         missing_types = [
-            info for info in status_info
+            info for info in status_info 
             if not info['exists']
         ]
 

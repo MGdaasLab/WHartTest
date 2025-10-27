@@ -112,7 +112,6 @@
         <a-space :size="10">
           <a-button type="primary" size="mini" @click.stop="handleViewTestCase(record)">查看</a-button>
           <a-button type="primary" size="mini" @click.stop="handleEditTestCase(record)">编辑</a-button>
-          <a-button type="outline" size="mini" @click.stop="handleExecuteTestCase(record)">执行</a-button>
           <a-button type="primary" status="danger" size="mini" @click.stop="handleDeleteTestCase(record)">删除</a-button>
         </a-space>
       </template>
@@ -146,7 +145,6 @@ const emit = defineEmits<{
   (e: 'editTestCase', testCase: TestCase): void;
   (e: 'viewTestCase', testCase: TestCase): void;
   (e: 'testCaseDeleted'): void;
-  (e: 'executeTestCase', testCase: TestCase): void;
 }>();
 
 const { currentProjectId, selectedModuleId } = toRefs(props);
@@ -225,7 +223,7 @@ const columns = [
     align: 'center'
   },
   { title: 'ID', dataIndex: 'id', width: 60 },
-  { title: '用例名称', dataIndex: 'name', slotName: 'name', width: 240, ellipsis: true, tooltip: false },
+  { title: '用例名称', dataIndex: 'name', slotName: 'name', ellipsis: true, tooltip: false },
   { title: '前置条件', dataIndex: 'precondition', width: 150, ellipsis: true, tooltip: true },
   { title: '优先级', dataIndex: 'level', slotName: 'level', width: 75 },
   { title: '备注', dataIndex: 'notes', slotName: 'notes', width: 150, ellipsis: true, tooltip: false }, // tooltip is handled by custom slot
@@ -353,10 +351,6 @@ const handleDeleteTestCase = (testCase: TestCase) => {
   });
 };
 
-const handleExecuteTestCase = (testCase: TestCase) => {
-  emit('executeTestCase', testCase);
-};
-
 // 批量删除处理函数
 const handleBatchDelete = () => {
   if (!currentProjectId.value || selectedTestCaseIds.value.length === 0) return;
@@ -444,6 +438,7 @@ const handleExportAction = async (value: string) => {
     Message.error('导出用例时发生错误');
   }
 };
+
 
 onMounted(() => {
   fetchTestCases();
@@ -577,15 +572,10 @@ defineExpose({
 
 /* 用例名称链接样式 */
 .testcase-name-link {
-  display: inline-block;
-  max-width: 220px;
   color: #1890ff;
   cursor: pointer;
   text-decoration: none;
   transition: color 0.2s;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .testcase-name-link:hover {

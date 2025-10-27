@@ -3,32 +3,30 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 
 
-from django.utils.translation import gettext_lazy as _
-
-class PromptType(models.TextChoices):
-    GENERAL = 'general', _('通用对话')
-    DOCUMENT_STRUCTURE = 'document_structure', _('文档结构分析')
-    DIRECT_ANALYSIS = 'direct_analysis', _('直接分析')
-    GLOBAL_ANALYSIS = 'global_analysis', _('全局分析')
-    MODULE_ANALYSIS = 'module_analysis', _('模块分析')
-    CONSISTENCY_ANALYSIS = 'consistency_analysis', _('一致性分析')
-    TEST_CASE_EXECUTION = 'test_case_execution', _('测试用例执行')
-
 class UserPrompt(models.Model):
     """
     用户级别的提示词管理模型
     每个用户可以创建和管理自己的提示词
     """
 
-    PROGRAM_CALL_TYPES = [
-        PromptType.DOCUMENT_STRUCTURE,
-        PromptType.DIRECT_ANALYSIS,
-        PromptType.GLOBAL_ANALYSIS,
-        PromptType.MODULE_ANALYSIS,
-        PromptType.CONSISTENCY_ANALYSIS,
-        PromptType.TEST_CASE_EXECUTION,
+    # 提示词类型选择
+    PROMPT_TYPE_CHOICES = [
+        ('general', '通用对话'),
+        ('document_structure', '文档结构分析'),
+        ('direct_analysis', '直接分析'),
+        ('global_analysis', '全局分析'),
+        ('module_analysis', '模块分析'),
+        ('consistency_analysis', '一致性分析'),
     ]
 
+    # 程序调用类型（每用户只能有一个）
+    PROGRAM_CALL_TYPES = [
+        'document_structure',
+        'direct_analysis',
+        'global_analysis',
+        'module_analysis',
+        'consistency_analysis'
+    ]
 
     user = models.ForeignKey(
         User,
@@ -53,8 +51,8 @@ class UserPrompt(models.Model):
     )
     prompt_type = models.CharField(
         max_length=50,
-        choices=PromptType.choices,
-        default=PromptType.GENERAL,
+        choices=PROMPT_TYPE_CHOICES,
+        default='general',
         verbose_name='提示词类型',
         help_text='提示词的使用类型'
     )
@@ -94,12 +92,8 @@ class UserPrompt(models.Model):
             models.UniqueConstraint(
                 fields=['user', 'prompt_type'],
                 condition=models.Q(prompt_type__in=[
-                    PromptType.DOCUMENT_STRUCTURE.value,
-                    PromptType.DIRECT_ANALYSIS.value,
-                    PromptType.GLOBAL_ANALYSIS.value,
-                    PromptType.MODULE_ANALYSIS.value,
-                    PromptType.CONSISTENCY_ANALYSIS.value,
-                    PromptType.TEST_CASE_EXECUTION.value,
+                    'document_structure', 'direct_analysis',
+                    'global_analysis', 'module_analysis', 'consistency_analysis'
                 ]),
                 name='unique_user_program_prompt_type'
             )
@@ -123,7 +117,7 @@ class UserPrompt(models.Model):
             })
 
         # 如果设置为默认提示词，确保该用户只有一个默认提示词（仅限通用对话类型）
-        if self.is_default and self.prompt_type == PromptType.GENERAL:
+        if self.is_default and self.prompt_type == 'general':
             existing_default = UserPrompt.objects.filter(
                 user=self.user,
                 is_default=True,
@@ -144,17 +138,17 @@ class UserPrompt(models.Model):
 
             if existing_program_prompt.exists():
                 raise ValidationError({
-                    'prompt_type': f'每个用户只能有一个{self.get_prompt_type_display()}类型的提示词'
+                    'prompt_type': f'每个用户只能有一个{dict(self.PROMPT_TYPE_CHOICES)[self.prompt_type]}类型的提示词'
                 })
 
     def save(self, *args, **kwargs):
         """保存时的额外逻辑"""
         # 如果设置为默认提示词，先将其他默认提示词取消（仅限通用对话类型）
-        if self.is_default and self.prompt_type == PromptType.GENERAL:
+        if self.is_default and self.prompt_type == 'general':
             UserPrompt.objects.filter(
                 user=self.user,
                 is_default=True,
-                prompt_type=PromptType.GENERAL
+                prompt_type='general'
             ).exclude(pk=self.pk).update(is_default=False)
 
         # 验证提示词内容不能为空
@@ -181,10 +175,18 @@ class UserPrompt(models.Model):
         try:
             return cls.objects.get(
                 user=user,
-                prompt_type=PromptType.GENERAL,
+                prompt_type='general',
                 is_default=True,
                 is_active=True
             )
+        except cls.DoesNotExist:
+            return None
+
+    @classmethod
+    def get_user_default_prompt(cls, user):
+        """获取用户的默认提示词"""
+        try:
+            return cls.objects.get(user=user, is_default=True, is_active=True)
         except cls.DoesNotExist:
             return None
 

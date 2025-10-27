@@ -1,39 +1,32 @@
-# 使用 Python 3.11 官方镜像作为基础镜像
-FROM python:3.11-slim
+FROM python:3.12-slim
 
-# 设置工作目录
 WORKDIR /app
 
-# 设置环境变量
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+# 设置Hugging Face缓存目录
+ENV HF_HOME=/app/.cache/huggingface \
+    HF_HUB_CACHE=/app/.cache/huggingface/hub
 
-# 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
-    git \
-    && rm -rf /var/lib/apt/lists/*
+# 使用国内镜像源加速
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
 
-# 安装 uv
-RUN pip install uv
+# 安装系统依赖（SQLite开发库）
+RUN apt-get update && apt-get install -y libsqlite3-dev
 
-# 复制 requirements 文件
+# 复制依赖文件并安装
 COPY requirements.txt .
-
-# 使用 uv 安装 Python 依赖
-RUN uv pip install --system -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 复制项目文件
 COPY . .
 
-# 创建必要的目录
-RUN mkdir -p media static nltk_data
+# 复制已有的模型缓存目录（如果存在）
+COPY .cache/huggingface /app/.cache/huggingface
 
-# 暴露端口
 EXPOSE 8000
 
-# 启动命令 - 使用 uvicorn ASGI 服务器支持异步接口
-CMD ["bash", "-c", "mkdir -p /app/data/media && python manage.py migrate --noinput && python manage.py init_admin && uvicorn wharttest_django.asgi:application --host 0.0.0.0 --port 8000"]
+# 设置默认超级用户环境变量
+ENV DJANGO_SUPERUSER_USERNAME=admin \
+    DJANGO_SUPERUSER_PASSWORD=123456 \
+    DJANGO_SUPERUSER_EMAIL=admin@qq.com
+
+CMD ["sh", "-c", "python manage.py migrate && python manage.py createsuperuser --noinput || true && python manage.py runserver 0.0.0.0:8000"]

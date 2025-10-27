@@ -25,10 +25,7 @@ from rest_framework_simplejwt.views import (
 )
 from accounts.views import MyTokenObtainPairView # 修改为导入自定义视图
 from projects.views import ProjectViewSet # 导入 ProjectViewSet
-from testcases.views import (
-    TestCaseViewSet, TestCaseModuleViewSet,
-    TestSuiteViewSet, TestExecutionViewSet
-)  # 导入 TestCase、TestCaseModule、TestSuite 和 TestExecution 视图集
+from testcases.views import TestCaseViewSet, TestCaseModuleViewSet # 导入 TestCase 和 TestCaseModule 视图集
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView, SpectacularRedocView
 
 router = DefaultRouter()
@@ -37,8 +34,6 @@ router.register(r'projects', ProjectViewSet, basename='project')
 projects_router = NestedSimpleRouter(router, r'projects', lookup='project')
 projects_router.register(r'testcases', TestCaseViewSet, basename='project-testcases')
 projects_router.register(r'testcase-modules', TestCaseModuleViewSet, basename='project-testcase-modules')
-projects_router.register(r'test-suites', TestSuiteViewSet, basename='project-test-suites')
-projects_router.register(r'test-executions', TestExecutionViewSet, basename='project-test-executions')
 
 urlpatterns = [
     path('admin/', admin.site.urls),

@@ -22,6 +22,14 @@ django-cors-headers==4.3.1
 # https://github.com/theskumar/python-dotenv/blob/main/LICENSE
 python-dotenv==1.1.1
 
+# MCP服务器框架 - MIT许可证 (当前版本: 2.4.0)
+# https://github.com/jlowin/fastmcp/blob/main/LICENSE
+fastmcp==2.4.0
+
+# HTTP客户端库 - BSD许可证 (当前版本: 0.28.1)
+# https://github.com/encode/httpx/blob/master/LICENSE.md
+httpx==0.28.1
+
 # OpenAI API客户端 - MIT许可证 (当前版本: 1.79.0)
 # https://github.com/openai/openai-python/blob/main/LICENSE
 openai==1.79.0
@@ -210,19 +218,3 @@ langdetect==1.0.9
 # HuggingFace模型中心 - Apache 2.0许可证 (当前版本: 0.32.4)
 # https://github.com/huggingface/huggingface_hub/blob/main/LICENSE
 huggingface-hub==0.32.4  # HuggingFace模型下载
-
-# Celery异步任务队列 - BSD许可证 (当前版本: 5.4.0)
-# https://github.com/celery/celery/blob/main/LICENSE
-celery==5.4.0
-
-# Redis客户端(用作Celery的broker和backend) - MIT许可证 (当前版本: 5.2.0)
-# https://github.com/redis/redis-py/blob/master/LICENSE
-redis==5.2.0
-
-# Uvicorn ASGI服务器 - BSD许可证 (当前版本: 0.34.0)
-# https://github.com/encode/uvicorn/blob/master/LICENSE.md
-uvicorn==0.34.0
-
-# HTTPX异步HTTP客户端 - BSD许可证 (当前版本: 0.28.1)
-# https://github.com/encode/httpx/blob/master/LICENSE.md
-httpx==0.28.1

@@ -1,7 +1,9 @@
 // src/services/testcaseService.ts
 import axios from 'axios';
 import { useAuthStore } from '@/store/authStore';
-import { API_BASE_URL } from '@/config/api';
+
+// API基础URL
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
 
 // 测试用例步骤接口
 export interface TestCaseStep {
