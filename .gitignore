@@ -60,3 +60,5 @@ __pycache__/
 # Documentation build
 docs/_build/
 docs/.vitepress/cache/
+# Playwright截图目录
+playwright-screenshots/

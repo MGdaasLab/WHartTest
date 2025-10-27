@@ -11,7 +11,15 @@ node_modules
 dist
 dist-ssr
 *.local
+# 忽略本地环境配置，但保留生产环境配置模板
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# 开发环境配置文件（可能包含敏感信息）
 .env
+# 但允许提交生产环境配置模板
+!.env.production
 .cunzhi-memory
 # Editor directories and files
 .vscode/

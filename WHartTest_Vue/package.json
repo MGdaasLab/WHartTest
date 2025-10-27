@@ -6,7 +6,13 @@
   "license": "MIT",
   "author": "WHartTest Team",
   "description": "A Vue.js based test automation management system",
-  "keywords": ["vue", "test-automation", "testing", "management", "typescript"],
+  "keywords": [
+    "vue",
+    "test-automation",
+    "testing",
+    "management",
+    "typescript"
+  ],
   "repository": {
     "type": "git",
     "url": "http://code.mgdaas-int.com/MGdaas-Lab/wharttest-vue.git"

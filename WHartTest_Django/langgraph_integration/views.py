@@ -441,11 +441,12 @@ class ChatAPIView(APIView):
 
                         if client_mcp_config:
                             logger.info(f"ChatAPIView: Initializing persistent MCP client with config: {client_mcp_config}")
-                            # 使用持久化MCP会话管理器，传递用户和项目信息以支持跨对话轮次的状态保持
+                            # 使用持久化MCP会话管理器，传递用户、项目和会话信息以支持跨对话轮次的状态保持
                             mcp_tools_list = await mcp_session_manager.get_tools_for_config(
                                 client_mcp_config,
                                 user_id=str(request.user.id),
-                                project_id=str(project_id)
+                                project_id=str(project_id),
+                                session_id=session_id  # 传递session_id以启用会话级别的工具缓存
                             )
                             logger.info(f"ChatAPIView: Successfully loaded {len(mcp_tools_list)} persistent tools from remote MCP servers: {[tool.name for tool in mcp_tools_list if hasattr(tool, 'name')]}")
                         else:
@@ -1199,11 +1200,12 @@ class ChatStreamAPIView(View):
 
                         if client_mcp_config:
                             logger.info(f"ChatStreamAPIView: Initializing persistent MCP client with config: {client_mcp_config}")
-                            # 使用持久化MCP会话管理器，传递用户和项目信息以支持跨对话轮次的状态保持
+                            # 使用持久化MCP会话管理器，传递用户、项目和会话信息以支持跨对话轮次的状态保持
                             mcp_tools_list = await mcp_session_manager.get_tools_for_config(
                                 client_mcp_config,
                                 user_id=str(request.user.id),
-                                project_id=str(project_id)
+                                project_id=str(project_id),
+                                session_id=session_id  # 传递session_id以启用会话级别的工具缓存
                             )
                             logger.info(f"ChatStreamAPIView: Successfully loaded {len(mcp_tools_list)} persistent tools from remote MCP servers")
                         else:

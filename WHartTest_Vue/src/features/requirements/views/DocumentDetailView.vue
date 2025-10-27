@@ -13,36 +13,15 @@
         </a-tag>
       </div>
       <div class="header-actions">
-        <!-- 上传状态：显示检测按钮 -->
+        <!-- 上传状态优先拆分 -->
         <a-button
-          v-if="document?.status === 'uploaded' && !contextCheckResult"
-          type="primary"
-          @click="() => checkContextLimit()"
-          :loading="loading"
-        >
-          <template #icon><icon-robot /></template>
-          检测文档大小
-        </a-button>
-
-        <!-- 检测完成后：根据结果显示不同按钮 -->
-        <a-button
-          v-if="document?.status === 'uploaded' && contextCheckResult?.context_analysis.suggestion === 'OK'"
-          type="primary"
-          @click="handleDirectReview"
-          :loading="reviewLoading"
-        >
-          <template #icon><icon-check-circle /></template>
-          直接开始评审
-        </a-button>
-
-        <a-button
-          v-if="document?.status === 'uploaded' && contextCheckResult && contextCheckResult?.context_analysis.suggestion !== 'OK'"
+          v-if="document?.status === 'uploaded'"
           type="primary"
           @click="handleShowSplitOptionsWithDefault('h2')"
           :loading="splitLoading"
         >
           <template #icon><icon-robot /></template>
-          智能拆分
+          AI智能拆分
         </a-button>
 
         <!-- 用户调整状态：显示确认按钮 -->
@@ -140,24 +119,15 @@
         </div>
 
         <!-- 上传状态提示 -->
-        <div v-if="document?.status === 'uploaded' && !contextCheckResult" class="upload-hint">
+        <div v-if="document?.status === 'uploaded'" class="upload-hint">
           <a-alert
-            type="info"
-            message="📋 下一步操作"
-            description="文档已上传成功！请先检测文档大小以确定最佳的处理方式。"
+            type="warning"
+            message="请先进行拆分"
+            description="上传完成后请使用 AI 拆分生成模块，用例生成和后续评审依赖这些模块。"
             show-icon
           />
         </div>
       </a-card>
-    </div>
-
-    <!-- 上下文检测区域 -->
-    <div v-if="contextCheckResult && (document?.status === 'uploaded' || document?.status === 'processing')" class="context-section">
-      <ContextCheckAlert
-        :context-result="contextCheckResult"
-        @direct-review="handleDirectReview"
-        @show-split-options="handleShowSplitOptionsWithDefault"
-      />
     </div>
 
     <!-- 工作流程指示器 -->
@@ -169,12 +139,7 @@
               <icon-file />
             </template>
           </a-step>
-          <a-step title="大小检测" description="手动检测文档大小适配性">
-            <template #icon>
-              <icon-robot />
-            </template>
-          </a-step>
-          <a-step title="智能分流" description="根据检测结果选择处理方式">
+          <a-step title="AI智能拆分" description="使用 AI 拆分文档生成模块">
             <template #icon>
               <icon-scissor />
             </template>
@@ -481,35 +446,15 @@
         </template>
         <!-- 上传状态：显示检测按钮 -->
         <a-button
-          v-if="document?.status === 'uploaded' && !contextCheckResult"
-          type="primary"
-          @click="() => checkContextLimit()"
-          :loading="loading"
-        >
-          <template #icon><icon-robot /></template>
-          检测文档大小
-        </a-button>
-
-        <!-- 检测完成后：根据结果显示不同按钮 -->
-        <a-button
-          v-if="document?.status === 'uploaded' && contextCheckResult?.context_analysis.suggestion === 'OK'"
-          type="primary"
-          @click="handleDirectReview"
-          :loading="reviewLoading"
-        >
-          <template #icon><icon-check-circle /></template>
-          直接开始评审
-        </a-button>
-
-        <a-button
-          v-if="document?.status === 'uploaded' && contextCheckResult && contextCheckResult?.context_analysis.suggestion !== 'OK'"
+          v-if="document?.status === 'uploaded'"
           type="primary"
           @click="handleShowSplitOptionsWithDefault('h2')"
           :loading="splitLoading"
         >
           <template #icon><icon-robot /></template>
-          智能拆分
+          AI智能拆分
         </a-button>
+
       </a-empty>
     </div>
 
@@ -579,11 +524,9 @@ import type {
   DocumentModule,
   DocumentStatus,
   DocumentType,
-  ContextCheckResponse,
   SplitModulesRequest
 } from '../types';
 import { DocumentStatusDisplay, DocumentTypeDisplay } from '../types';
-import ContextCheckAlert from '../components/ContextCheckAlert.vue';
 import SplitOptionsModal from '../components/SplitOptionsModal.vue';
 
 // 路由
@@ -597,8 +540,7 @@ const reviewLoading = ref(false);
 const document = ref<DocumentDetail | null>(null);
 const expandedModules = ref<string[]>([]);
 
-// 上下文检测相关
-const contextCheckResult = ref<ContextCheckResponse | null>(null);
+// 拆分配置状态
 const showSplitModal = ref(false);
 const splitDefaultLevel = ref<string>('auto');
 
@@ -682,23 +624,23 @@ const handlePrioritySelect = (priority: 'all' | 'high' | 'medium' | 'low') => {
 
 // 获取当前工作流程步骤
 const getCurrentStep = (status: DocumentStatus) => {
-  // 如果是uploaded状态，根据是否已检测来决定步骤
+  // 上传状态下引导执行拆分
   if (status === 'uploaded') {
-    return contextCheckResult.value ? 2 : 1;
+    return 2;
   }
 
   const stepMap: Partial<Record<DocumentStatus, number>> = {
     'processing': 2,
     'module_split': 3,
-    'user_reviewing': 4,
-    'ready_for_review': 5,
-    'reviewing': 5,
-    'review_completed': 6,
+    'user_reviewing': 3,
+    'ready_for_review': 4,
+    'reviewing': 4,
+    'review_completed': 5,
     'failed': 0
   };
+
   return stepMap[status] || 0;
 };
-
 // 获取评级颜色
 const getRatingColor = (rating: string) => {
   const colorMap: Record<string, string> = {
@@ -707,6 +649,7 @@ const getRatingColor = (rating: string) => {
     'fair': 'orange',
     'poor': 'red'
   };
+
   return colorMap[rating] || 'gray';
 };
 
@@ -818,11 +761,11 @@ const retryReview = async () => {
 
     reviewLoading.value = true;
 
-    // 检查文档是否有模块，如果没有模块则需要先进行模块拆分
+    // 文档还没有拆分模块时提示用户先拆分
     if (!document.value.modules || document.value.modules.length === 0) {
-      // 先检查文档大小
-      await checkContextLimit();
-      return; // checkContextLimit 会根据结果决定下一步操作
+      Message.warning('请先完成文档拆分生成模块');
+      handleShowSplitOptionsWithDefault('h2');
+      return;
     }
 
     // 如果已有模块，直接开始评审
@@ -845,59 +788,6 @@ const retryReview = async () => {
   }
 };
 
-// 上下文检测
-const checkContextLimit = async (modelName = 'gpt-4') => {
-  if (!document.value) return;
-
-  try {
-    const response = await RequirementDocumentService.checkContextLimit(document.value.id, modelName);
-    if (response.status === 'success') {
-      contextCheckResult.value = response.data;
-    } else {
-      // 显示具体的错误信息，而不是通用的"上下文检测失败"
-      const errorMessage = response.message || '上下文检测失败';
-      console.error('上下文检测失败:', errorMessage);
-      
-      // 使用Message.error显示错误信息，会自动在几秒后消失
-      Message.error({
-        content: errorMessage,
-        duration: 5000, // 5秒后自动消失
-        closable: true
-      });
-    }
-  } catch (error) {
-    console.error('上下文检测失败:', error);
-    Message.error('上下文检测失败');
-  }
-};
-
-
-
-// 处理直接评审
-const handleDirectReview = async () => {
-  if (!document.value) return;
-
-  reviewLoading.value = true;
-  try {
-    const response = await RequirementDocumentService.startReview(document.value.id, {
-      analysis_type: 'comprehensive',
-      parallel_processing: true,
-      direct_review: true // 添加直接评审参数
-    });
-
-    if (response.status === 'success') {
-      Message.success('直接评审已开始');
-      await loadDocument(); // 重新加载文档
-    } else {
-      Message.error(response.message || '直接评审启动失败');
-    }
-  } catch (error) {
-    console.error('直接评审启动失败:', error);
-    Message.error('直接评审启动失败');
-  } finally {
-    reviewLoading.value = false;
-  }
-};
 
 // 显示拆分选项并预选指定级别
 const handleShowSplitOptionsWithDefault = (defaultLevel: string) => {
@@ -1690,10 +1580,6 @@ onMounted(() => {
   gap: 8px;
 }
 
-/* 上下文检测区域样式 */
-.context-section {
-  margin-bottom: 24px;
-}
 
 /* 工作流程指示器样式 */
 .workflow-indicator {

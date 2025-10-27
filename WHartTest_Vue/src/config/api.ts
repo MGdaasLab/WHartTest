@@ -4,7 +4,9 @@
  */
 
 // 获取API基础URL
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+// 生产环境默认使用相对路径 /api，通过 Nginx 代理到后端
+// 开发环境可以通过 .env 文件配置为 /api 或完整 URL
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api';
 
 // 开发环境下的代理路径
 export const DEV_PROXY_PATH = '/api';

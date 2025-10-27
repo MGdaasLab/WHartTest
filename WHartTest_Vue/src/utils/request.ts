@@ -88,9 +88,8 @@ async function refreshToken() {
   }
 
   try {
-    // 这里需要实现刷新token的接口
-    // 示例: 调用后端API获取新的accessToken
-    const response = await axios.post('/token/refresh/', {
+    // 使用配置好的 baseURL 来刷新 token
+    const response = await axios.post(`${getApiBaseUrl()}/token/refresh/`, {
       refresh: refreshToken
     });
 

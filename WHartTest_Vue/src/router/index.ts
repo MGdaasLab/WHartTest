@@ -9,6 +9,8 @@ import OrganizationManagementView from '../views/OrganizationManagementView.vue'
 import PermissionManagementView from '../views/PermissionManagementView.vue'; // 导入权限管理页面
 import ProjectManagementView from '../views/ProjectManagementView.vue'; // 导入项目管理页面
 import TestCaseManagementView from '../views/TestCaseManagementView.vue'; // 导入用例管理页面
+import TestSuiteManagementView from '../views/TestSuiteManagementView.vue'; // 导入测试套件管理页面
+import TestExecutionHistoryView from '../views/TestExecutionHistoryView.vue'; // 导入执行历史页面
 import LlmConfigManagementView from '@/features/langgraph/views/LlmConfigManagementView.vue'; // 导入 LLM 配置管理视图
 import LangGraphChatView from '@/features/langgraph/views/LangGraphChatView.vue'; // 导入 LLM 聊天视图
 import KnowledgeManagementView from '@/features/knowledge/views/KnowledgeManagementView.vue'; // 导入知识库管理视图
@@ -64,6 +66,16 @@ const routes: Array<RouteRecordRaw> = [
         path: 'testcases',
         name: 'TestCaseManagement',
         component: TestCaseManagementView,
+      },
+      {
+        path: 'testsuites',
+        name: 'TestSuiteManagement',
+        component: TestSuiteManagementView,
+      },
+      {
+        path: 'test-executions',
+        name: 'TestExecutionHistory',
+        component: TestExecutionHistoryView,
       },
       {
         path: 'llm-configs', // LLM 配置管理

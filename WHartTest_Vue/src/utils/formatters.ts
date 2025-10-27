@@ -27,3 +27,18 @@ export const getLevelColor = (level?: string): string => {
     default: return 'default';
   }
 };
+
+export const formatDuration = (seconds?: number): string => {
+  if (seconds === undefined || seconds === null || isNaN(seconds)) {
+    return '-';
+  }
+  if (seconds < 60) {
+    return `${seconds.toFixed(1)}秒`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  if (remainingSeconds === 0) {
+    return `${minutes}分`;
+  }
+  return `${minutes}分${remainingSeconds}秒`;
+};

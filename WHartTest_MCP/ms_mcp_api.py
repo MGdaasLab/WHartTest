@@ -2,6 +2,11 @@
 # @Author : 西红柿炒蛋
 # @Email  : duanduanxc@qq.com
 # @Time   : 2025/6/9 09:17
+
+# 加载 .env 文件（本地开发时使用）
+from dotenv import load_dotenv
+load_dotenv()
+
 import json
 import time
 import uuid
@@ -12,11 +17,7 @@ from fastmcp import FastMCP
 from pydantic import Field
 
 mcp = FastMCP(
-    name="testcase_tools",
-    host="127.0.0.1",
-    port=8007,
-    description="MS测试用例工具",
-    sse_path='/mcp'
+    name="testcase_tools"
 )
 
 def aes_encrypt(text: str, secret_key: str, iv: str) -> str:
@@ -29,8 +30,8 @@ def aes_encrypt(text: str, secret_key: str, iv: str) -> str:
     bs = AES.block_size  # 16
     # PKCS5Padding
     pad = lambda s: s + (bs - len(s) % bs) * chr(bs - len(s) % bs)
-    cipher = AES.new(secret_key.encode('utf‑8'), AES.MODE_CBC, iv.encode('utf‑8'))
-    encrypted = cipher.encrypt(pad(text).encode('utf‑8'))
+    cipher = AES.new(secret_key.encode('utf-8'), AES.MODE_CBC, iv.encode('utf-8'))
+    encrypted = cipher.encrypt(pad(text).encode('utf-8'))
     return base64.b64encode(encrypted).decode('utf‑8')
 
 
@@ -39,10 +40,11 @@ class ApiClient:
     API客户端类，复用Session以提高性能
     """
     def __init__(self):
-        # 配置信息直接写死在这里
-        self.api_host = "http://ms.xxxxxxxx.com"
-        self.access_key = "pvusxxxxxxxxxh8A"
-        self.secret_key = "ikvxxxxxxxxxxAIdg"
+        # 从环境变量读取配置，如果未设置则使用默认值
+        import os
+        self.api_host = os.getenv("MS_API_HOST", "http://ms.example.com")
+        self.access_key = os.getenv("MS_ACCESS_KEY", "your_access_key")
+        self.secret_key = os.getenv("MS_SECRET_KEY", "your_secret_key_16")
         self.session = requests.Session()
         self._update_headers()
 
@@ -368,4 +370,4 @@ def add_functional_case(
         return e
 
 if __name__ == "__main__":
-    mcp.run(transport="streamable-http")
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8007)

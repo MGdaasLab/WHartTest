@@ -114,3 +114,74 @@ class IsProjectMemberForTestCaseModule(permissions.BasePermission):
             user=request.user,
             role__in=['owner', 'admin', 'member']
         ).exists()
+
+
+class IsProjectMemberForTestSuite(permissions.BasePermission):
+    """
+    自定义权限，用于检查用户是否是与 TestSuite 关联的项目的成员。
+    """
+
+    def has_permission(self, request, view):
+        """检查用户是否有权限访问列表视图或创建操作"""
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        project_pk = view.kwargs.get('project_pk')
+        if not project_pk:
+            return False
+
+        return ProjectMember.objects.filter(
+            project_id=project_pk,
+            user=request.user,
+            role__in=['owner', 'admin', 'member']
+        ).exists()
+
+    def has_object_permission(self, request, view, obj):
+        """检查用户是否对单个TestSuite实例有权限"""
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        if not hasattr(obj, 'project'):
+            return False
+
+        return ProjectMember.objects.filter(
+            project=obj.project,
+            user=request.user,
+            role__in=['owner', 'admin', 'member']
+        ).exists()
+
+
+class IsProjectMemberForTestExecution(permissions.BasePermission):
+    """
+    自定义权限，用于检查用户是否是与 TestExecution 关联的项目的成员。
+    """
+
+    def has_permission(self, request, view):
+        """检查用户是否有权限访问列表视图或创建操作"""
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        project_pk = view.kwargs.get('project_pk')
+        if not project_pk:
+            return False
+
+        return ProjectMember.objects.filter(
+            project_id=project_pk,
+            user=request.user,
+            role__in=['owner', 'admin', 'member']
+        ).exists()
+
+    def has_object_permission(self, request, view, obj):
+        """检查用户是否对单个TestExecution实例有权限"""
+        if not request.user or not request.user.is_authenticated:
+            return False
+
+        # TestExecution通过suite关联到project
+        if not hasattr(obj, 'suite') or not hasattr(obj.suite, 'project'):
+            return False
+
+        return ProjectMember.objects.filter(
+            project=obj.suite.project,
+            user=request.user,
+            role__in=['owner', 'admin', 'member']
+        ).exists()

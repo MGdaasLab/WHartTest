@@ -1,0 +1,73 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Documentation
+README.md
+docs/
+img/
+*.md
+
+# Docker
+docker-compose*.yml
+.dockerignore
+
+# Deployment scripts
+deploy-scripts/
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+**/.pytest_cache/
+**/.coverage
+**/.tox/
+**/venv/
+**/env/
+**/.venv/
+
+# Node
+**/node_modules/
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+
+# Build outputs
+**/dist/
+**/build/
+**/.next/
+**/out/
+
+# Test files
+**/test_*.py
+**/test_*.ts
+**/*_test.py
+**/*_test.ts
+**/*.test.js
+**/*.spec.js
+
+# Database
+**/*.sqlite3
+**/*.db
+
+# OS
+Thumbs.db
+*.DS_Store

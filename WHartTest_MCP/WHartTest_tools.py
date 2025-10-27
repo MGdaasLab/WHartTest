@@ -3,6 +3,15 @@
 # @Email  : duanduanxc@qq.com
 # @Time   : 2025/4/28 14:46
 
+# 加载 .env 文件（本地开发时使用）
+from dotenv import load_dotenv
+from pathlib import Path
+
+# 获取当前文件所在目录（WHartTest_MCP/）
+current_dir = Path(__file__).parent
+# 加载同目录下的 .env 文件
+load_dotenv(current_dir / '.env')
+
 from fastmcp import FastMCP
 import json
 import requests
@@ -13,17 +22,24 @@ import doctest
 import time
 from pydantic import Field
 from pydantic.v1.networks import host_regex
+import os
 
 # mcp 初始化
 mcp = FastMCP(
     name="WHartTest_tools"
 )
 
-base_url = "http://127.0.0.1:8000"
+# 从环境变量读取后端地址
+# 默认使用 Docker 网络中的 backend 服务名称
+base_url = os.getenv("WHARTTEST_BACKEND_URL", "http://backend:8000")
+
+# 从环境变量读取 API Key
+# 请在 .env 文件或环境变量中设置 WHARTTEST_API_KEY
+api_key = os.getenv("WHARTTEST_API_KEY", "")
 
 headers = {
     "accept": "application/json, text/plain,*/*",
-    "X-API-Key": "EWKVLxe5zyBG3g5g9c2fygTiotoKAxxCR5zAxcSEh7s"
+    "X-API-Key": api_key
 }
 
 
@@ -61,7 +77,44 @@ def get_project_name_and_id() -> str:
     """获取WHartTest平台项目的名称和对应id"""
     url = base_url + "/api/projects/"
 
-    data_dict = requests.get(url, headers=headers).json()
+    try:
+        response = requests.get(url, headers=headers)
+        
+        # 检查 HTTP 状态码
+        if response.status_code != 200:
+            error_info = {
+                "error": f"API 请求失败",
+                "status_code": response.status_code,
+                "url": url,
+                "response_text": response.text[:500]
+            }
+            return json.dumps(error_info, indent=4, ensure_ascii=False)
+        
+        # 尝试解析 JSON
+        data_dict = response.json()
+        
+    except requests.exceptions.ConnectionError:
+        error_info = {
+            "error": "无法连接到 API 服务器",
+            "url": url,
+            "base_url": base_url,
+            "suggestion": "请检查后端服务是否启动，或检查 WHARTTEST_BACKEND_URL 环境变量配置"
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except requests.exceptions.JSONDecodeError:
+        error_info = {
+            "error": "API 返回的不是有效的 JSON 格式",
+            "status_code": response.status_code,
+            "url": url,
+            "response_text": response.text[:500]
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
+    except Exception as e:
+        error_info = {
+            "error": f"未知错误: {str(e)}",
+            "url": url
+        }
+        return json.dumps(error_info, indent=4, ensure_ascii=False)
 
     # 用于存储提取出的 id 和 name 的列表
     extracted_data = []
@@ -326,5 +379,8 @@ def add_functional_case(
         print("HTTPError =", e)
         return e
 
-if __name__ == "__main__":  # 3️⃣ 用 stdio 启动
-    mcp.run(transport="streamable-http", port=8006)
+if __name__ == "__main__":
+    # 使用 streamable-http 传输方式
+    # host="0.0.0.0" 允许从其他容器访问
+    # port=8006 指定端口
+    mcp.run(transport="streamable-http", host="0.0.0.0", port=8006)

@@ -1,0 +1,19 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "isolated": true,
+    "launchOptions": {
+      "headless": true,
+      "channel": "chromium"
+    },
+    "contextOptions": {
+      "viewport": {
+        "width": 1920,
+        "height": 1080
+      }
+    }
+  },
+  "server": {
+    "port": 8931
+  }
+}

@@ -9,7 +9,10 @@ from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 import io
 
-from .models import TestCase, TestCaseModule, Project, TestCaseScreenshot
+from .models import (
+    TestCase, TestCaseModule, Project, TestCaseScreenshot,
+    TestSuite, TestExecution, TestCaseResult
+)
 from .serializers import TestCaseSerializer, TestCaseModuleSerializer, TestCaseScreenshotSerializer
 from .permissions import IsProjectMemberForTestCase, IsProjectMemberForTestCaseModule
 from .filters import TestCaseFilter # 导入自定义过滤器
@@ -512,3 +515,226 @@ class TestCaseModuleViewSet(viewsets.ModelViewSet):
             project = get_object_or_404(Project, pk=project_pk)
             context['project'] = project
         return context
+
+
+class TestSuiteViewSet(viewsets.ModelViewSet):
+    """
+    测试套件视图集，处理测试套件的 CRUD 操作
+    API 端点将嵌套在项目下，例如 /api/projects/{project_pk}/test-suites/
+    """
+    filter_backends = [filters.SearchFilter]
+    search_fields = ['name', 'description']
+
+    def get_permissions(self):
+        """返回此视图所需权限的实例列表"""
+        from .permissions import IsProjectMemberForTestSuite
+        return [
+            permissions.IsAuthenticated(),
+            HasModelPermission(),
+            IsProjectMemberForTestSuite()
+        ]
+
+    def get_queryset(self):
+        """根据 URL 中的 project_pk 过滤测试套件"""
+        project_pk = self.kwargs.get('project_pk')
+        if project_pk:
+            project = get_object_or_404(Project, pk=project_pk)
+            return TestSuite.objects.filter(project=project).prefetch_related('testcases', 'creator')
+        return TestSuite.objects.none()
+
+    def get_serializer_class(self):
+        """根据不同action返回不同的序列化器"""
+        from .serializers import TestSuiteSerializer
+        return TestSuiteSerializer
+
+    def get_serializer_context(self):
+        """为序列化器提供额外的上下文"""
+        context = super().get_serializer_context()
+        project_pk = self.kwargs.get('project_pk')
+        if project_pk:
+            context['project_id'] = int(project_pk)
+        return context
+    
+    def perform_create(self, serializer):
+        """在创建测试套件时，自动关联项目和创建人"""
+        project_pk = self.kwargs.get('project_pk')
+        project = get_object_or_404(Project, pk=project_pk)
+        serializer.save(creator=self.request.user, project=project)
+
+
+class TestExecutionViewSet(viewsets.ModelViewSet):
+    """
+    测试执行视图集，处理测试执行的创建、查看和管理
+    API 端点将嵌套在项目下，例如 /api/projects/{project_pk}/test-executions/
+    """
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['suite__name']
+    ordering_fields = ['created_at', 'started_at', 'completed_at', 'status']
+    ordering = ['-created_at']
+
+    def get_permissions(self):
+        """返回此视图所需权限的实例列表"""
+        from .permissions import IsProjectMemberForTestExecution
+        return [
+            permissions.IsAuthenticated(),
+            HasModelPermission(),
+            IsProjectMemberForTestExecution()
+        ]
+
+    def get_queryset(self):
+        """根据 URL 中的 project_pk 过滤测试执行"""
+        project_pk = self.kwargs.get('project_pk')
+        if project_pk:
+            project = get_object_or_404(Project, pk=project_pk)
+            return TestExecution.objects.filter(
+                suite__project=project
+            ).select_related('suite', 'executor').prefetch_related('results')
+        return TestExecution.objects.none()
+
+    def get_serializer_class(self):
+        """根据不同action返回不同的序列化器"""
+        from .serializers import TestExecutionSerializer, TestExecutionCreateSerializer
+        if self.action == 'create':
+            return TestExecutionCreateSerializer
+        return TestExecutionSerializer
+
+    def create(self, request, *args, **kwargs):
+        """创建测试执行并启动Celery任务"""
+        from .serializers import TestExecutionCreateSerializer, TestExecutionSerializer
+        from .tasks import execute_test_suite
+        
+        serializer = TestExecutionCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        suite_id = serializer.validated_data['suite_id']
+        suite = get_object_or_404(TestSuite, id=suite_id)
+        
+        # 验证套件属于当前项目
+        project_pk = self.kwargs.get('project_pk')
+        if suite.project_id != int(project_pk):
+            return Response({
+                'error': '测试套件不属于当前项目'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 创建执行记录
+        execution = TestExecution.objects.create(
+            suite=suite,
+            executor=request.user,
+            status='pending'
+        )
+        
+        # 异步启动执行任务
+        task = execute_test_suite.delay(execution.id)
+        execution.celery_task_id = task.id
+        execution.save(update_fields=['celery_task_id'])
+        
+        # 返回创建的执行记录
+        result_serializer = TestExecutionSerializer(execution, context={'request': request})
+        return Response(result_serializer.data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel(self, request, project_pk=None, pk=None):
+        """取消测试执行"""
+        from .tasks import cancel_test_execution
+        from celery import current_app
+        
+        execution = self.get_object()
+        
+        if execution.status not in ['pending', 'running']:
+            return Response({
+                'error': f'无法取消状态为 {execution.get_status_display()} 的执行'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 尝试撤销Celery任务
+        if execution.celery_task_id:
+            current_app.control.revoke(execution.celery_task_id, terminate=True)
+        
+        # 调用取消任务
+        cancel_test_execution.delay(execution.id)
+        
+        return Response({
+            'message': '测试执行取消请求已发送'
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['get'], url_path='results')
+    def results(self, request, project_pk=None, pk=None):
+        """获取测试执行的所有结果"""
+        from .serializers import TestCaseResultSerializer
+        
+        execution = self.get_object()
+        results = execution.results.all().select_related('testcase')
+        serializer = TestCaseResultSerializer(results, many=True, context={'request': request})
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'], url_path='report')
+    def report(self, request, project_pk=None, pk=None):
+        """生成测试执行报告"""
+        execution = self.get_object()
+        
+        report_data = {
+            'execution_id': execution.id,
+            'suite': {
+                'id': execution.suite.id,
+                'name': execution.suite.name,
+                'description': execution.suite.description,
+            },
+            'executor': {
+                'id': execution.executor.id,
+                'username': execution.executor.username,
+            } if execution.executor else None,
+            'status': execution.status,
+            'started_at': execution.started_at,
+            'completed_at': execution.completed_at,
+            'duration': execution.duration,
+            'statistics': {
+                'total': execution.total_count,
+                'passed': execution.passed_count,
+                'failed': execution.failed_count,
+                'skipped': execution.skipped_count,
+                'error': execution.error_count,
+                'pass_rate': execution.pass_rate,
+            },
+            'results': []
+        }
+        
+        # 添加详细结果
+        for result in execution.results.all().select_related('testcase'):
+            report_data['results'].append({
+                'testcase_id': result.testcase.id,
+                'testcase_name': result.testcase.name,
+                'status': result.status,
+                'error_message': result.error_message,
+                'execution_time': result.execution_time,
+                'screenshots': result.screenshots,
+            })
+        
+        return Response(report_data)
+    
+    def destroy(self, request, *args, **kwargs):
+        """
+        删除测试执行记录
+        只允许删除已完成、失败或已取消的执行记录
+        """
+        execution = self.get_object()
+        
+        # 检查执行状态，不允许删除正在运行或等待中的执行
+        if execution.status in ['pending', 'running']:
+            return Response({
+                'error': f'无法删除状态为"{execution.get_status_display()}"的执行记录，请先取消执行'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 记录删除信息用于日志
+        execution_info = {
+            'id': execution.id,
+            'suite_name': execution.suite.name,
+            'status': execution.status,
+            'created_at': execution.created_at
+        }
+        
+        # 执行删除（关联的TestCaseResult会被级联删除）
+        execution.delete()
+        
+        return Response({
+            'message': f'测试执行记录已删除',
+            'deleted_execution': execution_info
+        }, status=status.HTTP_200_OK)

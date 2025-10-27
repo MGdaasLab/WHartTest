@@ -1,6 +1,9 @@
 from rest_framework import serializers
 from django.contrib.auth.models import User
-from .models import TestCase, TestCaseStep, TestCaseModule, TestCaseScreenshot
+from .models import (
+    TestCase, TestCaseStep, TestCaseModule, TestCaseScreenshot,
+    TestSuite, TestExecution, TestCaseResult
+)
 from projects.models import Project # 确保导入Project模型以便进行校验
 from accounts.serializers import UserDetailSerializer # 用于显示创建者信息
 from django.db import transaction
@@ -261,3 +264,146 @@ class TestCaseScreenshotSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+
+
+class TestSuiteSerializer(serializers.ModelSerializer):
+    """
+    测试套件序列化器
+    """
+    creator_detail = UserDetailSerializer(source='creator', read_only=True)
+    testcase_ids = serializers.PrimaryKeyRelatedField(
+        queryset=TestCase.objects.all(),
+        source='testcases',
+        many=True,
+        write_only=True
+    )
+    testcases_detail = TestCaseSerializer(source='testcases', many=True, read_only=True)
+    testcase_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = TestSuite
+        fields = [
+            'id', 'name', 'description', 'project',
+            'testcase_ids', 'testcases_detail', 'testcase_count',
+            'max_concurrent_tasks',
+            'creator', 'creator_detail', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'project', 'creator', 'creator_detail', 'created_at', 'updated_at']
+    
+    def get_testcase_count(self, obj):
+        """获取套件中的用例数量"""
+        return obj.testcases.count()
+    
+    def validate_testcase_ids(self, value):
+        """验证测试用例是否属于同一项目"""
+        if not value:
+            raise serializers.ValidationError("测试套件至少需要包含一个测试用例")
+        
+        # 获取项目ID (创建时从context获取，更新时从instance获取)
+        if self.instance:
+            project_id = self.instance.project_id
+        else:
+            project_id = self.context.get('project_id')
+        
+        if not project_id:
+            raise serializers.ValidationError("无法确定项目ID")
+        
+        # 检查所有用例是否属于同一项目
+        for testcase in value:
+            if testcase.project_id != project_id:
+                raise serializers.ValidationError(
+                    f"测试用例 '{testcase.name}' 不属于当前项目"
+                )
+        
+        return value
+    
+    def validate_max_concurrent_tasks(self, value):
+        """验证并发数配置"""
+        if value < 1:
+            raise serializers.ValidationError("并发数至少为1（串行执行）")
+        if value > 10:
+            raise serializers.ValidationError("并发数不能超过10，避免系统资源耗尽")
+        return value
+    
+    def create(self, validated_data):
+        testcases = validated_data.pop('testcases')
+        suite = TestSuite.objects.create(**validated_data)
+        suite.testcases.set(testcases)
+        return suite
+    
+    def update(self, instance, validated_data):
+        testcases = validated_data.pop('testcases', None)
+        
+        instance.name = validated_data.get('name', instance.name)
+        instance.description = validated_data.get('description', instance.description)
+        instance.max_concurrent_tasks = validated_data.get('max_concurrent_tasks', instance.max_concurrent_tasks)
+        instance.save()
+        
+        if testcases is not None:
+            instance.testcases.set(testcases)
+        
+        return instance
+
+
+class TestCaseResultSerializer(serializers.ModelSerializer):
+    """
+    测试用例执行结果序列化器
+    """
+    testcase_detail = TestCaseSerializer(source='testcase', read_only=True)
+    duration = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = TestCaseResult
+        fields = [
+            'id', 'execution', 'testcase', 'testcase_detail', 'status',
+            'error_message', 'stack_trace', 'started_at', 'completed_at',
+            'execution_time', 'duration', 'mcp_session_id', 'screenshots',
+            'execution_log', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'created_at', 'updated_at', 'duration'
+        ]
+
+
+class TestExecutionSerializer(serializers.ModelSerializer):
+    """
+    测试执行记录序列化器
+    """
+    suite_detail = TestSuiteSerializer(source='suite', read_only=True)
+    executor_detail = UserDetailSerializer(source='executor', read_only=True)
+    results = TestCaseResultSerializer(many=True, read_only=True)
+    duration = serializers.ReadOnlyField()
+    pass_rate = serializers.ReadOnlyField()
+    
+    class Meta:
+        model = TestExecution
+        fields = [
+            'id', 'suite', 'suite_detail', 'status', 'executor', 'executor_detail',
+            'started_at', 'completed_at', 'total_count', 'passed_count',
+            'failed_count', 'skipped_count', 'error_count', 'celery_task_id',
+            'duration', 'pass_rate', 'results', 'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'status', 'started_at', 'completed_at',
+            'total_count', 'passed_count', 'failed_count', 'skipped_count',
+            'error_count', 'celery_task_id', 'duration', 'pass_rate',
+            'created_at', 'updated_at'
+        ]
+
+
+class TestExecutionCreateSerializer(serializers.Serializer):
+    """
+    创建测试执行的简化序列化器
+    """
+    suite_id = serializers.IntegerField(required=True, help_text="测试套件ID")
+    
+    def validate_suite_id(self, value):
+        """验证套件是否存在"""
+        try:
+            suite = TestSuite.objects.get(id=value)
+            # 验证套件是否有测试用例
+            if not suite.testcases.exists():
+                raise serializers.ValidationError("测试套件中没有测试用例")
+            return value
+        except TestSuite.DoesNotExist:
+            raise serializers.ValidationError("测试套件不存在")

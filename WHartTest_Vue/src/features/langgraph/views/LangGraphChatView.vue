@@ -433,6 +433,11 @@ const updateSessionInList = (id: string, firstMessage?: string, updateTime: bool
     if (chatSessions.value[existingIndex].messageCount !== undefined && updateTime) {
       chatSessions.value[existingIndex].messageCount += 1;
     }
+    
+    // 🆕 更新时间后，重新按时间倒序排序会话列表
+    if (updateTime) {
+      chatSessions.value.sort((a, b) => b.lastTime.getTime() - a.lastTime.getTime());
+    }
   } else {
     // 添加新会话
     chatSessions.value.unshift({
@@ -672,8 +677,18 @@ const displayedMessages = computed(() => {
 
   // 如果当前会话有正在进行的流，则添加一个临时的流式消息用于显示
   if (stream && !stream.isComplete) {
-    // 如果流式内容为空，则显示为加载中状态
-    if (stream.content.trim() === '' && !stream.error) {
+    // 如果有错误，显示错误消息
+    if (stream.error) {
+      combined.push({
+        content: stream.error,
+        isUser: false,
+        time: getCurrentTime(),
+        messageType: 'ai',
+        isStreaming: false,
+      });
+    }
+    // 如果流式内容为空或只有空白字符，显示加载中状态
+    else if (!stream.content || stream.content.trim() === '') {
       combined.push({
         content: '',
         isUser: false,
@@ -681,14 +696,15 @@ const displayedMessages = computed(() => {
         messageType: 'ai',
         isLoading: true,
       });
-    } else {
-      // 否则，显示流式内容或错误
+    }
+    // 有实际内容时，显示流式内容
+    else {
       combined.push({
-        content: stream.error || stream.content,
+        content: stream.content,
         isUser: false,
         time: getCurrentTime(),
         messageType: 'ai',
-        isStreaming: !stream.error, // 如果有错误则不显示流式效果
+        isStreaming: true,
       });
     }
   }

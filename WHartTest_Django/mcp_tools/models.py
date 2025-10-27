@@ -10,7 +10,8 @@ class RemoteMCPConfig(models.Model):
     Model to store configurations for remote MCP servers.
     """
     name = models.CharField(max_length=255, unique=True, help_text="远程 MCP 服务器的名称")
-    url = models.URLField(max_length=2048, help_text="远程 MCP 服务器的 URL")
+    # 使用 CharField 而不是 URLField，以支持 Docker 容器名等非标准主机名
+    url = models.CharField(max_length=2048, help_text="远程 MCP 服务器的 URL")
     transport = models.CharField(
         max_length=50,
         default="streamable-http", # 默认使用 streamable-http

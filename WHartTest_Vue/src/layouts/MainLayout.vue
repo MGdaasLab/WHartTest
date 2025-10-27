@@ -84,6 +84,16 @@
             <router-link to="/testcases">用例管理</router-link>
           </a-menu-item>
 
+          <a-menu-item key="testsuites" v-if="hasTestSuitesPermission">
+            <template #icon><icon-folder /></template>
+            <router-link to="/testsuites">测试套件</router-link>
+          </a-menu-item>
+
+          <a-menu-item key="test-executions" v-if="hasTestExecutionsPermission">
+            <template #icon><icon-history /></template>
+            <router-link to="/test-executions">执行历史</router-link>
+          </a-menu-item>
+
           <a-menu-item key="langgraph-chat" v-if="hasLangGraphChatPermission">
             <template #icon><icon-message /></template>
             <router-link to="/langgraph-chat">LLM对话</router-link>
@@ -197,6 +207,8 @@ import {
   IconMessage,
   IconCloud,
   IconBook,
+  IconFolder,
+  IconHistory,
 } from '@arco-design/web-vue/es/icon';
 import '@arco-design/web-vue/dist/arco.css'; // 引入 Arco Design 样式
 
@@ -226,6 +238,8 @@ const activeMenu = computed(() => {
   // 仪表盘路由已移除，不再识别
   if (path.startsWith('/projects')) return 'projects';
   if (path.startsWith('/requirements')) return 'requirements'; // 添加对需求管理路由的识别
+  if (path.startsWith('/testsuites')) return 'testsuites'; // 添加对测试套件路由的识别
+  if (path.startsWith('/test-executions')) return 'test-executions'; // 添加对执行历史路由的识别
   if (path.startsWith('/testcases')) return 'testcases';
   if (path.startsWith('/users')) return 'users';
   if (path.startsWith('/organizations')) return 'organizations';
@@ -255,6 +269,14 @@ const hasRequirementsPermission = computed(() => {
 
 const hasTestcasesPermission = computed(() => {
   return authStore.hasPermission('testcases.view_testcase');
+});
+
+const hasTestSuitesPermission = computed(() => {
+  return authStore.hasPermission('testcases.view_testsuite');
+});
+
+const hasTestExecutionsPermission = computed(() => {
+  return authStore.hasPermission('testcases.view_testexecution');
 });
 
 const hasLangGraphChatPermission = computed(() => {

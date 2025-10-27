@@ -20,6 +20,7 @@
           @generate-test-cases="showGenerateCasesModal"
           @edit-test-case="showEditTestCaseForm"
           @view-test-case="showViewTestCaseDetail"
+          @execute-test-case="handleExecuteTestCase"
           @test-case-deleted="handleTestCaseDeleted"
           ref="testCaseListRef"
         />
@@ -75,6 +76,7 @@ import GenerateCasesModal from '@/components/testcase/GenerateCasesModal.vue';
 import {
   sendChatMessageStream
 } from '@/features/langgraph/services/chatService';
+import type { ChatRequest } from '@/features/langgraph/types/chat';
 
 const router = useRouter();
 const projectStore = useProjectStore();
@@ -92,6 +94,49 @@ const testCaseListRef = ref<InstanceType<typeof TestCaseList> | null>(null);
 // 存储所有模块数据，用于传递给详情页和表单
 const allModules = ref<TestCaseModule[]>([]);
 const moduleTreeForForm = ref<TreeNodeData[]>([]); // 用于表单的模块树
+
+const startAutomationTask = (
+  requestData: ChatRequest,
+  notificationTitle: string,
+  notificationContent: string,
+  notificationIdPrefix: string,
+  footerLinkText: string
+) => {
+  sendChatMessageStream(
+    requestData,
+    (sessionId) => {
+      localStorage.setItem('langgraph_session_id', sessionId);
+
+      const notificationReturn = Notification.info({
+        title: notificationTitle,
+        content: notificationContent,
+        footer: () => h(
+          'div',
+          {
+            style: 'text-align: right; margin-top: 12px;',
+          },
+          [
+            h(
+              'a',
+              {
+                href: 'javascript:;',
+                onClick: () => {
+                  router.push({ name: 'LangGraphChat' });
+                  if (notificationReturn) {
+                    notificationReturn.close();
+                  }
+                },
+              },
+              footerLinkText
+            ),
+          ]
+        ),
+        duration: 10000,
+        id: `${notificationIdPrefix}-${sessionId}`,
+      });
+    }
+  );
+};
 
 const fetchAllModulesForForm = async () => {
   if (!currentProjectId.value) {
@@ -222,8 +267,8 @@ ${formData.selectedModule.content}
 (此需求模块来源于需求文档ID: ${formData.requirementDocumentId})
   `.trim();
 
-  const requestData: any = {
-    message: message,
+  const requestData: ChatRequest = {
+    message,
     project_id: String(currentProjectId.value),
     prompt_id: formData.promptId,
     use_knowledge_base: formData.useKnowledgeBase,
@@ -234,53 +279,55 @@ ${formData.selectedModule.content}
     requestData.knowledge_base_id = formData.knowledgeBaseId;
   }
 
-  // 使用改造后的 service，它将自动处理全局流状态
-  sendChatMessageStream(
+  startAutomationTask(
     requestData,
-    (sessionId) => {
-      // onStart 回调，在收到 session_id 后立即执行
-      // 将会话ID保存到 localStorage，以便聊天页面可以加载它
-      localStorage.setItem('langgraph_session_id', sessionId);
-      
-      const notificationReturn = Notification.info({
-        title: '任务已开始',
-        content: '用例生成任务已在后台开始处理。',
-        footer: () => h(
-          'div',
-          {
-            style: 'text-align: right; margin-top: 12px;',
-          },
-          [
-            h(
-              'a',
-              {
-                href: 'javascript:;',
-                onClick: () => {
-                  // 点击后，跳转到聊天页面
-                  router.push({ name: 'LangGraphChat' });
-                  // 关闭通知
-                  if (notificationReturn) {
-                    notificationReturn.close();
-                  }
-                },
-              },
-              '点此查看生成过程'
-            ),
-          ]
-        ),
-        duration: 10000, // 10秒后自动关闭
-        id: `gen-case-${sessionId}`, // 使用唯一的通知ID
-      });
-
-      // 这里不再需要手动处理 onComplete 和 onError,
-      // 因为流的状态被全局管理了。
-      // 可以在 LangGraphChatView 的 onActivated 或 watch 中处理完成后的逻辑，
-      // 例如刷新用例列表。
-      // 为了保持简单，我们暂时让用户手动刷新。
-    }
+    '生成已开始',
+    '用例生成任务已在后台开始处理。',
+    'gen-case',
+    '点此查看生成过程'
   );
 };
 
+const handleExecuteTestCase = (testCase: TestCase) => {
+  if (!currentProjectId.value) {
+    Message.error('缺少有效的项目ID');
+    return;
+  }
+
+  const moduleInfo = testCase.module_detail
+    ? testCase.module_detail
+    : `ID: ${testCase.module_id ?? '未分配'}`;
+
+  const message = `
+执行ID为 ${testCase.id} 的测试用例。
+你是一名UI自动化测试人员，需要按照用户的指令执行和验证用例。
+请调用MCP工具完成以下任务：
+1. 读取该测试用例所属项目（ID：${currentProjectId.value}）及模块，定位完整的测试用例定义。
+2. 调用工具逐步执行测试用例，并验证每一步的断言。
+3. 每一步执行后截图，并将截图上传回该测试用例。
+4. 执行结束后告知用户本次测试是否通过，并总结关键截图链接。
+
+附加信息：
+- 测试用例名称：${testCase.name}
+- 测试用例等级：${testCase.level}
+- 前置条件：${testCase.precondition || '无'}
+- 测试用例模块信息：${moduleInfo}
+  `.trim();
+
+  const requestData: ChatRequest = {
+    message,
+    project_id: String(currentProjectId.value),
+    use_knowledge_base: false,
+  };
+
+  startAutomationTask(
+    requestData,
+    '执行已开始',
+    '测试用例执行任务已在后台开始处理。',
+    'exec-case',
+    '点此查看执行进度'
+  );
+};
 
 watch(currentProjectId, (newVal) => {
   selectedModuleId.value = null; // 项目切换时清空已选模块
@@ -294,9 +341,9 @@ watch(currentProjectId, (newVal) => {
 });
 
 onMounted(() => {
-    if (currentProjectId.value) {
-        fetchAllModulesForForm();
-    }
+  if (currentProjectId.value) {
+    fetchAllModulesForForm();
+  }
 });
 
 </script>
