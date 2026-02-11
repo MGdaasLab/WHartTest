@@ -1,0 +1,49 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: docker.1ms.run/library/postgres:16-alpine
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: docker.1ms.run/library/redis:7-alpine
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./WHartTest_Django
+      dockerfile: Dockerfile
+    image: wharttest-backend:latest
+    ports:
+      - "8912:8000"
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+
+  frontend:
+    build:
+      context: ./WHartTest_Vue
+      dockerfile: Dockerfile
+    image: wharttest-frontend:latest
+    ports:
+      - "8913:80"
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+  mcp:
+    build:
+      context: ./WHartTest_MCP
+      dockerfile: Dockerfile
+    image: wharttest-mcp:latest
+    ports:
+      - "8914:8006"
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:

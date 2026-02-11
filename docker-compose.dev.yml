@@ -1,0 +1,72 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: docker.1ms.run/library/postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: wharttest
+    ports:
+      - "8919:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  redis:
+    image: docker.1ms.run/library/redis:7-alpine
+    ports:
+      - "8911:6379"
+
+  backend:
+    image: python:3.11
+    container_name: wharttest-backend-dev
+    working_dir: /app
+    volumes:
+      - ./WHartTest_Django:/app
+      - ./data:/app/data
+    environment:
+      DATABASE_TYPE: postgres
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: wharttest
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      DJANGO_DEBUG: "True"
+    command: >
+      sh -c "
+      pip install -r requirements.txt &&
+      python manage.py migrate &&
+      python manage.py runserver 0.0.0.0:8000
+      "
+    ports:
+      - "8912:8000"
+    depends_on:
+      - postgres
+      - redis
+
+  frontend:
+    image: node:18
+    container_name: wharttest-frontend-dev
+    working_dir: /app
+    volumes:
+      - ./WHartTest_Vue:/app
+    command: npm run dev
+    ports:
+      - "8913:5173"
+    depends_on:
+      - backend
+
+  mcp:
+    image: python:3.11
+    container_name: wharttest-mcp-dev
+    working_dir: /app
+    volumes:
+      - ./WHartTest_MCP:/app
+    command: python main.py
+    ports:
+      - "8914:8006"
+    depends_on:
+      - backend
+
+volumes:
+  postgres-data:
