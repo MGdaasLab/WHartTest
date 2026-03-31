@@ -50,7 +50,7 @@ class SkillSerializer(serializers.ModelSerializer):
 class SkillUploadSerializer(serializers.Serializer):
     """Skill 上传序列化器"""
     file = serializers.FileField(
-        help_text='包含 SKILL.md 的 zip 文件'
+        help_text='包含一个或多个 SKILL.md 的 zip 文件'
     )
 
     def validate_file(self, value):

@@ -6,9 +6,16 @@ from django.test import SimpleTestCase
 from django.test.utils import override_settings
 
 from . import agent_loop_view
-from .agent_loop_view import _extract_linked_image_urls, _is_linked_image_url_allowed
+from .agent_loop_view import (
+    _extract_linked_image_urls,
+    _is_linked_image_url_allowed,
+    _normalize_uploaded_image_base64_list,
+)
 from .builtin_tools.skill_tools import (
+    _build_skill_artifacts_dir,
+    _collect_skill_artifacts,
     _build_skill_screenshots_dir,
+    _finalize_skill_result,
     _prepare_skill_screenshots_dir,
     _sanitize_runtime_path_segment,
 )
@@ -109,6 +116,21 @@ class LinkedImageUrlExtractionTests(SimpleTestCase):
             )
 
 
+class UploadedImageNormalizationTests(SimpleTestCase):
+    def test_normalize_uploaded_images_merges_legacy_and_array_fields(self):
+        result = _normalize_uploaded_image_base64_list(
+            ["img-a", " img-b ", "", "img-a"],
+            "img-c",
+        )
+
+        self.assertEqual(result, ["img-a", "img-b", "img-c"])
+
+    def test_normalize_uploaded_images_accepts_legacy_single_image_only(self):
+        result = _normalize_uploaded_image_base64_list(None, " legacy-img ")
+
+        self.assertEqual(result, ["legacy-img"])
+
+
 class SkillScreenshotDirectoryTests(SimpleTestCase):
     def test_sanitize_runtime_path_segment_blocks_path_traversal(self):
         self.assertEqual(
@@ -147,6 +169,53 @@ class SkillScreenshotDirectoryTests(SimpleTestCase):
                 self.assertFalse(os.path.exists(stale_file))
                 with open(marker_path, "r", encoding="utf-8") as f:
                     self.assertEqual(f.read().strip(), "chat-b")
+
+    def test_build_skill_artifacts_dir_uses_runtime_media_root(self):
+        with tempfile.TemporaryDirectory() as temp_media_root:
+            with override_settings(MEDIA_ROOT=temp_media_root):
+                artifacts_dir = _build_skill_artifacts_dir(1, "session-1")
+
+        self.assertTrue(artifacts_dir.endswith("skill_runtime/artifacts/1/session-1"))
+        self.assertNotIn("/skills/1/11/", artifacts_dir)
+
+    def test_collect_skill_artifacts_detects_named_generated_file(self):
+        with tempfile.TemporaryDirectory() as temp_media_root:
+            with override_settings(MEDIA_ROOT=temp_media_root, MEDIA_URL="/media/"):
+                skill_dir = os.path.join(temp_media_root, "skills", "1", "11")
+                os.makedirs(skill_dir, exist_ok=True)
+                generated_file = os.path.join(skill_dir, "order-payment-flow.drawio")
+                with open(generated_file, "w", encoding="utf-8") as f:
+                    f.write("<mxfile></mxfile>")
+
+                artifacts = _collect_skill_artifacts(
+                    "已帮你生成 draw.io 文件：order-payment-flow.drawio",
+                    skill_dir=skill_dir,
+                    artifacts_dir=os.path.join(temp_media_root, "skill_runtime", "artifacts", "1", "s1"),
+                    artifacts_before={},
+                )
+
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["name"], "order-payment-flow.drawio")
+        self.assertEqual(artifacts[0]["url"], "/media/skills/1/11/order-payment-flow.drawio")
+
+    def test_finalize_skill_result_wraps_output_with_file_payload(self):
+        with tempfile.TemporaryDirectory() as temp_media_root:
+            with override_settings(MEDIA_ROOT=temp_media_root, MEDIA_URL="/media/"):
+                skill_dir = os.path.join(temp_media_root, "skills", "1", "11")
+                os.makedirs(skill_dir, exist_ok=True)
+                generated_file = os.path.join(skill_dir, "demo.drawio")
+                with open(generated_file, "w", encoding="utf-8") as f:
+                    f.write("<mxfile></mxfile>")
+
+                wrapped = _finalize_skill_result(
+                    "已生成文件 demo.drawio",
+                    skill_dir=skill_dir,
+                    artifacts_dir=os.path.join(temp_media_root, "skill_runtime", "artifacts", "1", "s1"),
+                    artifacts_before={},
+                )
+
+        self.assertIn('"type": "file"', wrapped)
+        self.assertIn('/media/skills/1/11/demo.drawio', wrapped)
 
 
 class TerminalOutputSanitizerTests(SimpleTestCase):

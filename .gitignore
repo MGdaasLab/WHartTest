@@ -68,4 +68,5 @@ WHartTest_Django/chat_history.sqlite-shm
 WHartTest_Django/chat_history.sqlite-wal
 .gemini/settings.json
 WHartTest_Actuator/browsers/
+.github/copilot-instructions.md
 WHartTest_Django/celerybeat-schedule

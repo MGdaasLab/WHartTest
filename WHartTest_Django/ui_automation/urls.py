@@ -8,7 +8,8 @@ from .views import (
     UiPageStepsViewSet, UiPageStepsDetailedViewSet,
     UiTestCaseViewSet, UiCaseStepsDetailedViewSet,
     UiExecutionRecordViewSet, UiPublicDataViewSet, UiEnvironmentConfigViewSet,
-    ActuatorViewSet, UiBatchExecutionRecordViewSet, upload_screenshot, upload_trace
+    ActuatorViewSet, UiBatchExecutionRecordViewSet, upload_screenshot, upload_trace,
+    trigger_batch_execution
 )
 
 router = DefaultRouter()
@@ -28,4 +29,5 @@ router.register('batch-records', UiBatchExecutionRecordViewSet, basename='ui-bat
 urlpatterns = router.urls + [
     path('screenshots/upload/', upload_screenshot, name='ui-screenshot-upload'),
     path('traces/upload/', upload_trace, name='ui-trace-upload'),
+    path('trigger-batch/', trigger_batch_execution, name='ui-trigger-batch'),
 ]

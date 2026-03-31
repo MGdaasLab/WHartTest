@@ -11,6 +11,9 @@ import subprocess
 import os
 import shutil
 import threading
+import json
+import mimetypes
+import re
 from typing import Optional
 
 from langchain_core.tools import tool as langchain_tool
@@ -23,6 +26,37 @@ logger = logging.getLogger("orchestrator_integration")
 
 _playwright_session_manager: Optional[PlaywrightSessionManager] = None
 _playwright_session_manager_lock = threading.Lock()
+_ARTIFACT_EXTENSIONS = {
+    ".drawio",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".pdf",
+    ".html",
+    ".htm",
+    ".txt",
+    ".json",
+    ".csv",
+    ".xml",
+    ".zip",
+    ".doc",
+    ".docx",
+    ".xls",
+    ".xlsx",
+    ".ppt",
+    ".pptx",
+}
+_MAX_ARTIFACT_SIZE_BYTES = 50 * 1024 * 1024
+_ARTIFACT_TOKEN_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z]:)?[^\s<>\"'`|]+?\.(?:drawio|png|jpe?g|gif|svg|pdf|html?|txt|json|csv|xml|zip|docx?|xlsx?|pptx?))",
+    re.IGNORECASE,
+)
+_QUOTED_ARTIFACT_TOKEN_RE = re.compile(
+    r"[`'\"](?P<path>[^`'\"]+?\.(?:drawio|png|jpe?g|gif|svg|pdf|html?|txt|json|csv|xml|zip|docx?|xlsx?|pptx?))[`'\"]",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_runtime_path_segment(value: Optional[str], default: str) -> str:
@@ -87,6 +121,228 @@ def _prepare_skill_screenshots_dir(
         f.write(current_chat_id)
 
     return screenshots_dir
+
+
+def _build_skill_artifacts_dir(
+    project_id: Optional[int] = None,
+    case_dir_key: Optional[str] = None,
+) -> str:
+    project_segment = str(project_id if project_id is not None else 0)
+    case_segment = _sanitize_runtime_path_segment(case_dir_key, "_default")
+    return os.path.abspath(
+        os.path.join(
+            settings.MEDIA_ROOT,
+            "skill_runtime",
+            "artifacts",
+            project_segment,
+            case_segment,
+        )
+    )
+
+
+def _prepare_skill_artifacts_dir(
+    project_id: Optional[int] = None,
+    case_dir_key: Optional[str] = None,
+    chat_session_id: Optional[str] = None,
+) -> str:
+    artifacts_dir = _build_skill_artifacts_dir(project_id, case_dir_key)
+    if not case_dir_key:
+        os.makedirs(artifacts_dir, exist_ok=True)
+        return artifacts_dir
+
+    session_marker = os.path.join(artifacts_dir, ".chat_session")
+    current_chat_id = chat_session_id or "default"
+    should_clear = False
+
+    if os.path.exists(artifacts_dir):
+        if os.path.exists(session_marker):
+            with open(session_marker, "r", encoding="utf-8") as f:
+                stored_chat_id = f.read().strip()
+            if stored_chat_id != current_chat_id:
+                should_clear = True
+        else:
+            should_clear = True
+
+    if should_clear:
+        shutil.rmtree(artifacts_dir, ignore_errors=True)
+        logger.info(f"[execute_skill_script] 清空旧产物目录: {artifacts_dir}")
+
+    os.makedirs(artifacts_dir, exist_ok=True)
+    with open(session_marker, "w", encoding="utf-8") as f:
+        f.write(current_chat_id)
+
+    return artifacts_dir
+
+
+def _is_allowed_artifact_file(file_path: str) -> bool:
+    if not file_path or not os.path.isfile(file_path) or os.path.islink(file_path):
+        return False
+    suffix = os.path.splitext(file_path)[1].lower()
+    if suffix not in _ARTIFACT_EXTENSIONS:
+        return False
+    if os.path.basename(file_path).startswith("."):
+        return False
+    try:
+        return os.path.getsize(file_path) <= _MAX_ARTIFACT_SIZE_BYTES
+    except OSError:
+        return False
+
+
+def _snapshot_artifact_files(root_dir: str) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    if not root_dir or not os.path.isdir(root_dir):
+        return snapshot
+
+    for current_root, dirs, files in os.walk(root_dir):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "node_modules")]
+        for name in files:
+            full_path = os.path.join(current_root, name)
+            if not _is_allowed_artifact_file(full_path):
+                continue
+            rel_path = os.path.relpath(full_path, root_dir).replace(os.sep, "/")
+            snapshot[rel_path] = full_path
+    return snapshot
+
+
+def _path_to_media_url(file_path: str) -> Optional[str]:
+    try:
+        media_root = os.path.abspath(settings.MEDIA_ROOT)
+        candidate = os.path.abspath(file_path)
+        if os.path.commonpath([media_root, candidate]) != media_root:
+            return None
+        relative_path = os.path.relpath(candidate, media_root).replace(os.sep, "/")
+        return f"{settings.MEDIA_URL.rstrip('/')}/{relative_path}"
+    except Exception:
+        return None
+
+
+def _build_artifact_payload(file_path: str) -> Optional[dict[str, object]]:
+    media_url = _path_to_media_url(file_path)
+    if not media_url:
+        return None
+
+    mime_type, _ = mimetypes.guess_type(file_path)
+    if file_path.lower().endswith(".drawio"):
+        mime_type = mime_type or "application/vnd.jgraph.mxfile"
+
+    payload: dict[str, object] = {
+        "type": "file",
+        "name": os.path.basename(file_path),
+        "url": media_url,
+        "path": os.path.relpath(file_path, settings.MEDIA_ROOT).replace(os.sep, "/"),
+        "mime_type": mime_type or "application/octet-stream",
+    }
+    try:
+        payload["size"] = os.path.getsize(file_path)
+    except OSError:
+        pass
+    return payload
+
+
+def _extract_artifact_candidates(text: str) -> list[str]:
+    if not text:
+        return []
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    strip_chars = " \t\r\n()[]{}<>,;:：。，“”‘’"
+
+    for pattern in (_QUOTED_ARTIFACT_TOKEN_RE, _ARTIFACT_TOKEN_RE):
+        for match in pattern.finditer(text):
+            candidate = (match.group("path") or "").strip(strip_chars)
+            if "：" in candidate:
+                candidate = candidate.split("：")[-1].strip(strip_chars)
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            candidates.append(candidate)
+
+    return candidates
+
+
+def _find_named_file(root_dir: str, candidate: str) -> Optional[str]:
+    if not root_dir or not os.path.isdir(root_dir):
+        return None
+
+    normalized_candidate = candidate.replace("\\", os.sep)
+    joined_path = os.path.join(root_dir, normalized_candidate.lstrip("./"))
+    if _is_allowed_artifact_file(joined_path):
+        return joined_path
+
+    basename = os.path.basename(normalized_candidate)
+    if not basename:
+        return None
+
+    for current_root, dirs, files in os.walk(root_dir):
+        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "node_modules")]
+        if basename in files:
+            full_path = os.path.join(current_root, basename)
+            if _is_allowed_artifact_file(full_path):
+                return full_path
+    return None
+
+
+def _collect_skill_artifacts(
+    output_text: str,
+    *,
+    skill_dir: str,
+    artifacts_dir: str,
+    artifacts_before: dict[str, str],
+) -> list[dict[str, object]]:
+    collected: list[dict[str, object]] = []
+    seen_urls: set[str] = set()
+
+    def add_file(file_path: Optional[str]) -> None:
+        if not file_path or not _is_allowed_artifact_file(file_path):
+            return
+        payload = _build_artifact_payload(file_path)
+        if not payload:
+            return
+        media_url = str(payload.get("url") or "")
+        if not media_url or media_url in seen_urls:
+            return
+        seen_urls.add(media_url)
+        collected.append(payload)
+
+    artifacts_after = _snapshot_artifact_files(artifacts_dir)
+    for rel_path, full_path in artifacts_after.items():
+        if rel_path not in artifacts_before:
+            add_file(full_path)
+
+    for candidate in _extract_artifact_candidates(output_text):
+        if candidate.startswith("/media/"):
+            continue
+        if os.path.isabs(candidate):
+            add_file(candidate)
+            continue
+        add_file(_find_named_file(artifacts_dir, candidate))
+        add_file(_find_named_file(skill_dir, candidate))
+
+    return collected
+
+
+def _finalize_skill_result(
+    result_output: str,
+    *,
+    skill_dir: str,
+    artifacts_dir: str,
+    artifacts_before: dict[str, str],
+) -> str:
+    artifacts = _collect_skill_artifacts(
+        result_output,
+        skill_dir=skill_dir,
+        artifacts_dir=artifacts_dir,
+        artifacts_before=artifacts_before,
+    )
+    if not artifacts:
+        return result_output
+
+    text_content = result_output.strip() if result_output and result_output.strip() else ""
+    if not text_content:
+        text_content = f"已生成 {len(artifacts)} 个文件，可直接下载。"
+
+    payload = [{"type": "text", "text": text_content}, *artifacts]
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def _get_playwright_session_manager() -> PlaywrightSessionManager:
@@ -201,6 +457,14 @@ def get_skill_tools(
                 chat_session_id=current_chat_session_id,
             )
             env["SCREENSHOT_DIR"] = screenshots_dir
+            artifacts_dir = _prepare_skill_artifacts_dir(
+                project_id=current_project_id,
+                case_dir_key=case_dir_key,
+                chat_session_id=current_chat_session_id,
+            )
+            env["SKILL_OUTPUT_DIR"] = artifacts_dir
+            env["ARTIFACT_DIR"] = artifacts_dir
+            artifacts_before = _snapshot_artifact_files(artifacts_dir)
 
             # Windows 兼容：将单引号包裹的参数转换为双引号（用于 cmd.exe）
             # 同时处理多行字符串，将换行符转换为单行
@@ -263,7 +527,18 @@ def get_skill_tools(
                             if cleaned_output.strip()
                             else "(无输出)"
                         )
-                        return f'[PERSISTENT_SESSION] session_id={session_id}\n[SCREENSHOT_DIR] {screenshots_dir}\n{result_output}\n[提示] 后续步骤请继续使用 session_id="{session_id}"；截图已保存在 {screenshots_dir}'
+                        result_output = (
+                            f'[PERSISTENT_SESSION] session_id={session_id}\n'
+                            f'[SCREENSHOT_DIR] {screenshots_dir}\n'
+                            f'{result_output}\n'
+                            f'[提示] 后续步骤请继续使用 session_id="{session_id}"；截图已保存在 {screenshots_dir}'
+                        )
+                        return _finalize_skill_result(
+                            result_output,
+                            skill_dir=skill_dir,
+                            artifacts_dir=artifacts_dir,
+                            artifacts_before=artifacts_before,
+                        )
                     except TimeoutError:
                         logger.error(
                             "[execute_skill_script] 持久化 Playwright 执行超时"
@@ -344,7 +619,12 @@ def get_skill_tools(
             elif skill_name == "playwright-skill":
                 result_output = f"[SCREENSHOT_DIR] {screenshots_dir}\n{result_output}"
 
-            return result_output
+            return _finalize_skill_result(
+                result_output,
+                skill_dir=skill_dir,
+                artifacts_dir=artifacts_dir,
+                artifacts_before=artifacts_before,
+            )
 
         except subprocess.TimeoutExpired:
             logger.error("[execute_skill_script] 执行超时")
@@ -381,7 +661,9 @@ def get_skill_tools(
             max_workers: 批量模式下最大并发数（默认 10）
 
         Returns:
-            单个模式返回命令输出；批量模式返回 JSON 格式结果汇总
+            单个模式返回命令输出；如执行中生成了文件，会追加可下载附件信息。
+            Skills 可将导出文件写入 `SKILL_OUTPUT_DIR`（或 `ARTIFACT_DIR`）以便 Web 端直接下载。
+            批量模式返回 JSON 格式结果汇总
         """
         import json
         from concurrent.futures import ThreadPoolExecutor, as_completed

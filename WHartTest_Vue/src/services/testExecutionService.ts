@@ -25,33 +25,6 @@ export interface TestCaseResult {
   updated_at: string;
 }
 
-// 脚本执行结果接口
-export interface ScriptExecutionResult {
-  id: number;
-  script: number;
-  script_name?: string;
-  test_execution?: number;
-  status: 'pending' | 'running' | 'pass' | 'fail' | 'error' | 'cancelled';
-  started_at?: string;
-  completed_at?: string;
-  execution_time?: number;
-  duration?: number;
-  output?: string;
-  error_message?: string;
-  stack_trace?: string;
-  screenshots: string[];
-  videos: string[];
-  browser_type?: string;
-  viewport?: string;
-  executor?: number;
-  executor_detail?: {
-    id: number;
-    username: string;
-    email: string;
-  };
-  created_at: string;
-}
-
 // 测试执行记录接口
 export interface TestExecution {
   id: number;
@@ -75,7 +48,6 @@ export interface TestExecution {
   duration?: number;
   pass_rate: number;
   results?: TestCaseResult[];
-  script_results?: ScriptExecutionResult[];
   created_at: string;
   updated_at: string;
 }
@@ -142,16 +114,6 @@ export interface TestReportResponse {
       execution_time?: number;
       screenshots: string[];
       testcase_detail?: TestCase;
-    }>;
-    script_results?: Array<{
-      script_id: number;
-      script_name: string;
-      status: string;
-      error_message?: string;
-      execution_time?: number;
-      screenshots: string[];
-      videos?: string[];
-      output?: string;
     }>;
   };
   error?: string;

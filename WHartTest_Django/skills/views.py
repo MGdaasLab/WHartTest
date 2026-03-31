@@ -116,16 +116,17 @@ class SkillViewSet(BaseModelViewSet):
         project = self.get_project()
 
         try:
-            # 条件：上传包合法；动作：解压并创建 Skill；结果：返回新 Skill 的完整信息。
-            skill = Skill.create_from_zip(
+            # 条件：上传包合法；动作：解压并创建一个或多个 Skill；结果：返回新 Skills 的完整信息。
+            skills = Skill.create_from_zip(
                 zip_file=zip_file,
                 project=project,
                 creator=request.user
             )
+            names = ', '.join(s.name for s in skills)
             return Response({
                 'code': 201,
-                'message': f"Skill '{skill.name}' 上传成功",
-                'data': SkillSerializer(skill).data
+                'message': f"成功上传 {len(skills)} 个 Skill: {names}",
+                'data': SkillSerializer(skills, many=True).data
             }, status=status.HTTP_201_CREATED)
         except ValidationError as e:
             # 参数/文件内容校验失败返回 400，便于前端直接提示用户修正输入。

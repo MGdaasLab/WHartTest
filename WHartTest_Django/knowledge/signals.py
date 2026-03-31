@@ -23,9 +23,9 @@ def cleanup_knowledge_base(sender, instance, **kwargs):
         
         logger.info(f"🗑️  开始清理知识库: {instance.name} (ID: {instance.id})")
         
-        # 1. 清理向量存储缓存（会同时删除 Qdrant 集合）
-        VectorStoreManager.clear_cache(instance.id)
-        logger.info("  ✅ 已清理向量存储缓存和 Qdrant 集合")
+        # 1. 删除 Qdrant 集合 + 清理向量存储缓存
+        VectorStoreManager.drop_collection(instance.id)
+        logger.info("  ✅ 已删除 Qdrant 集合并清理向量存储缓存")
         
         # 2. 删除知识库文件目录
         kb_directory = os.path.join(

@@ -60,7 +60,8 @@
             <a-form-item label="API密钥" field="api_key">
               <a-input-password
                 v-model="formData.api_key"
-                placeholder="OpenAI/Azure必填，其他服务可选"
+                :placeholder="apiKeyPlaceholder"
+                @input="handleApiKeyInput"
               />
             </a-form-item>
           </a-col>
@@ -131,7 +132,8 @@
             <a-form-item label="Reranker API密钥" field="reranker_api_key">
               <a-input-password
                 v-model="formData.reranker_api_key"
-                placeholder="OpenAI/Azure必填，其他服务可选"
+                :placeholder="rerankerApiKeyPlaceholder"
+                @input="handleRerankerApiKeyInput"
               />
             </a-form-item>
           </a-col>
@@ -231,6 +233,10 @@ const loading = ref(false);
 const fetchLoading = ref(false);
 const testingConnection = ref(false);
 const testingReranker = ref(false);
+const hasSavedApiKey = ref(false);
+const hasSavedRerankerApiKey = ref(false);
+const apiKeyTouched = ref(false);
+const rerankerApiKeyTouched = ref(false);
 
 // 窗口宽度响应式
 const windowWidth = ref(window.innerWidth);
@@ -249,7 +255,7 @@ const formData = reactive<KnowledgeGlobalConfig>({
   reranker_service: 'none',
   reranker_api_url: '',
   reranker_api_key: '',
-  reranker_model_name: 'bge-reranker-v2-m3',
+  reranker_model_name: 'Qwen3-VL-Reranker-2B',
   chunk_size: 1000,
   chunk_overlap: 200,
   updated_at: '',
@@ -290,11 +296,22 @@ const rules = computed(() => {
 
   const requiredFields = getRequiredFieldsForEmbeddingService(formData.embedding_service || '');
   if (requiredFields.includes('api_key')) {
-    baseRules.api_key = [{ required: true, message: '请输入API密钥' }];
+    baseRules.api_key = [{
+      required: !hasSavedApiKey.value || apiKeyTouched.value,
+      message: '请输入API密钥',
+    }];
   }
 
   return baseRules;
 });
+
+const apiKeyPlaceholder = computed(() =>
+  hasSavedApiKey.value ? '已保存，如需修改请重新输入' : 'OpenAI/Azure必填，其他服务可选'
+);
+
+const rerankerApiKeyPlaceholder = computed(() =>
+  hasSavedRerankerApiKey.value ? '已保存，如需修改请重新输入' : 'OpenAI/Azure必填，其他服务可选'
+);
 
 // 监听弹窗显示状态
 watch(() => props.visible, async (visible) => {
@@ -313,7 +330,15 @@ const fetchData = async () => {
 
     // 获取当前配置
     const config = await KnowledgeService.getGlobalConfig();
-    Object.assign(formData, config);
+    hasSavedApiKey.value = !!config.api_key;
+    hasSavedRerankerApiKey.value = !!config.reranker_api_key;
+    apiKeyTouched.value = false;
+    rerankerApiKeyTouched.value = false;
+    Object.assign(formData, {
+      ...config,
+      api_key: '',
+      reranker_api_key: '',
+    });
   } catch (error) {
     console.error('获取配置失败:', error);
     Message.error('获取配置失败');
@@ -337,17 +362,29 @@ const handleEmbeddingServiceChange = (value: EmbeddingServiceType) => {
       formData.api_base_url = 'http://localhost:11434';
       formData.model_name = 'bge-m3';
       formData.api_key = '';
+      hasSavedApiKey.value = false;
+      apiKeyTouched.value = true;
       break;
     case 'xinference':
-      formData.api_base_url = 'http://localhost:9997';
-      formData.model_name = 'bge-m3';
+      formData.api_base_url = 'http://127.0.0.1:8917';
+      formData.model_name = 'qwen3-vl-emb-2b';
       formData.api_key = '';
+      hasSavedApiKey.value = false;
+      apiKeyTouched.value = true;
       break;
     case 'custom':
       formData.api_base_url = 'http://your-embedding-service:8080/v1/embeddings';
       formData.model_name = 'bge-m3';
       break;
   }
+};
+
+const handleApiKeyInput = () => {
+  apiKeyTouched.value = true;
+};
+
+const handleRerankerApiKeyInput = () => {
+  rerankerApiKeyTouched.value = true;
 };
 
 // 处理 Reranker 服务变化
@@ -357,16 +394,16 @@ const handleRerankerServiceChange = (value: RerankerServiceType) => {
       formData.reranker_api_url = '';
       // 保留默认模型名，不清空
       if (!formData.reranker_model_name) {
-        formData.reranker_model_name = 'bge-reranker-v2-m3';
+        formData.reranker_model_name = 'Qwen3-VL-Reranker-2B';
       }
       break;
     case 'xinference':
       formData.reranker_api_url = '';
-      formData.reranker_model_name = 'bge-reranker-v2-m3';
+      formData.reranker_model_name = 'Qwen3-VL-Reranker-2B';
       break;
     case 'custom':
       formData.reranker_api_url = 'http://your-reranker-service:8080/v1/rerank';
-      formData.reranker_model_name = 'bge-reranker-v2-m3';
+      formData.reranker_model_name = 'Qwen3-VL-Reranker-2B';
       break;
   }
 };
@@ -379,7 +416,8 @@ const testEmbeddingService = async () => {
   }
   
   const needsApiKey = formData.embedding_service === 'openai' || formData.embedding_service === 'azure_openai';
-  if (needsApiKey && !formData.api_key) {
+  const hasUsableApiKey = apiKeyTouched.value ? !!formData.api_key : hasSavedApiKey.value;
+  if (needsApiKey && !hasUsableApiKey) {
     Message.warning('此服务需要API密钥');
     return;
   }
@@ -387,12 +425,20 @@ const testEmbeddingService = async () => {
   testingConnection.value = true;
   try {
     // 通过后端代理测试，避免跨域问题
-    const result = await KnowledgeService.testEmbeddingConnection({
+    const payload: {
+      embedding_service: string;
+      api_base_url: string;
+      api_key?: string;
+      model_name: string;
+    } = {
       embedding_service: formData.embedding_service,
       api_base_url: formData.api_base_url,
-      api_key: formData.api_key || '',
       model_name: formData.model_name,
-    });
+    };
+    if (apiKeyTouched.value) {
+      payload.api_key = formData.api_key || '';
+    }
+    const result = await KnowledgeService.testEmbeddingConnection(payload);
     
     if (result.success) {
       Message.success(result.message || '嵌入模型测试成功！服务运行正常');
@@ -420,12 +466,20 @@ const testRerankerService = async () => {
 
   testingReranker.value = true;
   try {
-    const result = await KnowledgeService.testRerankerConnection({
+    const payload: {
+      reranker_service: string;
+      reranker_api_url: string;
+      reranker_api_key?: string;
+      reranker_model_name: string;
+    } = {
       reranker_service: formData.reranker_service,
       reranker_api_url: formData.reranker_api_url || formData.api_base_url || '',
-      reranker_api_key: formData.reranker_api_key || '',
       reranker_model_name: formData.reranker_model_name,
-    });
+    };
+    if (rerankerApiKeyTouched.value) {
+      payload.reranker_api_key = formData.reranker_api_key || '';
+    }
+    const result = await KnowledgeService.testRerankerConnection(payload);
 
     if (result.success) {
       Message.success(result.message || 'Reranker 服务测试成功！');
@@ -449,18 +503,24 @@ const handleSubmit = async () => {
     await formRef.value?.validate();
     loading.value = true;
 
-    await KnowledgeService.updateGlobalConfig({
+    const payload: Partial<KnowledgeGlobalConfig> = {
       embedding_service: formData.embedding_service,
       api_base_url: formData.api_base_url,
-      api_key: formData.api_key,
       model_name: formData.model_name,
       reranker_service: formData.reranker_service,
       reranker_api_url: formData.reranker_api_url,
-      reranker_api_key: formData.reranker_api_key,
       reranker_model_name: formData.reranker_model_name,
       chunk_size: formData.chunk_size,
       chunk_overlap: formData.chunk_overlap,
-    });
+    };
+    if (apiKeyTouched.value) {
+      payload.api_key = formData.api_key;
+    }
+    if (rerankerApiKeyTouched.value) {
+      payload.reranker_api_key = formData.reranker_api_key;
+    }
+
+    await KnowledgeService.updateGlobalConfig(payload);
 
     Message.success('配置保存成功');
     emit('saved');

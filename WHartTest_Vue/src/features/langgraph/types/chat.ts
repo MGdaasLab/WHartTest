@@ -17,6 +17,7 @@ export interface ChatRequest {
 
   // 多模态相关参数
   image?: string; // 图片base64编码（不含前缀），可选
+  images?: string[]; // 多张图片base64编码（不含前缀），可选
   
   // Playwright 脚本生成参数
   generate_playwright_script?: boolean; // 是否在任务完成后自动生成 Playwright 脚本
@@ -50,6 +51,7 @@ export interface ChatHistoryMessage {
   content: string;
   timestamp: string; // 消息时间戳
   image?: string; // 🆕 图片Data URL(包含完整的data:image/xxx;base64,前缀)
+  images?: string[]; // 🆕 多张图片Data URL
   is_thinking_process?: boolean; // 思考过程标记
   // ⭐ Agent Loop 历史记录专用字段
   agent?: string; // 'agent_loop' 表示来自Agent Loop

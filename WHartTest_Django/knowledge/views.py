@@ -1,5 +1,4 @@
 import os
-import threading
 import logging
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action, api_view, permission_classes
@@ -30,11 +29,46 @@ from .serializers import (
     KnowledgeGlobalConfigSerializer,
 )
 from .services import KnowledgeBaseService, VectorStoreManager
-import logging
 import time
-from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _mask_secret(secret):
+    """对敏感字段进行脱敏展示。"""
+    if not secret:
+        return secret
+    if len(secret) > 8:
+        return secret[:4] + "*" * (len(secret) - 8) + secret[-4:]
+    return "*" * len(secret)
+
+
+def _restore_masked_secret(candidate, stored_secret):
+    """
+    将前端回传的脱敏值还原为数据库中的真实密钥。
+
+    前端 GET 全局配置时会拿到脱敏后的 api_key / reranker_api_key，
+    如果用户未修改该字段直接测试或保存，后端需要识别这种占位值并保留真实密钥。
+    """
+    if not candidate or not stored_secret:
+        return candidate
+    if candidate == _mask_secret(stored_secret):
+        return stored_secret
+    return candidate
+
+
+def _dispatch_document_task(document):
+    """派发文档处理任务：优先 Celery，不可用时同步执行"""
+    from .tasks import process_document_task
+
+    def _send():
+        try:
+            process_document_task.delay(str(document.id))
+        except Exception as e:
+            logger.warning(f"Celery 不可用 ({e})，降级为同步处理")
+            process_document_task(str(document.id))
+
+    transaction.on_commit(_send)
 
 
 class KnowledgeGlobalConfigView(APIView):
@@ -49,11 +83,9 @@ class KnowledgeGlobalConfigView(APIView):
         data = serializer.data
         # 对API Key进行脱敏处理
         if data.get("api_key"):
-            api_key = data["api_key"]
-            if len(api_key) > 8:
-                data["api_key"] = api_key[:4] + "*" * (len(api_key) - 8) + api_key[-4:]
-            else:
-                data["api_key"] = "*" * len(api_key)
+            data["api_key"] = _mask_secret(data["api_key"])
+        if data.get("reranker_api_key"):
+            data["reranker_api_key"] = _mask_secret(data["reranker_api_key"])
         return Response(data)
 
     def put(self, request):
@@ -65,9 +97,17 @@ class KnowledgeGlobalConfigView(APIView):
             )
 
         config = KnowledgeGlobalConfig.get_config()
-        serializer = KnowledgeGlobalConfigSerializer(
-            config, data=request.data, partial=True
-        )
+        data = request.data.copy()
+        if "api_key" in data:
+            data["api_key"] = _restore_masked_secret(
+                data.get("api_key"), config.api_key
+            )
+        if "reranker_api_key" in data:
+            data["reranker_api_key"] = _restore_masked_secret(
+                data.get("reranker_api_key"), config.reranker_api_key
+            )
+
+        serializer = KnowledgeGlobalConfigSerializer(config, data=data, partial=True)
 
         if serializer.is_valid():
             serializer.save(updated_by=request.user)
@@ -255,94 +295,60 @@ class KnowledgeBaseViewSet(BaseModelViewSet):
     def system_status(self, request):
         """检查知识库系统状态"""
         try:
-            status_info = {
-                "timestamp": time.time(),
-                "embedding_model": {
-                    "status": "unknown",
-                    "model_name": "BAAI/bge-m3",
-                    "cache_path": None,
-                    "model_exists": False,
-                    "load_test": False,
-                    "error": None,
-                },
-                "dependencies": {
-                    "langchain_huggingface": False,
-                    "langchain_qdrant": False,
-                    "fastembed": False,
-                    "sentence_transformers": False,
-                    "torch": False,
-                },
-                "vector_stores": {
-                    "total_knowledge_bases": 0,
-                    "active_knowledge_bases": 0,
-                    "cache_status": "unknown",
-                },
-                "overall_status": "unknown",
-            }
+            # 检查核心依赖
+            deps = {}
+            for mod in ("langchain_qdrant", "fastembed"):
+                try:
+                    __import__(mod)
+                    deps[mod] = True
+                except ImportError:
+                    deps[mod] = False
 
-            # 检查依赖库
-            try:
-                import langchain_qdrant
-
-
-                status_info["dependencies"]["langchain_qdrant"] = True
-            except ImportError:
-                pass
-
-            try:
-                import fastembed
-
-
-
-                status_info["dependencies"]["fastembed"] = True
-            except ImportError:
-                pass
-
-            # 以下依赖检测逻辑已弃用（现通过 CustomAPIEmbeddings 走 API 调用）
-
-            # 检查BGE-M3模型
-            cache_dir = Path(".cache/huggingface")
-            model_cache_name = "BAAI--bge-m3"
-            model_path = cache_dir / f"models--{model_cache_name}"
-
-            status_info["embedding_model"]["cache_path"] = str(model_path)
-            status_info["embedding_model"]["model_exists"] = model_path.exists()
-
-            # 本地模型加载检测已弃用（现使用 CustomAPIEmbeddings）
-
-            # 现使用CustomAPIEmbeddings，不检查本地模型
-            status_info["embedding_model"]["status"] = "api_based"
-            status_info["embedding_model"]["note"] = (
-                "使用CustomAPIEmbeddings通过API调用嵌入模型"
-            )
-
-            # 检查知识库统计
+            # 知识库统计
             total_kb = KnowledgeBase.objects.count()
             active_kb = KnowledgeBase.objects.filter(is_active=True).count()
-
-            status_info["vector_stores"]["total_knowledge_bases"] = total_kb
-            status_info["vector_stores"]["active_knowledge_bases"] = active_kb
-
-            # 检查向量存储缓存
             cache_count = len(VectorStoreManager._vector_store_cache)
-            status_info["vector_stores"]["cache_status"] = (
-                f"{cache_count} cached instances"
+
+            # Qdrant 连通性检测
+            qdrant_ok = False
+            try:
+                qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:8918")
+                from qdrant_client import QdrantClient
+
+                client = QdrantClient(url=qdrant_url, timeout=3)
+                client.get_collections()
+                qdrant_ok = True
+            except Exception:
+                pass
+
+            all_deps_ok = all(deps.values())
+            overall = (
+                "healthy"
+                if all_deps_ok and qdrant_ok
+                else "degraded"
+                if qdrant_ok
+                else "error"
             )
 
-            # 确定整体状态
-            all_deps = all(status_info["dependencies"].values())
-            model_working = status_info["embedding_model"]["status"] == "working"
-
-            if all_deps and model_working:
-                status_info["overall_status"] = "healthy"
-            elif all_deps and status_info["embedding_model"]["status"] == "available":
-                status_info["overall_status"] = "ready"
-            elif status_info["embedding_model"]["status"] == "missing":
-                status_info["overall_status"] = "model_missing"
-            else:
-                status_info["overall_status"] = "error"
-
-            return Response(status_info)
+            return Response(
+                {
+                    "timestamp": time.time(),
+                    "overall_status": overall,
+                    "embedding": {
+                        "type": "api_based",
+                        "note": "使用 CustomAPIEmbeddings 通过 API 调用嵌入模型",
+                    },
+                    "dependencies": deps,
+                    "qdrant": {
+                        "connected": qdrant_ok,
+                    },
+                    "knowledge_bases": {
+                        "total": total_kb,
+                        "active": active_kb,
+                        "cache_count": cache_count,
+                    },
+                }
+            )
 
         except Exception as e:
             logger.error(f"系统状态检查失败: {e}")
@@ -391,26 +397,7 @@ class DocumentViewSet(BaseModelViewSet):
     def perform_create(self, serializer):
         """创建文档时自动设置上传人"""
         document = serializer.save(uploader=self.request.user)
-
-        # 启动后台任务处理文档（避免超时）
-        import threading
-
-        def process_document_async():
-            try:
-                service = KnowledgeBaseService(document.knowledge_base)
-                service.process_document(document)
-                logger.info(f"文档 {document.id} 处理完成")
-            except Exception as e:
-                logger.error(f"文档 {document.id} 处理失败: {e}")
-                # 更新文档状态为失败
-                document.status = "failed"
-                document.error_message = str(e)
-                document.save()
-
-        # 在后台线程中处理文档
-        thread = threading.Thread(target=process_document_async)
-        thread.daemon = True
-        thread.start()
+        _dispatch_document_task(document)
 
     @action(detail=True, methods=["get"])
     def status(self, request, pk=None):
@@ -432,28 +419,11 @@ class DocumentViewSet(BaseModelViewSet):
         """重新处理文档"""
         document = self.get_object()
 
-        # 重置状态
         document.status = "pending"
         document.error_message = ""
         document.save()
 
-        # 启动后台处理
-        import threading
-
-        def reprocess_document_async():
-            try:
-                service = KnowledgeBaseService(document.knowledge_base)
-                service.process_document(document)
-                logger.info(f"文档 {document.id} 重新处理完成")
-            except Exception as e:
-                logger.error(f"文档 {document.id} 重新处理失败: {e}")
-                document.status = "failed"
-                document.error_message = str(e)
-                document.save()
-
-        thread = threading.Thread(target=reprocess_document_async)
-        thread.daemon = True
-        thread.start()
+        _dispatch_document_task(document)
 
         return Response({"message": "文档重新处理已启动，请稍后查看状态"})
 
@@ -680,24 +650,23 @@ def embedding_services(request):
     return Response({"services": services})
 
 
-
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAdminUser])
 def test_embedding_connection(request):
-    """
-    测试嵌入服务连接
-    由后端代理请求到嵌入服务，避免前端跨域问题
-    """
+    """测试嵌入服务连接"""
     import requests as http_requests
 
-
-
+    config = KnowledgeGlobalConfig.get_config()
     embedding_service = request.data.get("embedding_service")
     api_base_url = request.data.get("api_base_url", "").rstrip("/")
-    api_key = request.data.get("api_key", "")
+    api_key = request.data.get("api_key")
+    if api_key is None:
+        api_key = config.api_key or ""
+    else:
+        api_key = _restore_masked_secret(api_key, config.api_key)
     model_name = request.data.get("model_name", "")
 
-    print(
+    logger.info(
         f"[嵌入测试] 收到请求: embedding_service={embedding_service}, api_base_url={api_base_url}, model_name={model_name}"
     )
 
@@ -756,13 +725,15 @@ def test_embedding_connection(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        print(f"[嵌入测试] 发送请求: URL={test_url}, body={request_body}")
+        logger.info(f"[嵌入测试] 发送请求: URL={test_url}")
 
-        response = http_requests.post(
+        session = http_requests.Session()
+        session.trust_env = False
+        response = session.post(
             test_url, json=request_body, headers=headers, timeout=30
         )
 
-        print(f"[嵌入测试] 响应状态: {response.status_code}")
+        logger.info(f"[嵌入测试] 响应状态: {response.status_code}")
 
         if response.ok:
             data = response.json()
@@ -784,12 +755,12 @@ def test_embedding_connection(request):
                 )
 
             if has_embedding:
-                print(f"[嵌入测试] 测试成功")
+                logger.info("[嵌入测试] 测试成功")
                 return Response(
                     {"success": True, "message": "嵌入模型测试成功！服务运行正常"}
                 )
             else:
-                print(f"[嵌入测试] 数据格式异常: {str(data)[:200]}")
+                logger.warning(f"[嵌入测试] 数据格式异常: {str(data)[:200]}")
                 return Response(
                     {
                         "success": False,
@@ -798,7 +769,9 @@ def test_embedding_connection(request):
                 )
         else:
             error_text = response.text[:500]
-            print(f"[嵌入测试] HTTP错误: {response.status_code} - {error_text}")
+            logger.warning(
+                f"[嵌入测试] HTTP错误: {response.status_code} - {error_text}"
+            )
             return Response(
                 {
                     "success": False,
@@ -807,37 +780,39 @@ def test_embedding_connection(request):
             )
 
     except http_requests.Timeout:
-        print(f"[嵌入测试] 请求超时")
+        logger.warning("[嵌入测试] 请求超时")
         return Response(
             {"success": False, "message": "请求超时，请检查服务是否正常运行"}
         )
     except http_requests.ConnectionError as e:
-        print(f"[嵌入测试] 连接失败: {str(e)}")
+        logger.warning(f"[嵌入测试] 连接失败: {e}")
         return Response(
             {"success": False, "message": f"无法连接到服务，请检查URL和网络: {str(e)}"}
         )
     except Exception as e:
-        print(f"[嵌入测试] 未知错误: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"[嵌入测试] 未知错误: {e}", exc_info=True)
         return Response({"success": False, "message": f"嵌入模型测试失败: {str(e)}"})
 
 
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAdminUser])
 def test_reranker_connection(request):
-    """
-    测试 Reranker 服务连接
-    """
+    """测试 Reranker 服务连接"""
     import requests as http_requests
 
+    config = KnowledgeGlobalConfig.get_config()
     reranker_service = request.data.get("reranker_service")
     reranker_api_url = request.data.get("reranker_api_url", "").rstrip("/")
-    reranker_api_key = request.data.get("reranker_api_key", "")
+    reranker_api_key = request.data.get("reranker_api_key")
+    if reranker_api_key is None:
+        reranker_api_key = config.reranker_api_key or ""
+    else:
+        reranker_api_key = _restore_masked_secret(
+            reranker_api_key, config.reranker_api_key
+        )
     reranker_model_name = request.data.get("reranker_model_name", "")
 
-    print(
+    logger.info(
         f"[Reranker测试] 收到请求: service={reranker_service}, url={reranker_api_url}, model={reranker_model_name}"
     )
 
@@ -885,13 +860,15 @@ def test_reranker_connection(request):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        print(f"[Reranker测试] 发送请求: URL={test_url}, body={request_body}")
+        logger.info(f"[Reranker测试] 发送请求: URL={test_url}")
 
-        response = http_requests.post(
+        session = http_requests.Session()
+        session.trust_env = False
+        response = session.post(
             test_url, json=request_body, headers=headers, timeout=30
         )
 
-        print(f"[Reranker测试] 响应状态: {response.status_code}")
+        logger.info(f"[Reranker测试] 响应状态: {response.status_code}")
 
         if response.ok:
             data = response.json()
@@ -903,12 +880,12 @@ def test_reranker_connection(request):
             )
 
             if has_results:
-                print(f"[Reranker测试] 测试成功")
+                logger.info("[Reranker测试] 测试成功")
                 return Response(
                     {"success": True, "message": "Reranker 服务测试成功！服务运行正常"}
                 )
             else:
-                print(f"[Reranker测试] 数据格式异常: {str(data)[:200]}")
+                logger.warning(f"[Reranker测试] 数据格式异常: {str(data)[:200]}")
                 return Response(
                     {
                         "success": False,
@@ -917,7 +894,9 @@ def test_reranker_connection(request):
                 )
         else:
             error_text = response.text[:500]
-            print(f"[Reranker测试] HTTP错误: {response.status_code} - {error_text}")
+            logger.warning(
+                f"[Reranker测试] HTTP错误: {response.status_code} - {error_text}"
+            )
             return Response(
                 {
                     "success": False,
@@ -926,12 +905,12 @@ def test_reranker_connection(request):
             )
 
     except http_requests.Timeout:
-        print(f"[Reranker测试] 请求超时")
+        logger.warning("[Reranker测试] 请求超时")
         return Response(
             {"success": False, "message": "请求超时，请检查服务是否正常运行"}
         )
     except http_requests.ConnectionError as e:
-        print(f"[Reranker测试] 连接失败: {str(e)}")
+        logger.warning(f"[Reranker测试] 连接失败: {e}")
         return Response(
             {
                 "success": False,
@@ -939,8 +918,5 @@ def test_reranker_connection(request):
             }
         )
     except Exception as e:
-        print(f"[Reranker测试] 未知错误: {str(e)}")
-        import traceback
-
-        traceback.print_exc()
+        logger.error(f"[Reranker测试] 未知错误: {e}", exc_info=True)
         return Response({"success": False, "message": f"Reranker 测试失败: {str(e)}"})

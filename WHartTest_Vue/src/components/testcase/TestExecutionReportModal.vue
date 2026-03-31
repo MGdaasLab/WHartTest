@@ -36,7 +36,6 @@
             <span class="stat-main-title">总任务数</span>
             <div class="stat-subtitle">
               <a-tag size="small" color="blue">{{ report.results?.length || 0 }} 用例</a-tag>
-              <a-tag size="small" color="green">{{ report.script_results?.length || 0 }} 脚本</a-tag>
             </div>
           </div>
         </a-card>
@@ -54,9 +53,8 @@
         </a-card>
       </div>
 
-      <!-- 结果列表 - 使用标签页区分用例和脚本 -->
-      <a-tabs default-active-key="testcases" class="results-tabs">
-        <a-tab-pane key="testcases" :title="`功能用例 (${report.results?.length || 0})`">
+      <!-- 结果列表 -->
+      <div class="results-section">
           <a-table
             v-if="report.results && report.results.length > 0"
             :data="report.results"
@@ -80,36 +78,8 @@
               </a-button>
             </template>
           </a-table>
-          <a-empty v-else description="暂无功能用例执行结果" />
-        </a-tab-pane>
-
-        <a-tab-pane key="scripts" :title="`自动化脚本 (${report.script_results?.length || 0})`">
-          <a-table
-            v-if="report.script_results && report.script_results.length > 0"
-            :data="report.script_results"
-            :columns="scriptResultColumns"
-            row-key="script_id"
-            :pagination="false"
-            stripe
-            class="results-table"
-          >
-            <template #status="{ record }">
-              <a-tag :color="getStatusColor(record.status)">
-                {{ getStatusText(record.status) }}
-              </a-tag>
-            </template>
-            <template #duration="{ record }">
-              <span>{{ formatDuration(record.execution_time) }}</span>
-            </template>
-            <template #actions="{ record }">
-              <a-button type="text" size="small" @click="viewScriptResultDetail(record)">
-                查看详情
-              </a-button>
-            </template>
-          </a-table>
-          <a-empty v-else description="暂无自动化脚本执行结果" />
-        </a-tab-pane>
-      </a-tabs>
+          <a-empty v-else description="暂无用例执行结果" />
+      </div>
     </div>
   </a-modal>
 
@@ -122,9 +92,9 @@
     unmount-on-close
   >
     <template #title>
-      {{ isScriptDetail ? '脚本执行详情' : '用例执行详情' }}
+      用例执行详情
     </template>
-    <div v-if="selectedResult && !isScriptDetail">
+    <div v-if="selectedResult">
       <h4>{{ selectedResult.testcase_name }}</h4>
       <a-descriptions :column="1" bordered>
         <a-descriptions-item label="状态">
@@ -181,75 +151,6 @@
       </div>
       <a-empty v-else description="暂无截图" />
     </div>
-
-    <!-- 脚本执行详情 -->
-    <div v-if="selectedScriptResult && isScriptDetail">
-      <h4>{{ selectedScriptResult.script_name }}</h4>
-      <a-descriptions :column="1" bordered>
-        <a-descriptions-item label="状态">
-          <a-tag :color="getStatusColor(selectedScriptResult.status)">
-            {{ getStatusText(selectedScriptResult.status) }}
-          </a-tag>
-        </a-descriptions-item>
-        <a-descriptions-item label="执行时长">
-          {{ formatDuration(selectedScriptResult.execution_time) }}
-        </a-descriptions-item>
-        <a-descriptions-item v-if="selectedScriptResult.error_message" label="错误信息">
-          <pre class="error-message">{{ selectedScriptResult.error_message }}</pre>
-        </a-descriptions-item>
-      </a-descriptions>
-
-      <a-divider>执行输出</a-divider>
-      <div class="execution-log-container">
-        <pre v-if="selectedScriptResult.output" class="script-output">{{ selectedScriptResult.output }}</pre>
-        <div v-else class="log-empty">无执行输出</div>
-      </div>
-
-      <a-divider>执行截图</a-divider>
-      <div v-if="selectedScriptResult.screenshots && selectedScriptResult.screenshots.length > 0">
-        <div class="screenshot-count">
-          共 {{ selectedScriptResult.screenshots.length }} 张截图
-        </div>
-        <div class="screenshot-viewer-wrapper">
-          <div class="screenshot-viewer">
-            <div class="screenshot-container">
-              <div class="screenshot-index">
-                {{ currentSlideIndex + 1 }} / {{ selectedScriptResult.screenshots.length }}
-              </div>
-              <img
-                :src="selectedScriptResult.screenshots[currentSlideIndex]"
-                :key="currentSlideIndex"
-                class="screenshot-image"
-              />
-            </div>
-            <button
-              v-if="selectedScriptResult.screenshots.length > 1"
-              class="custom-arrow custom-arrow-left"
-              @click="handlePrev"
-            >
-              <icon-left />
-            </button>
-            <button
-              v-if="selectedScriptResult.screenshots.length > 1"
-              class="custom-arrow custom-arrow-right"
-              @click="handleNext"
-            >
-              <icon-right />
-            </button>
-          </div>
-        </div>
-      </div>
-      <a-empty v-else description="暂无截图" />
-
-      <template v-if="selectedScriptResult.videos && selectedScriptResult.videos.length > 0">
-        <a-divider>执行录屏</a-divider>
-        <div class="videos-list">
-          <div v-for="(video, index) in selectedScriptResult.videos" :key="index" class="video-item">
-            <video :src="video" controls width="100%" />
-          </div>
-        </div>
-      </template>
-    </div>
   </a-drawer>
 </template>
 
@@ -267,7 +168,6 @@ import { formatDateTime, formatDuration } from '@/utils/formatters';
 // 类型定义
 type ReportData = NonNullable<TestReportResponse['data']>;
 type ReportResult = ReportData['results'][0];
-type ScriptResult = NonNullable<ReportData['script_results']>[0];
 
 // 组件属性
 interface Props {
@@ -289,8 +189,6 @@ const report = ref<ReportData | null>(null);
 const fullResults = ref<TestCaseResult[]>([]);
 const detailDrawerVisible = ref(false);
 const selectedResult = ref<ReportResult | null>(null);
-const selectedScriptResult = ref<ScriptResult | null>(null);
-const isScriptDetail = ref(false);
 
 const modalVisible = computed({
   get: () => props.visible,
@@ -300,13 +198,6 @@ const modalVisible = computed({
 // 表格列配置
 const resultColumns = [
   { title: '用例名称', dataIndex: 'testcase_name' },
-  { title: '状态', slotName: 'status', width: 100 },
-  { title: '执行时长', slotName: 'duration', width: 120 },
-  { title: '操作', slotName: 'actions', width: 100 },
-];
-
-const scriptResultColumns = [
-  { title: '脚本名称', dataIndex: 'script_name' },
   { title: '状态', slotName: 'status', width: 100 },
   { title: '执行时长', slotName: 'duration', width: 120 },
   { title: '操作', slotName: 'actions', width: 100 },
@@ -348,16 +239,6 @@ const viewResultDetail = (result: ReportResult) => {
     ...result,
     testcase_detail: fullResult?.testcase_detail
   };
-  selectedScriptResult.value = null;
-  isScriptDetail.value = false;
-  currentSlideIndex.value = 0; // 重置轮播索引
-  detailDrawerVisible.value = true;
-};
-
-const viewScriptResultDetail = (result: ScriptResult) => {
-  selectedScriptResult.value = result;
-  selectedResult.value = null;
-  isScriptDetail.value = true;
   currentSlideIndex.value = 0;
   detailDrawerVisible.value = true;
 };
@@ -513,13 +394,7 @@ const currentSlideIndex = ref(0);
 
 // 获取当前截图列表（支持用例和脚本两种类型）
 const getCurrentScreenshots = () => {
-  if (isScriptDetail.value && selectedScriptResult.value?.screenshots) {
-    return selectedScriptResult.value.screenshots;
-  }
-  if (selectedResult.value?.screenshots) {
-    return selectedResult.value.screenshots;
-  }
-  return [];
+  return selectedResult.value?.screenshots || [];
 };
 
 const handlePrev = () => {
@@ -885,34 +760,6 @@ watch(
   font-size: 28px;
   color: white;
   font-weight: bold;
-}
-
-/* 脚本输出样式 */
-.script-output {
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  margin: 0;
-  font-family: 'Consolas', 'Monaco', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-text-2);
-}
-
-/* 视频列表样式 */
-.videos-list {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.video-item {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.video-item video {
-  display: block;
 }
 
 /* 结果标签页样式 */

@@ -173,6 +173,8 @@ import { useProjectStore } from '@/store/projectStore';
 import { useLlmConfigRefresh } from '@/composables/useLlmConfigRefresh';
 import { marked } from 'marked';
 import { IconFullscreen, IconFullscreenExit } from '@arco-design/web-vue/es/icon';
+import type { ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
+import { parseToolResultDisplayPayload } from '@/features/langgraph/utils/toolResultParser';
 
 // 导入子组件
 import ChatSidebar from '../components/ChatSidebar.vue';
@@ -201,6 +203,9 @@ interface ChatMessage {
   isStreaming?: boolean;
   imageBase64?: string;
   imageDataUrl?: string;
+  fileAttachments?: ToolFileAttachment[];
+  imageBase64List?: string[];
+  imageDataUrls?: string[];
   isThinkingProcess?: boolean;
   isThinkingExpanded?: boolean;
   // Agent Step 专用字段
@@ -402,11 +407,16 @@ const normalizeHistoryContent = (historyItem: ChatHistoryMessage): string => {
   }
 
   if (historyItem.type === 'tool' && Array.isArray(rawContent)) {
-    const textItem = rawContent.find((item: any) =>
-      item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string'
+    const hasNonTextItem = rawContent.some((item: any) =>
+      item && typeof item === 'object' && item.type !== 'text'
     );
-    if (textItem?.text) {
-      return textItem.text;
+    if (!hasNonTextItem) {
+      const textParts = rawContent
+        .filter((item: any) => item && typeof item === 'object' && item.type === 'text' && typeof item.text === 'string')
+        .map((item: any) => item.text);
+      if (textParts.length > 0) {
+        return textParts.join('\n');
+      }
     }
   }
 
@@ -746,6 +756,10 @@ const enrichMessagesWithSeparators = (rawHistory: ChatHistoryMessage[], formatHi
     // 工具消息默认折叠
     if (historyItem.type === 'tool') {
       message.isExpanded = false;
+      const toolPayload = parseToolResultDisplayPayload(message.content);
+      if (toolPayload.fileAttachments.length > 0) {
+        message.fileAttachments = toolPayload.fileAttachments;
+      }
     }
 
     // 思考过程消息折叠状态
@@ -762,7 +776,11 @@ const enrichMessagesWithSeparators = (rawHistory: ChatHistoryMessage[], formatHi
     }
 
     // 图片数据
-    if (historyItem.image) {
+    if (historyItem.images && historyItem.images.length > 0) {
+      message.imageDataUrls = historyItem.images;
+      message.imageDataUrl = historyItem.images[0];
+    } else if (historyItem.image) {
+      message.imageDataUrls = [historyItem.image];
       message.imageDataUrl = historyItem.image;
     }
 
@@ -882,6 +900,7 @@ const solidifyStreamContent = () => {
             toolName: msg.toolName,
             isExpanded: msg.isExpanded,
             imageDataUrl: msg.imageDataUrl,
+            fileAttachments: msg.fileAttachments,
             isThinkingProcess: msg.isThinkingProcess,
             isThinkingExpanded: msg.isThinkingExpanded
           };
@@ -1180,7 +1199,9 @@ const handleRetry = async (message: ChatMessage) => {
   await handleSendMessage({
     message: userMessage.content,
     image: userMessage.imageBase64,
-    imageDataUrl: userMessage.imageDataUrl
+    imageDataUrl: userMessage.imageDataUrl,
+    images: userMessage.imageBase64List,
+    imageDataUrls: userMessage.imageDataUrls
   });
 };
 
@@ -1523,10 +1544,25 @@ const clearChat = async () => {
 };
 
 // 发送消息
-const handleSendMessage = async (data: { message: string; image?: string; imageDataUrl?: string; quotedMessage?: ChatMessage | null }) => {
-  const { message, image, imageDataUrl } = data;
+const handleSendMessage = async (data: {
+  message: string;
+  image?: string;
+  imageDataUrl?: string;
+  images?: string[];
+  imageDataUrls?: string[];
+  quotedMessage?: ChatMessage | null;
+}) => {
+  const imageBase64List = data.images && data.images.length > 0
+    ? data.images
+    : (data.image ? [data.image] : []);
+  const imageDataUrlList = data.imageDataUrls && data.imageDataUrls.length > 0
+    ? data.imageDataUrls
+    : (data.imageDataUrl ? [data.imageDataUrl] : []);
+  const image = imageBase64List[0];
+  const imageDataUrl = imageDataUrlList[0];
+  const { message } = data;
 
-  if (!message.trim() && !image) {
+  if (!message.trim() && imageBase64List.length === 0) {
     Message.warning('消息内容不能为空！');
     return;
   }
@@ -1557,7 +1593,9 @@ const handleSendMessage = async (data: { message: string; image?: string; imageD
     time: getCurrentTime(),
     messageType: 'human',
     imageBase64: image, // 保存图片Base64数据（用于发送到后端）
-    imageDataUrl: imageDataUrl // 保存完整Data URL（用于前端显示）
+    imageDataUrl: imageDataUrl, // 保存完整Data URL（用于前端显示）
+    imageBase64List: imageBase64List,
+    imageDataUrls: imageDataUrlList
   });
 
   isLoading.value = true;
@@ -1569,8 +1607,11 @@ const handleSendMessage = async (data: { message: string; image?: string; imageD
   };
   
   // 如果有图片，添加到请求中
-  if (image) {
-    (requestData as any).image = image; // 临时使用any，稍后更新ChatRequest类型
+  if (imageBase64List.length > 0) {
+    requestData.images = imageBase64List;
+    if (imageBase64List.length === 1) {
+      requestData.image = imageBase64List[0];
+    }
   }
 
   // 添加提示词参数
@@ -1639,6 +1680,7 @@ const displayedMessages = computed(() => {
             toolName: msg.toolName,
             isExpanded: msg.isExpanded,
             imageDataUrl: msg.imageDataUrl,
+            fileAttachments: msg.fileAttachments,
             isThinkingProcess: msg.isThinkingProcess,
             isThinkingExpanded: msg.isThinkingExpanded
           };
@@ -1762,11 +1804,15 @@ const handleNormalMessage = async (requestData: ChatRequest, originalMessage: st
       // 添加工具结果消息（如果有）
       if (data.tool_results && data.tool_results.length > 0) {
         for (const toolResult of data.tool_results) {
+          const toolPayload = parseToolResultDisplayPayload(toolResult.tool_output || toolResult.summary);
           messages.value.push({
-            content: toolResult.summary,
+            content: toolPayload.content || toolResult.summary,
             isUser: false,
             time: getCurrentTime(),
             messageType: 'tool',
+            toolName: toolResult.tool_name,
+            imageDataUrl: toolPayload.imageDataUrl,
+            fileAttachments: toolPayload.fileAttachments,
             isExpanded: false
           });
         }

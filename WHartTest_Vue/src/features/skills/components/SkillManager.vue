@@ -83,7 +83,7 @@
           <icon-upload style="font-size: 32px" />
           <div class="upload-text">
             <div>点击选择 zip 文件</div>
-            <div class="upload-tip">包含 SKILL.md 的 zip 压缩包</div>
+            <div class="upload-tip">支持 zip 内包含一个或多个 Skill</div>
           </div>
         </div>
         <div v-if="selectedFile" class="selected-file">
@@ -192,8 +192,10 @@ const handleUpload = async () => {
 
   uploading.value = true
   try {
-    await SkillService.uploadSkill(props.projectId, selectedFile.value)
-    Message.success('上传成功')
+    const skills = await SkillService.uploadSkill(props.projectId, selectedFile.value)
+    const count = skills.length
+    const names = skills.map(s => s.name).join(', ')
+    Message.success(`成功上传 ${count} 个 Skill: ${names}`)
     showUploadModal.value = false
     selectedFile.value = null
     await fetchSkills()

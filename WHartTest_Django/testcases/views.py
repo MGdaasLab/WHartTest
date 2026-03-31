@@ -962,28 +962,6 @@ class TestExecutionViewSet(viewsets.ModelViewSet):
                 }
             )
 
-        # 添加脚本执行结果
-        report_data["script_results"] = []
-        for script_result in execution.script_results.all().select_related("script"):
-            screenshots_urls = [
-                _normalize_media_url(path) for path in (script_result.screenshots or [])
-            ]
-            videos_urls = [
-                _normalize_media_url(path) for path in (script_result.videos or [])
-            ]
-            report_data["script_results"].append(
-                {
-                    "script_id": script_result.script.id,
-                    "script_name": script_result.script.name,
-                    "status": script_result.status,
-                    "error_message": script_result.error_message,
-                    "execution_time": script_result.execution_time,
-                    "output": script_result.output,
-                    "screenshots": screenshots_urls,
-                    "videos": videos_urls,
-                }
-            )
-
         return Response(report_data)
 
     def destroy(self, request, *args, **kwargs):

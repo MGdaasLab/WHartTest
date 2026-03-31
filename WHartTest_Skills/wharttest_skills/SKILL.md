@@ -1,6 +1,6 @@
 ---
 name: whart-test
-description: WHartTest测试管理平台工具集。用于管理项目、模块、测试用例的增删改查，以及截图上传和drawio图表操作。当用户需要操作测试用例、查询项目信息、上传截图或创建编辑图表时使用。
+description: WHartTest测试管理平台工具集。用于管理项目、模块、测试用例的增删改查，以及测试截图上传。当用户需要操作测试用例、查询项目信息或上传截图时使用。
 ---
 
 # WHartTest 测试管理平台
@@ -46,13 +46,6 @@ python whart_tools.py --action <action_name> [--参数名 参数值]
 
 **单张上传**：`--file_path "case_11_step1.png"`
 **批量上传**：`--file_paths "step1.png,step2.png,step3.png"`（最多10张，逗号分隔）
-
-### 图表操作
-
-| Action | 描述 | 参数 |
-|--------|------|------|
-| `create_diagram` | 创建drawio图表 | `--xml`, `--page_name` |
-| `edit_diagram` | 编辑drawio图表 | `--operations` (JSON格式) |
 
 ### 审核状态
 

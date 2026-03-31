@@ -482,13 +482,16 @@ defineExpose({
   align-items: center;
   margin-bottom: 16px;
   padding: 16px;
-  background: #f7f8fa;
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
   border-radius: 6px;
 }
 
 .tree-container {
   flex: 1;
-  border: 1px solid #e5e6eb;
+  background: var(--theme-shell-soft, var(--theme-surface-soft));
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
   padding: 16px;
   min-height: 0;
@@ -503,10 +506,11 @@ defineExpose({
 
 .permission-name {
   flex: 1;
+  color: var(--theme-text);
 }
 
 .permission-count {
-  color: #86909c;
+  color: var(--theme-text-tertiary);
   font-size: 12px;
 }
 
@@ -516,5 +520,43 @@ defineExpose({
 
 :deep(.arco-tree-node-title) {
   flex: 1;
+  color: var(--theme-text);
+  border-radius: 6px;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+:deep(.arco-tree-node-title:hover) {
+  background: rgba(var(--theme-accent-rgb), 0.08);
+}
+
+:deep(.arco-tree-node-selected .arco-tree-node-title) {
+  background: rgba(var(--theme-accent-rgb), 0.12);
+}
+
+:deep(.arco-empty-description) {
+  color: var(--theme-empty-text);
+}
+
+:deep(.arco-empty-icon) {
+  color: var(--theme-empty-icon);
+}
+
+:deep(.arco-tree-node-switcher) {
+  color: var(--theme-text-tertiary);
+}
+
+:deep(.arco-tree-node-indent-line) {
+  border-color: var(--theme-border);
+}
+
+:deep(.arco-btn-secondary) {
+  background: var(--theme-surface);
+  border-color: var(--theme-border);
+  color: var(--theme-text-secondary);
+}
+
+:deep(.arco-btn-secondary:hover) {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
 }
 </style>

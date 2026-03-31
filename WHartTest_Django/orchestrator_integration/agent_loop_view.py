@@ -166,6 +166,31 @@ def _get_env_float(name: str, default: float, min_value: float = 0.1) -> float:
         return default
 
 
+def _normalize_uploaded_image_base64_list(
+    raw_images: Any, raw_image: Any = None
+) -> List[str]:
+    """兼容旧 image 字段与新 images 数组，返回去重后的上传图片列表。"""
+
+    normalized: List[str] = []
+
+    def _append(candidate: Any) -> None:
+        if not isinstance(candidate, str):
+            return
+        value = candidate.strip()
+        if not value or value in normalized:
+            return
+        normalized.append(value)
+
+    if isinstance(raw_images, list):
+        for item in raw_images:
+            _append(item)
+    else:
+        _append(raw_images)
+
+    _append(raw_image)
+    return normalized
+
+
 _LINKED_IMAGE_URL_ALLOWLIST = {
     host.strip().lower()
     for host in os.getenv("AGENT_LOOP_IMAGE_URL_ALLOWLIST", "*").split(",")
@@ -349,7 +374,7 @@ def process_mcp_tool_output(content: Any) -> tuple:
         tuple: (processed_content, summary)
     """
     # 处理 MCP 工具返回的列表格式，提取 text 内容
-    if isinstance(content, list) and len(content) > 0:
+    if isinstance(content, list) and len(content) == 1:
         first_item = content[0]
         if isinstance(first_item, dict) and first_item.get("type") == "text":
             text_content = first_item.get("text")
@@ -702,7 +727,7 @@ class AgentLoopStreamAPIView(View):
         knowledge_base_id: Optional[int] = None,
         use_knowledge_base: bool = True,
         prompt_id: Optional[int] = None,
-        image_base64: Optional[str] = None,
+        uploaded_images_base64: Optional[List[str]] = None,
         generate_playwright_script: bool = False,
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
@@ -728,7 +753,7 @@ class AgentLoopStreamAPIView(View):
             return
 
         # 2. 验证多模态支持
-        if image_base64 and not active_config.supports_vision:
+        if uploaded_images_base64 and not active_config.supports_vision:
             yield create_sse_data(
                 {
                     "type": "error",
@@ -897,7 +922,7 @@ class AgentLoopStreamAPIView(View):
                     "AgentLoopStreamAPI: Message contains URL text but extractor found 0 valid URLs"
                 )
 
-            if image_base64 or linked_image_data_urls:
+            if uploaded_images_base64 or linked_image_data_urls:
                 human_message_content = [{"type": "text", "text": user_message}]
                 for data_url in linked_image_data_urls:
                     human_message_content.append(
@@ -906,7 +931,7 @@ class AgentLoopStreamAPIView(View):
                             "image_url": {"url": data_url},
                         }
                     )
-                if image_base64:
+                for image_base64 in uploaded_images_base64 or []:
                     human_message_content.append(
                         {
                             "type": "image_url",
@@ -1367,7 +1392,10 @@ class AgentLoopStreamAPIView(View):
         logger.info(
             f"AgentLoopStreamAPI: knowledge_base_id={knowledge_base_id}, use_knowledge_base={use_knowledge_base}"
         )
-        image_base64 = body_data.get("image")
+        uploaded_images_base64 = _normalize_uploaded_image_base64_list(
+            body_data.get("images"),
+            body_data.get("image"),
+        )
 
         # stream 参数：控制流式/非流式输出（默认 true）
         stream_mode = body_data.get("stream", True)
@@ -1433,7 +1461,7 @@ class AgentLoopStreamAPIView(View):
                     knowledge_base_id,
                     use_knowledge_base,
                     prompt_id,
-                    image_base64,
+                    uploaded_images_base64,
                     generate_playwright_script,
                     test_case_id,
                     use_pytest,
@@ -1457,7 +1485,7 @@ class AgentLoopStreamAPIView(View):
                 knowledge_base_id,
                 use_knowledge_base,
                 prompt_id,
-                image_base64,
+                uploaded_images_base64,
                 generate_playwright_script,
                 test_case_id,
                 use_pytest,
@@ -1473,7 +1501,7 @@ class AgentLoopStreamAPIView(View):
         knowledge_base_id: Optional[int] = None,
         use_knowledge_base: bool = True,
         prompt_id: Optional[int] = None,
-        image_base64: Optional[str] = None,
+        uploaded_images_base64: Optional[List[str]] = None,
         generate_playwright_script: bool = False,
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
@@ -1503,7 +1531,7 @@ class AgentLoopStreamAPIView(View):
                 knowledge_base_id,
                 use_knowledge_base,
                 prompt_id,
-                image_base64,
+                uploaded_images_base64,
                 generate_playwright_script,
                 test_case_id,
                 use_pytest,
@@ -1526,6 +1554,8 @@ class AgentLoopStreamAPIView(View):
                             tool_results.append(
                                 {
                                     "summary": event.get("summary", ""),
+                                    "tool_output": event.get("tool_output"),
+                                    "tool_name": event.get("tool_name"),
                                     "step": event.get("step", 0),
                                 }
                             )

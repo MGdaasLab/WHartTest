@@ -195,9 +195,14 @@ class Skill(models.Model):
         }
 
     @classmethod
-    def create_from_zip(cls, zip_file, project: Project, creator: User) -> 'Skill':
+    def create_from_zip(
+        cls,
+        zip_file,
+        project: Project,
+        creator: User,
+    ) -> list['Skill']:
         """
-        从上传的 zip 文件创建 Skill
+        从上传的 zip 文件创建一个或多个 Skill
 
         Args:
             zip_file: 上传的 zip 文件对象
@@ -205,10 +210,9 @@ class Skill(models.Model):
             creator: 创建者
 
         Returns:
-            Skill 实例
+            成功导入的 Skill 列表
         """
         import tempfile
-        from django.conf import settings
 
         with tempfile.TemporaryDirectory() as temp_dir:
             try:
@@ -218,57 +222,31 @@ class Skill(models.Model):
             except zipfile.BadZipFile:
                 raise ValidationError('无效的 zip 文件')
 
-            skill_root = temp_dir
-            items = os.listdir(temp_dir)
-            if len(items) == 1 and os.path.isdir(os.path.join(temp_dir, items[0])):
-                skill_root = os.path.join(temp_dir, items[0])
-
-            skill_md_path = os.path.join(skill_root, 'SKILL.md')
-            if not os.path.exists(skill_md_path):
+            skill_dirs = cls._find_skill_dirs(temp_dir)
+            if not skill_dirs:
                 raise ValidationError('zip 文件中未找到 SKILL.md')
 
-            with open(skill_md_path, 'r', encoding='utf-8') as f:
-                skill_content = f.read()
+            created_skills: list[Skill] = []
+            errors: list[str] = []
 
-            parsed = cls.parse_skill_md(skill_content)
+            for skill_dir in skill_dirs:
+                try:
+                    skill = cls._create_skill_from_dir(skill_dir, project, creator)
+                    created_skills.append(skill)
+                except ValidationError as e:
+                    msg = e.messages[0] if hasattr(e, 'messages') and e.messages else str(e)
+                    errors.append(msg)
 
-            if cls.objects.filter(project=project, name=parsed['name']).exists():
-                raise ValidationError(f"项目中已存在名为 '{parsed['name']}' 的 Skill")
+            if not created_skills:
+                raise ValidationError(
+                    f"所有 Skills 导入失败: {'; '.join(errors)}" if errors
+                    else 'zip 文件中未找到有效的 SKILL.md'
+                )
 
-            full_storage_path = None
-            try:
-                with transaction.atomic():
-                    # 先创建数据库记录，再落盘文件；事务保证数据库写入原子性。
-                    skill = cls.objects.create(
-                        project=project,
-                        creator=creator,
-                        name=parsed['name'],
-                        description=parsed['description'],
-                        skill_content=skill_content,
-                        is_active=True
-                    )
+            if errors:
+                logger.warning("部分 Skills 上传失败: %s", '; '.join(errors))
 
-                    skill_storage_path = f'skills/{project.id}/{skill.id}'
-                    full_storage_path = os.path.join(settings.MEDIA_ROOT, skill_storage_path)
-                    os.makedirs(full_storage_path, exist_ok=False)
-
-                    for item in os.listdir(skill_root):
-                        src = os.path.join(skill_root, item)
-                        dst = os.path.join(full_storage_path, item)
-                        if os.path.isdir(src):
-                            shutil.copytree(src, dst)
-                        else:
-                            shutil.copy2(src, dst)
-
-                    skill.skill_path = skill_storage_path
-                    skill.save(update_fields=['skill_path'])
-
-                return skill
-            except Exception:
-                # 任一步骤失败时回滚已创建目录，避免遗留脏文件。
-                if full_storage_path and os.path.isdir(full_storage_path):
-                    shutil.rmtree(full_storage_path, ignore_errors=True)
-                raise
+            return created_skills
 
     @classmethod
     def _clone_repo(cls, git_url: str, branch: str, dest_dir: str) -> None:

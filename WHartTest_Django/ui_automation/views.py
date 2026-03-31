@@ -629,3 +629,82 @@ def upload_trace(request):
         'url': url,
         'path': relative_path
     }, status=status.HTTP_201_CREATED)
+
+
+# ---------- 内部触发批量执行（供 Celery 任务调用） ----------
+from asgiref.sync import async_to_sync
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def trigger_batch_execution(request):
+    """内部 API：创建批量执行记录并通过 WebSocket 发送给执行器
+
+    请求体:
+        case_ids: list[int] - 用例 ID 列表
+        actuator_id: str - 执行器 ID
+        batch_name: str - 批次名称（可选）
+        trigger_type: str - 触发类型（默认 scheduled）
+    """
+    from .consumers import SocketUserManager
+    from .socket_models import SocketDataModel, QueueModel, NoticeType, ResponseCode, UiSocketEnum
+
+    case_ids = request.data.get('case_ids', [])
+    actuator_id = request.data.get('actuator_id', '')
+    batch_name = request.data.get('batch_name', '')
+    trigger_type = request.data.get('trigger_type', 'scheduled')
+
+    if not case_ids:
+        return Response({'error': '未提供用例 ID'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # 查找执行器
+    if actuator_id:
+        actuator = SocketUserManager.get_actuator_by_id(actuator_id)
+    else:
+        actuator = SocketUserManager.get_actuator()
+
+    if not actuator:
+        return Response(
+            {'error': f'执行器 {actuator_id} 不在线' if actuator_id else '没有可用的执行器'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+
+    # 创建批量执行记录
+    from django.utils import timezone as tz
+    case_names = list(UiTestCase.objects.filter(id__in=case_ids).values_list('name', flat=True)[:3])
+    if not batch_name:
+        batch_name = f"定时任务: {', '.join(case_names)}"
+        if len(case_ids) > 3:
+            batch_name += f" 等{len(case_ids)}个用例"
+
+    batch = UiBatchExecutionRecord.objects.create(
+        name=batch_name,
+        total_cases=len(case_ids),
+        status=1,
+        trigger_type=trigger_type,
+        executor=request.user,
+        start_time=tz.now(),
+    )
+
+    args = {
+        'case_ids': case_ids,
+        'actuator_id': actuator_id,
+        'batch_id': batch.id,
+    }
+
+    # 通过 WebSocket 发送给执行器
+    async_to_sync(actuator.send_json)(SocketDataModel(
+        code=ResponseCode.SUCCESS,
+        msg='execute_batch',
+        user='system',
+        is_notice=NoticeType.ACTUATOR,
+        data=QueueModel(
+            func_name=UiSocketEnum.TEST_CASE_BATCH,
+            func_args=args,
+        ),
+    ))
+
+    return Response({
+        'status': 'success',
+        'data': {'batch_id': batch.id, 'total_cases': len(case_ids)},
+    })

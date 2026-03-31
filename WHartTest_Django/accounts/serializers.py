@@ -387,6 +387,8 @@ class ContentTypeSerializer(serializers.ModelSerializer):
             "requirements": "需求管理",
             "orchestrator_integration": "智能图表",
             "ui_automation": "UI自动化",
+            "task_center": "任务中心",
+            "django_celery_beat": "任务中心",
             "testcases": "测试管理",
             "testcase_templates": "测试管理",
             "knowledge": "知识库管理",
@@ -397,8 +399,6 @@ class ContentTypeSerializer(serializers.ModelSerializer):
             "apikey": "系统管理",
             "mcp_tools": "系统管理",
             "skills": "系统管理",
-            "task_center": "系统管理",
-            "django_celery_beat": "系统管理",
             "llms": "系统管理",
             "llm_config": "系统管理",
             "message": "系统管理",
@@ -426,6 +426,12 @@ class ContentTypeSerializer(serializers.ModelSerializer):
                 if model_name in ["testexecution", "testcaseresult", "scriptexecution"]:
                     return "执行历史"
                 return "用例管理"
+            return None
+
+        # 条件：一级菜单是任务中心；动作：统一归类到任务调度；结果：权限树位置与前端导航一致。
+        if menu_category == "任务中心":
+            if app_label in ["task_center", "django_celery_beat"]:
+                return "任务调度"
             return None
 
         # 非系统管理菜单不需要二级分组，返回 None 让前端按一级菜单展示。
@@ -473,9 +479,13 @@ class ContentTypeSerializer(serializers.ModelSerializer):
         返回第二层分类的排序权重
         """
         subcategory = self.get_app_label_subcategory(obj)
+        menu_category = self.get_app_label_cn(obj)
         # 未命中二级菜单时统一放在尾部，避免破坏既有分组顺序。
         if not subcategory:
             return 99  # 没有第二层分类的排在最后
+
+        if menu_category == "任务中心" and subcategory == "任务调度":
+            return 1
 
         subcategory_sort = {
             # 测试管理
@@ -506,10 +516,11 @@ class ContentTypeSerializer(serializers.ModelSerializer):
             "需求管理": 2,
             "智能图表": 3,
             "UI自动化": 4,
-            "测试管理": 5,
-            "LLM对话": 6,
-            "知识库管理": 7,
-            "系统管理": 8,
+            "任务中心": 5,
+            "测试管理": 6,
+            "LLM对话": 7,
+            "知识库管理": 8,
+            "系统管理": 9,
         }
         return sort_order.get(app_label_cn, 99)
 

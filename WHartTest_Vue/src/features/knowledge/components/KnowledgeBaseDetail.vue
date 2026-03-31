@@ -199,7 +199,7 @@
             </div>
             <div class="answer" v-if="queryResult.answer">
               <strong>回答:</strong>
-              <p>{{ queryResult.answer }}</p>
+              <div class="answer-content" v-html="renderAnswer(queryResult)"></div>
             </div>
             <div class="sources">
               <strong>相关内容 ({{ queryResult.sources.length }} 条结果):</strong>
@@ -216,6 +216,7 @@
                 </div>
               </div>
             </div>
+
             <div class="timing">
               <small>
                 检索时间: {{ queryResult.retrieval_time.toFixed(2) }}s |
@@ -278,6 +279,15 @@ const topK = ref(3);
 const isUploadModalVisible = ref(false);
 const isDocumentDetailVisible = ref(false);
 const selectedDocumentId = ref<string | null>(null);
+const renderAnswer = (result: QueryResponse): string => {
+  return escapeHtml(result.answer);
+};
+
+const escapeHtml = (text: string): string => {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+};
 
 // 文档表格列配置
 const documentColumns = [
@@ -655,10 +665,19 @@ onMounted(() => {
   margin-bottom: 12px;
 }
 
-.answer p {
+.answer-content {
   margin: 4px 0 0 0;
   font-size: 12px;
   line-height: 1.5;
+}
+
+.answer-content :deep(.answer-inline-image) {
+  max-width: 300px;
+  max-height: 200px;
+  border-radius: 4px;
+  margin: 4px 0;
+  cursor: pointer;
+  display: block;
 }
 
 .sources {
@@ -677,6 +696,45 @@ onMounted(() => {
   font-size: 12px;
   line-height: 1.4;
   margin-bottom: 4px;
+}
+
+.source-image {
+  margin-bottom: 4px;
+  text-align: center;
+}
+
+.source-image img {
+  max-width: 100%;
+  max-height: 250px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+
+.source-image img:hover {
+  opacity: 0.85;
+}
+
+.source-image .image-label {
+  display: block;
+  font-size: 11px;
+  color: #999;
+  margin-top: 4px;
+}
+
+.source-content-with-images {
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
+
+.source-inline-image {
+  max-width: 100%;
+  max-height: 200px;
+  border-radius: 4px;
+  margin: 4px 0;
+  cursor: pointer;
+  display: block;
 }
 
 .source-meta {

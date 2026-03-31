@@ -63,3 +63,10 @@ uv run python manage.py init_admin
 # 开发环境启动
 uv run uvicorn wharttest_django.asgi:application --reload --host 127.0.0.1 --port 8000
 ```
+
+#### 8.Celery Beat 服务
+开启两个终端分别运行下面的命令
+```bash
+uv run celery -A wharttest_django worker --loglevel=info -Q celery,task_center
+uv run celery -A wharttest_django beat --loglevel=info
+```

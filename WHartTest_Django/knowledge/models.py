@@ -50,7 +50,7 @@ class KnowledgeGlobalConfig(models.Model):
     model_name = models.CharField(
         _('模型名称'),
         max_length=100,
-        default='text-embedding-ada-002',
+        default='qwen3-vl-emb-2b',
         help_text=_('具体的嵌入模型名称')
     )
 
@@ -79,7 +79,7 @@ class KnowledgeGlobalConfig(models.Model):
     reranker_model_name = models.CharField(
         _('Reranker模型名称'),
         max_length=100,
-        default='bge-reranker-v2-m3',
+        default='Qwen3-VL-Reranker-2B',
         blank=True,
         help_text=_('Reranker模型名称')
     )
@@ -158,6 +158,11 @@ class KnowledgeBase(models.Model):
 def document_upload_path(instance, filename):
     """生成文档上传路径"""
     return f'knowledge_bases/{instance.knowledge_base.id}/documents/{filename}'
+
+
+def document_image_upload_path(instance, filename):
+    """生成文档图片上传路径（保留供 migration 引用）"""
+    return f'knowledge_bases/{instance.document.knowledge_base.id}/images/{filename}'
 
 
 class Document(models.Model):

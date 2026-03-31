@@ -246,11 +246,17 @@ class Command(BaseCommand):
             
             # 条件：配置尚未被用户修改；动作：写入默认 Xinference 参数；结果：知识库功能可直接启动。
             if config.updated_by is None:
-                # 设置Xinference默认配置（Docker Compose服务名为xinference）
+                xinference_url = os.environ.get('XINFERENCE_API_BASE_URL', 'http://xinference:9997')
+                # Embedding 配置
                 config.embedding_service = 'xinference'
-                config.api_base_url = os.environ.get('XINFERENCE_API_BASE_URL', 'http://xinference:9997')
-                config.api_key = ''  # Xinference不需要API Key
-                config.model_name = os.environ.get('XINFERENCE_EMBEDDING_MODEL', 'bge-m3')
+                config.api_base_url = xinference_url
+                config.api_key = ''
+                config.model_name = os.environ.get('XINFERENCE_EMBEDDING_MODEL', 'qwen3-vl-emb-2b')
+                # Reranker 配置（同一 Xinference 实例）
+                config.reranker_service = 'xinference'
+                config.reranker_api_url = xinference_url
+                config.reranker_api_key = ''
+                config.reranker_model_name = os.environ.get('XINFERENCE_RERANKER_MODEL', 'Qwen3-VL-Reranker-2B')
                 config.chunk_size = 1000
                 config.chunk_overlap = 200
                 config.updated_by = admin_user
@@ -262,7 +268,7 @@ class Command(BaseCommand):
                         f'  嵌入服务: Xinference\n'
                         f'  API地址: {config.api_base_url}\n'
                         f'  嵌入模型: {config.model_name}\n'
-                        f'  Reranker: bge-reranker-v2-m3 (自动启用)\n'
+                        f'  Reranker: {config.reranker_model_name}\n'
                         f'  分块大小: {config.chunk_size}\n'
                         f'  分块重叠: {config.chunk_overlap}\n'
                         f'  ℹ️  可在【知识库管理】>【知识库配置】中修改'

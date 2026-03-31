@@ -83,6 +83,32 @@
 ![alt text](./img_5.png)
 ![alt text](./img_6.png)
 ![alt text](./img_7.png)
+### APP自动化MCP
+
+1.下载platform-tools解压到本地并配置系统环境变量已保证adb命令正常使用
+![alt text](./img_55.png)
+
+2.双击mcp目录下的Windows 批处理文件启动mcp服务
+![alt text](./img_54.png)
+![alt text](./img_47.png)
+
+3.将你的url填写到MCP配置中，ip是本机ip端口为8920。
+![alt text](./img_60.png)
+![alt text](./img_48.png)
+
+4.打开模拟器，并进入开发者模式，这里演示的是mumu模拟器。
+![alt text](./img_50.png)
+![alt text](./img_51.png)
+
+注意：这里连续点击7次版本号进入开发者模式
+
+![alt text](./img_52.png)
+
+5.cmd运行adb devices，监测模拟器是否连接成功
+![alt text](./img_53.png)
+
+6.在llm对话测试mcp是否连通
+![alt text](./img_49.png)
 ## 🐛 问题修复
 
 ### 聊天与会话

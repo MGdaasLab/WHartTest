@@ -129,6 +129,8 @@ INSTALLED_APPS = [
     "skills",  # Skill 管理应用。
     "testcase_templates",  # 用例模板应用。
     "ui_automation",  # UI 自动化应用。
+    'task_center', # 任务中心应用
+    'django_celery_beat', # Celery Beat 数据库调度器
 ]
 
 # ASGI 配置（用于 Channels WebSocket）
@@ -656,6 +658,14 @@ CELERY_RESULT_EXPIRES = 3600  # 结果过期时间（秒）。
 CELERY_TASK_SERIALIZER = "json"  # 任务消息序列化格式。
 CELERY_RESULT_SERIALIZER = "json"  # 任务结果序列化格式。
 CELERY_ACCEPT_CONTENT = ["json"]  # Worker 允许接收的消息内容类型。
+
+# Celery任务路由 - task_center 使用独立队列，避免被其他 worker 误消费
+CELERY_TASK_ROUTES = {
+    'task_center.tasks.*': {'queue': 'task_center'},
+}
+
+# Celery Beat 调度器配置
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers:DatabaseScheduler'
 
 # Celery任务配置
 CELERY_TASK_TRACK_STARTED = True  # 追踪任务开始状态。

@@ -219,6 +219,7 @@ COPY projects/ /app/projects/
 COPY prompts/ /app/prompts/
 COPY requirements/ /app/requirements/
 COPY skills/ /app/skills/
+COPY task_center/ /app/task_center/
 COPY ui_automation/ /app/ui_automation/
 COPY testcase_templates/ /app/testcase_templates/
 COPY testcases/ /app/testcases/

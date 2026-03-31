@@ -745,12 +745,6 @@ def cancel_test_execution(execution_id):
                 completed_at=timezone.now()
             )
             
-            # 取消所有pending状态的脚本执行结果
-            execution.script_results.filter(status='pending').update(
-                status='cancelled',
-                completed_at=timezone.now()
-            )
-            
             logger.info(f"测试执行已取消: {execution_id}")
             return {'success': True, 'message': '测试执行已取消'}
         else:

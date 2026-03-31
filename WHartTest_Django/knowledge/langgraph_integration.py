@@ -86,9 +86,9 @@ class KnowledgeRAGService:
             top_k = state.get("top_k", 5)
             similarity_threshold = state.get("similarity_threshold", 0.7)
 
-            # 执行检索
-            search_results = service.vector_manager.similarity_search(
-                state["question"], k=top_k, score_threshold=similarity_threshold
+            # 统一检索增强（含 Query Rewrite）
+            search_results = service.enhanced_search(
+                state["question"], top_k=top_k, similarity_threshold=similarity_threshold
             )
 
             retrieval_time = time.time() - start_time
@@ -510,9 +510,9 @@ def create_knowledge_tool(knowledge_base_id: str, user, similarity_threshold: fl
             knowledge_base = KnowledgeBase.objects.get(id=knowledge_base_id)
             service = KnowledgeBaseService(knowledge_base)
 
-            # 执行检索
-            search_results = service.vector_manager.similarity_search(
-                query, k=top_k, score_threshold=similarity_threshold
+            # 统一检索增强（含 Query Rewrite）
+            search_results = service.enhanced_search(
+                query, top_k=top_k, similarity_threshold=similarity_threshold
             )
 
             if not search_results:

@@ -3,60 +3,44 @@
 提供文档处理、向量化、检索等核心功能
 """
 
+import concurrent.futures
+import hashlib
+import logging
 import os
 import time
-import hashlib
-from typing import List, Dict, Any
+import uuid
+from typing import Any, Dict, List, Optional
+
 import nltk
-from django.conf import settings
-
-# --- NLTK 数据路径配置 ---
-# 将项目内部的 'nltk_data' 目录添加到 NLTK 的搜索路径中
-# 这使得项目在任何环境中都能找到必要的数据，无需系统级安装
-LOCAL_NLTK_DATA_PATH = os.path.join(settings.BASE_DIR, "nltk_data")
-if os.path.exists(LOCAL_NLTK_DATA_PATH):
-    if LOCAL_NLTK_DATA_PATH not in nltk.data.path:
-        nltk.data.path.insert(0, LOCAL_NLTK_DATA_PATH)
-        print(f"NLTK data path prepended with: {LOCAL_NLTK_DATA_PATH}")
-
-# 设置完全离线模式，避免任何网络请求
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-# 禁用网络连接
-os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
-os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-# 设置极短的连接超时，强制快速失败
-os.environ["HF_HUB_TIMEOUT"] = "1"
-os.environ["REQUESTS_TIMEOUT"] = "1"
+import requests
 from django.conf import settings
 from django.utils import timezone
 from langchain_community.document_loaders import (
-    PyPDFLoader,
     Docx2txtLoader,
-    UnstructuredPowerPointLoader,
+    PyPDFLoader,
     TextLoader,
-    UnstructuredMarkdownLoader,
     UnstructuredHTMLLoader,
+    UnstructuredMarkdownLoader,
+    UnstructuredPowerPointLoader,
     WebBaseLoader,
 )
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document as LangChainDocument
+from langchain_core.embeddings import Embeddings
 from langchain_qdrant import QdrantVectorStore
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
-    VectorParams,
+    NamedSparseVector,
+    NamedVector,
     PointStruct,
+    SparseIndexParams,
     SparseVector,
     SparseVectorParams,
-    SparseIndexParams,
-    NamedVector,
-    NamedSparseVector,
+    VectorParams,
     models,
 )
-from langchain_core.documents import Document as LangChainDocument
+
 from .models import (
     KnowledgeBase,
     Document,
@@ -64,11 +48,28 @@ from .models import (
     QueryLog,
     KnowledgeGlobalConfig,
 )
-import logging
-import requests
-import uuid
-from typing import List, Optional, Dict
-from langchain_core.embeddings import Embeddings
+
+logger = logging.getLogger(__name__)
+
+# NLTK 数据路径（不在 import 时打印）
+LOCAL_NLTK_DATA_PATH = os.path.join(settings.BASE_DIR, "nltk_data")
+if os.path.exists(LOCAL_NLTK_DATA_PATH) and LOCAL_NLTK_DATA_PATH not in nltk.data.path:
+    nltk.data.path.insert(0, LOCAL_NLTK_DATA_PATH)
+
+# HuggingFace / Transformers 离线模式（应通过 settings 或 env 文件配置，此处作为兜底）
+_HF_OFFLINE_VARS = {
+    "TRANSFORMERS_OFFLINE": "1",
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+    "TOKENIZERS_PARALLELISM": "false",
+    "HF_HUB_DISABLE_TELEMETRY": "1",
+    "HF_HUB_DISABLE_PROGRESS_BARS": "1",
+    "HF_HUB_DISABLE_SYMLINKS_WARNING": "1",
+    "HF_HUB_TIMEOUT": "1",
+    "REQUESTS_TIMEOUT": "1",
+}
+for _k, _v in _HF_OFFLINE_VARS.items():
+    os.environ.setdefault(_k, _v)
 
 # 尝试导入 FastEmbed 用于 BM25 稀疏编码
 # 注意：需要在导入前临时禁用离线模式
@@ -95,13 +96,9 @@ def _init_fastembed():
     except ImportError:
         return False
     finally:
-        # 恢复环境变量
         for var, val in old_values.items():
             if val is not None:
                 os.environ[var] = val
-
-
-logger = logging.getLogger(__name__)
 
 
 class SparseBM25Encoder:
@@ -146,7 +143,6 @@ class SparseBM25Encoder:
             try:
                 import huggingface_hub.constants
 
-
                 if hasattr(huggingface_hub.constants, "HF_HUB_OFFLINE"):
                     huggingface_hub.constants.HF_HUB_OFFLINE = False
             except Exception:
@@ -171,9 +167,9 @@ class SparseBM25Encoder:
 
 
 class CustomAPIEmbeddings(Embeddings):
-    """自定义HTTP API嵌入服务"""
+    """自定义HTTP API嵌入服务，支持文本和图片多模态嵌入"""
 
-
+    BATCH_SIZE = 32
 
     def __init__(
         self,
@@ -186,40 +182,88 @@ class CustomAPIEmbeddings(Embeddings):
         self.api_key = api_key
         self.custom_headers = custom_headers or {}
         self.model_name = model_name
+        self._session = requests.Session()
+        self._session.trust_env = False
+        adapter = requests.adapters.HTTPAdapter(
+            max_retries=requests.adapters.Retry(
+                total=3,
+                backoff_factor=0.5,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+        )
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """嵌入多个文档"""
-        return [self.embed_query(text) for text in texts]
-
-    def embed_query(self, text: str) -> List[float]:
-        """嵌入单个查询"""
+    def _build_headers(self) -> dict:
         headers = {"Content-Type": "application/json", **self.custom_headers}
-
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
-        data = {
-            "input": text,
-            "model": self.model_name,  # 使用配置的模型名
-        }
-
+    def _call_api(self, input_data) -> List:
+        """统一 API 调用，返回 embedding 列表（单条为 List[float]，批量为 List[List[float]]）"""
+        is_batch = isinstance(input_data, list)
+        data = {"input": input_data, "model": self.model_name}
         try:
-            response = requests.post(
-                self.api_base_url,  # 直接使用完整的API URL
+            response = self._session.post(
+                self.api_base_url,
                 json=data,
-                headers=headers,
-                timeout=30,
+                headers=self._build_headers(),
+                timeout=1200,
             )
             response.raise_for_status()
-
             result = response.json()
             if "data" in result and len(result["data"]) > 0:
+                if is_batch:
+                    sorted_data = sorted(
+                        result["data"], key=lambda x: x.get("index", 0)
+                    )
+                    return [d["embedding"] for d in sorted_data]
                 return result["data"][0]["embedding"]
-            else:
-                raise ValueError(f"API响应格式错误: {result}")
-
+            raise ValueError(f"API响应格式错误: {result}")
         except Exception as e:
-            raise RuntimeError(f"自定义API嵌入失败: {str(e)}")
+            raise RuntimeError(f"嵌入API调用失败: {str(e)}")
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """批量嵌入文档（按 BATCH_SIZE 分片，并行调用）"""
+        batches = [
+            (i, texts[i : i + self.BATCH_SIZE])
+            for i in range(0, len(texts), self.BATCH_SIZE)
+        ]
+
+        def _embed_batch(item):
+            idx, batch = item
+            try:
+                return idx, self._call_api(batch)
+            except Exception:
+                # 批次失败时缩小为一半批次重试，避免逐条
+                half = max(1, len(batch) // 2)
+                results = []
+                for j in range(0, len(batch), half):
+                    sub = batch[j : j + half]
+                    results.extend(self._call_api(sub) if len(sub) > 1 else [self._call_api(sub[0])])
+                return idx, results
+
+        max_workers = min(4, len(batches))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(_embed_batch, batches))
+
+        results.sort(key=lambda x: x[0])
+        all_embeddings: List[List[float]] = []
+        for _, embeddings in results:
+            all_embeddings.extend(embeddings)
+        return all_embeddings
+
+    def embed_query(self, text: str) -> List[float]:
+        """嵌入单个文本查询"""
+        return self._call_api(text)
+
+    def embed_image(
+        self, image_base64: str, mime_type: str = "image/png"
+    ) -> List[float]:
+        """嵌入单张图片（多模态嵌入模型）"""
+        data_url = f"data:{mime_type};base64,{image_base64}"
+        return self._call_api({"image": data_url})
 
 
 class DocumentProcessor:
@@ -227,8 +271,8 @@ class DocumentProcessor:
 
     def __init__(self):
         self.loaders = {
-            "pdf": PyPDFLoader,
-            "docx": self._load_docx_structured,  # 使用自定义结构化解析
+            "pdf": self._load_pdf_structured,  # 自定义解析，支持图片占位
+            "docx": self._load_docx_structured,  # 自定义结构化解析
             "doc": self._load_doc_structured,  # 支持旧版 .doc 格式
             "xlsx": self._load_excel_structured,  # Excel 表格
             "xls": self._load_excel_structured,  # 旧版 Excel
@@ -275,7 +319,29 @@ class DocumentProcessor:
             raise
 
     def _load_from_url(self, url: str) -> List[LangChainDocument]:
-        """从URL加载文档"""
+        """从URL加载文档（含 SSRF 防护）"""
+        from urllib.parse import urlparse
+        from ipaddress import ip_address
+        import socket
+
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(f"仅允许 http/https 协议: {parsed.scheme}")
+        hostname = parsed.hostname
+        if hostname:
+            resolved = socket.getaddrinfo(
+                hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM
+            )
+            for _, _, _, _, sockaddr in resolved:
+                addr = ip_address(sockaddr[0])
+                if (
+                    addr.is_private
+                    or addr.is_loopback
+                    or addr.is_reserved
+                    or addr.is_link_local
+                ):
+                    raise ValueError(f"禁止访问内网地址: {sockaddr[0]}")
+
         loader = WebBaseLoader(url)
         return loader.load()
 
@@ -372,6 +438,45 @@ class DocumentProcessor:
             else:
                 raise
 
+    def _load_pdf_structured(
+        self, file_path: str, document: Document
+    ) -> List[LangChainDocument]:
+        """解析 PDF 文件，按页加载文本"""
+        try:
+            import fitz
+        except ImportError:
+            # 降级为 PyPDFLoader
+            loader = PyPDFLoader(file_path)
+            return loader.load()
+
+        pdf_doc = fitz.open(file_path)
+        try:
+            docs = []
+
+            for page_num in range(len(pdf_doc)):
+                page = pdf_doc[page_num]
+                content = page.get_text().strip()
+
+                if content:
+                    docs.append(
+                        LangChainDocument(
+                            page_content=content,
+                            metadata={
+                                "source": document.title,
+                                "document_id": str(document.id),
+                                "document_type": document.document_type,
+                                "title": document.title,
+                                "file_path": file_path,
+                                "page": page_num,
+                            },
+                        )
+                    )
+
+            logger.info(f"PDF 结构化解析完成 - 页数: {len(docs)}")
+            return docs
+        finally:
+            pdf_doc.close()
+
     def _load_docx_structured(
         self, file_path: str, document: Document
     ) -> List[LangChainDocument]:
@@ -384,7 +489,6 @@ class DocumentProcessor:
                 f"开始结构化解析 Word 文档，段落数: {len(doc.paragraphs)}, 表格数: {len(doc.tables)}"
             )
 
-            # 创建元素到对象的映射
             paragraph_map = {p._element: p for p in doc.paragraphs}
             table_map = {t._element: t for t in doc.tables}
 
@@ -392,21 +496,17 @@ class DocumentProcessor:
             extracted_paragraphs = 0
             extracted_tables = 0
 
-
-            # 按文档顺序遍历所有元素
             for element in doc.element.body:
-                if element.tag.endswith("p"):  # 段落
+                if element.tag.endswith("p"):
                     paragraph = paragraph_map.get(element)
                     if paragraph:
                         text = paragraph.text.strip()
                         if text:
-                            markdown_text = self._convert_paragraph_to_markdown(
-                                paragraph
-                            )
+                            markdown_text = self._convert_paragraph_to_markdown(paragraph)
                             content_parts.append(markdown_text)
                             extracted_paragraphs += 1
 
-                elif element.tag.endswith("tbl"):  # 表格
+                elif element.tag.endswith("tbl"):
                     table = table_map.get(element)
                     if table:
                         table_content = self._extract_table_content(table)
@@ -416,7 +516,8 @@ class DocumentProcessor:
 
             content = "\n\n".join(content_parts)
             logger.info(
-                f"Word 结构化解析完成 - 段落: {extracted_paragraphs}, 表格: {extracted_tables}, 内容长度: {len(content)}"
+                f"Word 结构化解析完成 - 段落: {extracted_paragraphs}, "
+                f"表格: {extracted_tables}, 内容长度: {len(content)}"
             )
 
             return [
@@ -484,12 +585,10 @@ class DocumentProcessor:
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=120,
+                    timeout=1200,
                 )
                 if result.returncode == 0:
                     import os
-
-
 
                     docx_file = os.path.join(
                         tmp_dir, os.path.basename(file_path).rsplit(".", 1)[0] + ".docx"
@@ -582,7 +681,7 @@ class DocumentProcessor:
                 return ""
 
             # 构建单元格网格，用于处理合并单元格
-            # 网格元素格式：(单元格文本, 是否为合并延续单元格)
+            # grid[row][col] = (cell_text, is_merged_continuation)
             grid = [[("", False) for _ in range(max_cols)] for _ in range(row_count)]
 
             def _sanitize_cell_text(text: str) -> str:
@@ -828,6 +927,8 @@ class DocumentProcessor:
         return "\n".join(table_parts)
 
 
+
+
 class VectorStoreManager:
     """向量存储管理器 - 支持稠密+稀疏混合检索 + Reranker精排"""
 
@@ -837,7 +938,7 @@ class VectorStoreManager:
     # RRF 融合参数
     RRF_K = 60
     # Reranker 配置
-    RERANKER_MODEL = "bge-reranker-v2-m3"
+    RERANKER_MODEL = "Qwen3-VL-Reranker-2B"
     RERANKER_ENABLED = True  # 可通过环境变量控制
 
     # 类级别的缓存
@@ -980,7 +1081,6 @@ class VectorStoreManager:
             "api_version": "2024-02-15-preview",
         }
 
-
         kwargs["deployment"] = config.model_name or "text-embedding-ada-002"
 
         logger.info(f"🚀 初始化Azure OpenAI嵌入模型: {kwargs['model']}")
@@ -1012,74 +1112,142 @@ class VectorStoreManager:
         else:
             base_url = config.api_base_url.rstrip("/")
 
-        logger.info(f"🚀 初始化Xinference嵌入模型: {config.model_name or 'bge-m3'}")
+        logger.info(
+            f"🚀 初始化Xinference嵌入模型: {config.model_name or 'qwen3-vl-emb-2b'}"
+        )
         return CustomAPIEmbeddings(
             api_base_url=f"{base_url}/v1/embeddings",
             api_key=config.api_key or "",
             custom_headers={},
-            model_name=config.model_name or "bge-m3",
+            model_name=config.model_name or "qwen3-vl-emb-2b",
         )
 
     def _get_reranker_config(self) -> tuple:
-        """获取 Reranker 配置（独立于 Embedding）"""
+        """获取 Reranker 配置 → (url, model, api_key)"""
         config = self.global_config
 
-        # 检查是否启用 Reranker
         reranker_service = getattr(config, "reranker_service", "none")
         if reranker_service == "none":
-            return None, None
+            return None, None, None
 
-        # 获取 Reranker API 地址
         reranker_api_url = getattr(config, "reranker_api_url", None)
         if not reranker_api_url:
-            # 如果未配置独立地址，尝试使用 Embedding 服务地址（仅限 Xinference）
             if config.embedding_service == "xinference" and config.api_base_url:
                 reranker_api_url = config.api_base_url
             elif reranker_service == "xinference":
                 reranker_api_url = "http://localhost:9997"
             else:
-                return None, None
+                return None, None, None
 
-        # 获取模型名称
-        reranker_model = getattr(config, "reranker_model_name", "bge-reranker-v2-m3")
+        reranker_model = getattr(config, "reranker_model_name", "Qwen3-VL-Reranker-2B")
+        reranker_api_key = getattr(config, "reranker_api_key", None) or None
 
         base_url = reranker_api_url.rstrip("/")
-        return f"{base_url}/v1/rerank", reranker_model
+        return f"{base_url}/v1/rerank", reranker_model, reranker_api_key
 
     def _get_reranker_url(self) -> Optional[str]:
-        """获取 Reranker 服务地址（带缓存，跟随全局配置缓存过期）"""
-        url, _ = self._get_reranker_config()
+        """获取 Reranker 服务地址"""
+        url, _, _ = self._get_reranker_config()
         return url
 
     def _get_reranker_model(self) -> str:
         """获取 Reranker 模型名称"""
-        _, model = self._get_reranker_config()
+        _, model, _ = self._get_reranker_config()
         return model or self.RERANKER_MODEL
+
+    def _get_reranker_api_key(self) -> Optional[str]:
+        """获取 Reranker API 密钥"""
+        _, _, api_key = self._get_reranker_config()
+        return api_key
+
+    @staticmethod
+    def _composite_score(
+        rerank_score: float, rrf_score: float, source_weight: float = 1.0
+    ) -> float:
+        """复合评分：融合 Reranker 分数和 RRF 分数
+
+        权重：60% reranker + 30% RRF + 10% 来源权重
+        """
+        return max(
+            0.0, min(1.0, 0.6 * rerank_score + 0.3 * rrf_score + 0.1 * source_weight)
+        )
+
+    @staticmethod
+    def _mmr_diversify(
+        results: List[Dict[str, Any]], k: int, lambda_param: float = 0.7
+    ) -> List[Dict[str, Any]]:
+        """MMR (Maximal Marginal Relevance) 去冗余
+
+        lambda_param: 越高越偏重相关性，越低越偏重多样性
+        """
+        if len(results) <= k:
+            return results
+
+        def tokenize(text: str) -> set:
+            return set(text.lower().split())
+
+        def jaccard(s1: set, s2: set) -> float:
+            if not s1 or not s2:
+                return 0.0
+            return len(s1 & s2) / len(s1 | s2)
+
+        token_sets = [
+            tokenize(r.get("content", r.get("payload", {}).get("page_content", "")))
+            for r in results
+        ]
+        selected_indices = [0]
+        selected_tokens = [token_sets[0]]
+
+        while len(selected_indices) < k:
+            best_idx, best_score = -1, -float("inf")
+            for i in range(len(results)):
+                if i in selected_indices:
+                    continue
+                relevance = results[i].get(
+                    "similarity_score", results[i].get("score", 0)
+                )
+                redundancy = max(
+                    (jaccard(token_sets[i], st) for st in selected_tokens), default=0
+                )
+                mmr = lambda_param * relevance - (1 - lambda_param) * redundancy
+                if mmr > best_score:
+                    best_score, best_idx = mmr, i
+            if best_idx < 0:
+                break
+            selected_indices.append(best_idx)
+            selected_tokens.append(token_sets[best_idx])
+
+        return [results[i] for i in selected_indices]
 
     def _rerank(
         self, query: str, candidates: List[Dict[str, Any]], top_k: int
     ) -> List[Dict[str, Any]]:
-        """使用 Reranker 对候选结果进行精排"""
+        """使用 Reranker 对候选结果进行精排 + Composite Score"""
         reranker_url = self._get_reranker_url()
         reranker_model = self._get_reranker_model()
+        reranker_api_key = self._get_reranker_api_key()
         if not reranker_url or not candidates:
             return candidates[:top_k]
 
         try:
             import requests as http_requests
 
-            # 准备文档列表
             documents = [
                 c.get("payload", {}).get("page_content", "") for c in candidates
             ]
             if not any(documents):
                 return candidates[:top_k]
 
-            # 调用 Reranker API
+            headers = {"Content-Type": "application/json"}
+            if reranker_api_key:
+                headers["Authorization"] = f"Bearer {reranker_api_key}"
+
+            session = http_requests.Session()
+            session.trust_env = False
             logger.info(
                 f"🔄 Reranker 请求: URL={reranker_url}, model={reranker_model}, docs={len(documents)}"
             )
-            response = http_requests.post(
+            response = session.post(
                 reranker_url,
                 json={
                     "model": reranker_model,
@@ -1087,36 +1255,34 @@ class VectorStoreManager:
                     "documents": documents,
                     "top_n": top_k,
                 },
-                timeout=30,
+                headers=headers,
+                timeout=1200,
             )
 
             if not response.ok:
                 logger.warning(
-                    f"⚠️ Reranker 调用失败: HTTP {response.status_code} - {response.text[:200]}, 降级为 RRF 排序"
+                    f"⚠️ Reranker 调用失败（极大可能是超时，全局搜索此报错，修改超时时间：timeout）: HTTP {response.status_code}, 降级为 RRF 排序"
                 )
                 return candidates[:top_k]
 
-            rerank_result = response.json()
-            results = rerank_result.get("results", [])
-            logger.info(
-                f"🔄 Reranker 原始返回: {len(results)} 条, 分数范围: {[r.get('relevance_score', 0) for r in results[:3]]}"
-            )
-
+            results = response.json().get("results", [])
             if not results:
                 logger.warning("⚠️ Reranker 返回空结果，降级为 RRF 排序")
                 return candidates[:top_k]
 
-            # 根据 rerank 结果重新排序
             reranked = []
             for item in results:
                 idx = item.get("index", 0)
                 rerank_score = item.get("relevance_score", 0.0)
                 if 0 <= idx < len(candidates):
                     candidate = candidates[idx].copy()
+                    rrf_score = candidate.get("score", 0.0)
                     candidate["rerank_score"] = rerank_score
+                    candidate["score"] = self._composite_score(rerank_score, rrf_score)
                     reranked.append(candidate)
 
-            logger.info(f"🎯 Reranker 精排完成: {len(reranked)} 条结果")
+            reranked.sort(key=lambda x: x.get("score", 0), reverse=True)
+            logger.info(f"🎯 Reranker + Composite Score 完成: {len(reranked)} 条结果")
             return reranked
 
         except Exception as e:
@@ -1211,29 +1377,31 @@ class VectorStoreManager:
 
     @classmethod
     def clear_cache(cls, knowledge_base_id=None):
-        """清理向量存储缓存"""
+        """仅清理内存缓存，不删除 Qdrant 集合"""
         if knowledge_base_id:
             cache_key = str(knowledge_base_id)
             if cache_key in cls._vector_store_cache:
                 del cls._vector_store_cache[cache_key]
                 logger.info(f"已清理知识库 {cache_key} 的向量存储缓存")
-
-            # 清理 Qdrant 集合
-            try:
-                qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:8918")
-                client = QdrantClient(url=qdrant_url)
-                collection_name = f"kb_{knowledge_base_id}"
-                if client.collection_exists(collection_name):
-                    client.delete_collection(collection_name)
-                    logger.info(f"已删除 Qdrant 集合: {collection_name}")
-            except Exception as e:
-                logger.warning(f"清理 Qdrant 集合失败: {e}")
         else:
-            # 清理所有缓存
             cls._vector_store_cache.clear()
             cls._embeddings_cache.clear()
             cls._sparse_encoder_cache.clear()
             logger.info("已清理所有向量存储缓存")
+
+    @classmethod
+    def drop_collection(cls, knowledge_base_id):
+        """删除 Qdrant 集合 + 清理内存缓存（仅用于删除知识库/重建索引）"""
+        cls.clear_cache(knowledge_base_id)
+        try:
+            qdrant_url = os.environ.get("QDRANT_URL", "http://localhost:8918")
+            client = QdrantClient(url=qdrant_url)
+            collection_name = f"kb_{knowledge_base_id}"
+            if client.collection_exists(collection_name):
+                client.delete_collection(collection_name)
+                logger.info(f"已删除 Qdrant 集合: {collection_name}")
+        except Exception as e:
+            logger.warning(f"清理 Qdrant 集合失败: {e}")
 
     def _create_vector_store(self):
         """创建 Qdrant 向量存储（支持稠密+稀疏混合）"""
@@ -1313,13 +1481,16 @@ class VectorStoreManager:
             vector_ids = [str(uuid.uuid4()) for _ in chunks]
             chunk_texts = [chunk.page_content for chunk in chunks]
 
-            # 计算稠密向量
-            dense_embeddings = self.embeddings.embed_documents(chunk_texts)
-
-            # 计算稀疏向量（如果可用）
+            # 并行计算稠密向量和稀疏向量
             sparse_embeddings = None
             if self.sparse_encoder:
-                sparse_embeddings = self.sparse_encoder.encode_documents(chunk_texts)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    dense_future = executor.submit(self.embeddings.embed_documents, chunk_texts)
+                    sparse_future = executor.submit(self.sparse_encoder.encode_documents, chunk_texts)
+                    dense_embeddings = dense_future.result()
+                    sparse_embeddings = sparse_future.result()
+            else:
+                dense_embeddings = self.embeddings.embed_documents(chunk_texts)
 
             # 构建 PointStruct 列表
             points: List[PointStruct] = []
@@ -1415,6 +1586,7 @@ class VectorStoreManager:
             chunk_objects.append(chunk_obj)
 
         DocumentChunk.objects.bulk_create(chunk_objects)
+
 
     def similarity_search(
         self, query: str, k: int = 5, score_threshold: float = 0.1
@@ -1512,12 +1684,19 @@ class VectorStoreManager:
                 dense_results, sparse_results, fusion_limit
             )
 
-            # Reranker 精排（仅 Xinference 支持）
+            # Reranker 精排
             if reranker_enabled and fused_results:
                 logger.info(f"🎯 启用 Reranker 精排...")
                 fused_results = self._rerank(query, fused_results, k)
 
-            return self._format_fused_results(fused_results, score_threshold)
+            formatted = self._format_fused_results(fused_results, score_threshold)
+
+            # MMR 去冗余
+            if len(formatted) > 1:
+                formatted = self._mmr_diversify(formatted, k)
+                logger.info(f"🔀 MMR 去冗余后: {len(formatted)} 条结果")
+
+            return formatted
 
         except Exception as e:
             logger.error(f"混合搜索失败: {e}")
@@ -1592,7 +1771,6 @@ class VectorStoreManager:
             }
             formatted_results.append(result)
 
-
             source = payload.get("source", "未知来源")
             logger.info(
                 f"   📄 结果{i + 1}: 相似度={score:.4f} ({score * 100:.1f}%), 来源={source}"
@@ -1616,23 +1794,20 @@ class VectorStoreManager:
     def _format_fused_results(
         self, fused_results: List[Dict], score_threshold: float
     ) -> List[Dict[str, Any]]:
-        """格式化 RRF 融合结果（支持 Reranker 分数）"""
+        """格式化 RRF 融合结果，统一使用 composite score 做阈值判断"""
         formatted_results = []
 
         for i, entry in enumerate(fused_results):
-            # 优先使用 rerank_score，否则使用 RRF score
-            rerank_score = entry.get("rerank_score")
-            score = rerank_score if rerank_score is not None else entry.get("score", 0)
+            score = entry.get("score", 0)
 
             if score < score_threshold:
                 continue
 
             payload = entry.get("payload", {})
             content = payload.get("page_content", "")
-
-            # 添加融合来源信息
             labels = entry.get("labels", {})
             original_scores = entry.get("original_scores", {})
+            rerank_score = entry.get("rerank_score")
 
             result = {
                 "content": content,
@@ -1651,24 +1826,21 @@ class VectorStoreManager:
             sources_str = "+".join(labels.keys())
             if rerank_score is not None:
                 logger.info(
-                    f"   📄 结果{i + 1}: Rerank分={rerank_score:.4f}, 来源={source}"
+                    f"   📄 结果{i + 1}: composite={score:.4f}, rerank={rerank_score:.4f}, 来源={source}"
                 )
             else:
                 logger.info(
                     f"   📄 结果{i + 1}: 融合分={score:.4f} ({score * 100:.1f}%), 来源={source}, 检索源=[{sources_str}]"
                 )
 
-        # 如果没有满足阈值的结果，返回最佳结果
         if not formatted_results and fused_results:
             best = fused_results[0]
             payload = best.get("payload", {})
-            rerank_score = best.get("rerank_score")
-            score = rerank_score if rerank_score is not None else best.get("score", 0)
             formatted_results.append(
                 {
                     "content": payload.get("page_content", ""),
                     "metadata": payload,
-                    "similarity_score": float(score),
+                    "similarity_score": float(best.get("score", 0)),
                 }
             )
 
@@ -1727,7 +1899,7 @@ class KnowledgeBaseService:
             document.word_count = len(total_content.split())
             document.page_count = len(langchain_docs)
 
-            # 向量化并存储
+            # 向量化并存储文本分块
             vector_ids = self.vector_manager.add_documents(langchain_docs, document)
 
             # 更新状态为完成
@@ -1748,18 +1920,226 @@ class KnowledgeBaseService:
             logger.error(f"文档处理失败: {document.id}, 错误: {e}")
             return False
 
+    def _rewrite_query(self, query: str) -> Optional[str]:
+        """用 LLM 改写查询，提升检索召回率"""
+        try:
+            from langgraph_integration.models import LLMConfig
+            from langchain_openai import ChatOpenAI
+
+            config = LLMConfig.objects.filter(is_active=True).first()
+            if not config:
+                return None
+
+            llm = ChatOpenAI(
+                model=config.name,
+                api_key=config.api_key,
+                base_url=config.api_url,
+                temperature=0.3,
+                max_tokens=100,
+                timeout=15,
+            )
+            response = llm.invoke(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是查询改写助手。将用户问题改写为更精确、完整的检索查询。"
+                            "保留核心语义，补充隐含意图，去除口语化表达。只返回改写后的查询。"
+                        ),
+                    },
+                    {"role": "user", "content": query},
+                ]
+            )
+            rewritten = response.content.strip()
+            if rewritten and rewritten != query:
+                logger.info(f"Query Rewrite: '{query}' → '{rewritten}'")
+                return rewritten
+        except Exception as e:
+            logger.warning(f"Query Rewrite 失败: {e}")
+        return None
+
+    @staticmethod
+    def _concat_no_overlap(a: str, b: str) -> str:
+        """拼接两段文本，自动去除重叠的后缀/前缀"""
+        if not a:
+            return b
+        if not b:
+            return a
+        max_overlap = min(len(a), len(b))
+        for k in range(max_overlap, 0, -1):
+            if a[-k:] == b[:k]:
+                return a + b[k:]
+        return a + b
+
+    @staticmethod
+    def _content_signature(text: str) -> str:
+        """归一化内容后计算 MD5 签名，用于近重复检测"""
+        normalized = " ".join(text.lower().split())
+        return hashlib.md5(normalized.encode()).hexdigest() if normalized else ""
+
+    @staticmethod
+    def _dedup_keys(result: Dict[str, Any]) -> List[str]:
+        """提取多维度去重键：vector_id / document_id+chunk_index / content MD5"""
+        meta = result.get("metadata", {})
+        keys = []
+        vid = meta.get("vector_id")
+        if vid:
+            keys.append(f"v:{vid}")
+        doc_id = meta.get("document_id")
+        chunk_idx = meta.get("chunk_index")
+        if doc_id and chunk_idx is not None:
+            keys.append(f"d:{doc_id}#{chunk_idx}")
+        sig = KnowledgeBaseService._content_signature(result.get("content", ""))
+        if sig:
+            keys.append(f"c:{sig}")
+        return keys
+
+    def _expand_context(
+        self, results: List[Dict[str, Any]], min_len: int = 350, max_len: int = 850
+    ) -> List[Dict[str, Any]]:
+        """对过短的分块，向前/向后合并相邻 chunk 以补充上下文（参照 WeKnora expandShortContextWithNeighbors）"""
+        if not results:
+            return results
+
+        targets = [
+            (i, r)
+            for i, r in enumerate(results)
+            if len(r.get("content", "")) < min_len
+            and r.get("metadata", {}).get("document_id")
+            and r.get("metadata", {}).get("chunk_index") is not None
+        ]
+        if not targets:
+            return results
+
+        doc_chunk_map: Dict[str, Dict[int, str]] = {}
+        for _, r in targets:
+            doc_id = str(r["metadata"]["document_id"])
+            base_idx = r["metadata"]["chunk_index"]
+            if doc_id not in doc_chunk_map:
+                doc_chunk_map[doc_id] = {}
+            for offset in range(-3, 4):
+                doc_chunk_map[doc_id][base_idx + offset] = ""
+
+        for doc_id, idx_map in doc_chunk_map.items():
+            indices = [i for i in idx_map if i >= 0]
+            if not indices:
+                continue
+            neighbor_chunks = DocumentChunk.objects.filter(
+                document_id=doc_id, chunk_index__in=indices
+            ).values_list("chunk_index", "content")
+            for idx, content in neighbor_chunks:
+                idx_map[idx] = content
+
+        for i, r in targets:
+            doc_id = str(r["metadata"]["document_id"])
+            base_idx = r["metadata"]["chunk_index"]
+            idx_map = doc_chunk_map.get(doc_id, {})
+            base_content = r["content"]
+
+            prev_content = ""
+            next_content = ""
+            for offset in range(1, 4):
+                prev_idx = base_idx - offset
+                if prev_idx < 0:
+                    break
+                chunk_text = idx_map.get(prev_idx, "")
+                if not chunk_text:
+                    break
+                prev_content = (
+                    self._concat_no_overlap(chunk_text, prev_content)
+                    if prev_content
+                    else chunk_text
+                )
+                merged = (
+                    self._concat_no_overlap(
+                        self._concat_no_overlap(prev_content, base_content),
+                        next_content,
+                    )
+                    if next_content
+                    else self._concat_no_overlap(prev_content, base_content)
+                )
+                if len(merged) >= min_len:
+                    break
+
+            for offset in range(1, 4):
+                next_idx = base_idx + offset
+                chunk_text = idx_map.get(next_idx, "")
+                if not chunk_text:
+                    break
+                next_content = (
+                    self._concat_no_overlap(next_content, chunk_text)
+                    if next_content
+                    else chunk_text
+                )
+                merged = (
+                    self._concat_no_overlap(
+                        self._concat_no_overlap(prev_content, base_content),
+                        next_content,
+                    )
+                    if prev_content
+                    else self._concat_no_overlap(base_content, next_content)
+                )
+                if len(merged) >= min_len:
+                    break
+
+            if prev_content or next_content:
+                full = base_content
+                if prev_content:
+                    full = self._concat_no_overlap(prev_content, full)
+                if next_content:
+                    full = self._concat_no_overlap(full, next_content)
+                if len(full) > max_len:
+                    full = full[:max_len]
+                if len(full) > len(base_content):
+                    logger.info(
+                        f"上下文扩展: chunk {base_idx} of doc {doc_id}, {len(base_content)} → {len(full)} 字符"
+                    )
+                    results[i] = {**r, "content": full}
+
+        return results
+
+    def enhanced_search(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        similarity_threshold: float = 0.5,
+        enable_rewrite: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """统一检索增强入口：原始检索 + Query Rewrite 二次检索 + 多维度去重"""
+        results = self.vector_manager.similarity_search(
+            query_text, k=top_k, score_threshold=similarity_threshold
+        )
+        if enable_rewrite:
+            rewritten = self._rewrite_query(query_text)
+            if rewritten:
+                rewrite_results = self.vector_manager.similarity_search(
+                    rewritten, k=top_k, score_threshold=similarity_threshold
+                )
+                seen = set()
+                for r in results:
+                    seen.update(self._dedup_keys(r))
+                for r in rewrite_results:
+                    keys = self._dedup_keys(r)
+                    if not any(k in seen for k in keys):
+                        results.append(r)
+                        seen.update(keys)
+                results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+                results = results[:top_k]
+        results = self._expand_context(results)
+        return results
+
     def query(
         self,
         query_text: str,
         top_k: int = 5,
         similarity_threshold: float = 0.5,
         user=None,
+        enable_rewrite: bool = True,
     ) -> Dict[str, Any]:
         """查询知识库"""
         start_time = time.time()
 
         try:
-            # 记录查询开始信息
             embedding_type = type(self.vector_manager.embeddings).__name__
             logger.info(f"🚀 知识库查询开始:")
             logger.info(f"   📚 知识库: {self.knowledge_base.name}")
@@ -1767,10 +2147,12 @@ class KnowledgeBaseService:
             logger.info(f"   🤖 嵌入模型: {embedding_type}")
             logger.info(f"   💾 向量存储: Qdrant")
 
-            # 执行检索
             retrieval_start = time.time()
-            search_results = self.vector_manager.similarity_search(
-                query_text, k=top_k, score_threshold=similarity_threshold
+            search_results = self.enhanced_search(
+                query_text,
+                top_k=top_k,
+                similarity_threshold=similarity_threshold,
+                enable_rewrite=enable_rewrite,
             )
             retrieval_time = time.time() - retrieval_start
 
@@ -1811,6 +2193,7 @@ class KnowledgeBaseService:
         except Exception as e:
             logger.error(f"知识库查询失败: {e}")
             raise
+
 
     def _generate_answer(self, query: str, sources: List[Dict[str, Any]]) -> str:
         """生成回答（简单版本，后续可集成LLM）"""
@@ -1859,22 +2242,101 @@ class KnowledgeBaseService:
     def delete_document(self, document: Document):
         """删除文档"""
         try:
-            # 从向量存储中删除
             self.vector_manager.delete_document(document)
-
-            # 删除文件
-            if document.file:
-                if os.path.exists(document.file.path):
-                    os.remove(document.file.path)
-
-            # 删除数据库记录
+            if document.file and os.path.exists(document.file.path):
+                os.remove(document.file.path)
             document.delete()
-
-            # 清理向量存储缓存（因为内容已变化）
             VectorStoreManager.clear_cache(self.knowledge_base.id)
-
             logger.info(f"文档删除成功: {document.id}")
-
         except Exception as e:
             logger.error(f"删除文档失败: {e}")
             raise
+
+    @staticmethod
+    def multi_kb_search(
+        query: str, knowledge_base_ids: list, k: int = 5, score_threshold: float = 0.1
+    ) -> List[Dict[str, Any]]:
+        """多知识库并发检索 + 结果融合"""
+        import concurrent.futures
+
+        all_results = []
+        kbs = KnowledgeBase.objects.filter(id__in=knowledge_base_ids)
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(4, len(kbs))
+        ) as executor:
+            futures = {}
+            for kb in kbs:
+                manager = VectorStoreManager(kb)
+                future = executor.submit(
+                    manager.similarity_search,
+                    query,
+                    k=k,
+                    score_threshold=score_threshold,
+                )
+                futures[future] = str(kb.id)
+
+            for future in concurrent.futures.as_completed(futures):
+                kb_id = futures[future]
+                try:
+                    results = future.result()
+                    for r in results:
+                        r["metadata"]["knowledge_base_id"] = kb_id
+                    all_results.extend(results)
+                except Exception as e:
+                    logger.warning(f"知识库 {kb_id} 检索失败: {e}")
+
+        all_results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+        return VectorStoreManager._mmr_diversify(all_results, k)
+
+
+class RetrievalEvaluator:
+    """检索质量评估器"""
+
+    @staticmethod
+    def mrr(ground_truth_ids: list, retrieved_ids: list) -> float:
+        """Mean Reciprocal Rank"""
+        gt_set = set(ground_truth_ids)
+        for i, doc_id in enumerate(retrieved_ids):
+            if doc_id in gt_set:
+                return 1.0 / (i + 1)
+        return 0.0
+
+    @staticmethod
+    def hit_rate(ground_truth_ids: list, retrieved_ids: list, k: int = 5) -> float:
+        """Hit Rate @ K"""
+        return 1.0 if set(retrieved_ids[:k]) & set(ground_truth_ids) else 0.0
+
+    @staticmethod
+    def evaluate_batch(
+        knowledge_base: KnowledgeBase,
+        test_cases: list,
+        top_k: int = 5,
+        similarity_threshold: float = 0.1,
+    ) -> dict:
+        """批量评估检索质量
+
+        test_cases: [{"query": str, "expected_chunk_ids": list[str]}]
+        """
+        manager = VectorStoreManager(knowledge_base)
+        mrr_scores, hit_scores = [], []
+
+        for case in test_cases:
+            results = manager.similarity_search(
+                case["query"], k=top_k, score_threshold=similarity_threshold
+            )
+            retrieved_ids = [
+                r.get("metadata", {}).get("vector_id", "") for r in results
+            ]
+            expected = case.get("expected_chunk_ids", [])
+            mrr_scores.append(RetrievalEvaluator.mrr(expected, retrieved_ids))
+            hit_scores.append(
+                RetrievalEvaluator.hit_rate(expected, retrieved_ids, top_k)
+            )
+
+        count = len(test_cases) or 1
+        return {
+            "avg_mrr": sum(mrr_scores) / count,
+            "hit_rate_at_k": sum(hit_scores) / count,
+            "total_cases": len(test_cases),
+        }

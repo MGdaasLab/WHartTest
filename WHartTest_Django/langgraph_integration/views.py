@@ -1726,7 +1726,8 @@ class ChatHistoryAPIView(APIView):
                                         else str(msg)
                                     )
                                     # 处理多模态消息（包含图片的列表格式）
-                                    image_data = None  # 用于存储图片数据（仅用于“上传图片”这类单图消息）
+                                    image_data = None  # 用于存储图片数据（兼容旧单图字段）
+                                    image_data_list = []  # 用于存储多图数据
                                     if isinstance(raw_content, list):
                                         # 提取文本部分 + 图片部分
                                         text_parts = []
@@ -1765,13 +1766,10 @@ class ChatHistoryAPIView(APIView):
                                             or "/api/requirements/documents/" in content
                                         )
 
-                                        # 仅对“单图上传”这类消息保留 image 字段
-                                        if (
-                                            image_urls
-                                            and (len(image_urls) == 1)
-                                            and not has_requirement_doc_images
-                                        ):
-                                            image_data = image_urls[0]
+                                        if image_urls and not has_requirement_doc_images:
+                                            image_data_list = image_urls
+                                            if len(image_urls) == 1:
+                                                image_data = image_urls[0]
                                     else:
                                         content = raw_content
                                 elif isinstance(msg, AIMessage):
@@ -1897,8 +1895,11 @@ class ChatHistoryAPIView(APIView):
                                         "content": content,
                                     }
                                     # 如果消息包含图片，添加图片数据
-                                    if msg_type == "human" and image_data:
-                                        message_data["image"] = image_data
+                                    if msg_type == "human":
+                                        if image_data_list:
+                                            message_data["images"] = image_data_list
+                                        if image_data:
+                                            message_data["image"] = image_data
 
                                     # ⭐ 如果 AI 消息包含 agent 信息（Agent Loop），添加完整元数据
                                     if msg_type == "ai":

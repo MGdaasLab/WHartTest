@@ -210,6 +210,14 @@ docx2txt==0.9
 # https://github.com/decalage2/olefile/blob/master/LICENSE.txt
 olefile>=0.46
 
+# 图片处理 - HPND许可证 (当前版本: 11.3.0)
+# https://github.com/python-pillow/Pillow/blob/main/LICENSE
+Pillow==11.3.0
+
+# PDF图片提取 - AGPL许可证 (当前版本: 1.26.7)
+# https://github.com/pymupdf/PyMuPDF/blob/main/COPYING
+PyMuPDF==1.26.7
+
 # Markdown文档处理 - BSD许可证 (当前版本: 3.9)
 # https://github.com/Python-Markdown/markdown/blob/master/LICENSE.md
 markdown==3.9
@@ -245,6 +253,10 @@ langdetect==1.0.9
 # Celery异步任务队列 - BSD许可证 (当前版本: 5.4.0)
 # https://github.com/celery/celery/blob/main/LICENSE
 celery==5.4.0
+
+# Celery Beat 数据库调度器 - BSD许可证
+# https://github.com/celery/django-celery-beat/blob/main/LICENSE
+django-celery-beat==2.8.1
 
 # Redis客户端(用作Celery的broker和backend) - MIT许可证 (当前版本: 5.2.0)
 # https://github.com/redis/redis-py/blob/master/LICENSE

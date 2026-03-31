@@ -268,10 +268,12 @@ onMounted(() => {
 
 <style scoped>
 .permission-management {
-  background-color: #fff;
+  background: var(--theme-card-bg);
+  color: var(--theme-page-text);
+  border: 1px solid var(--theme-card-border);
   border-radius: 8px;
   padding: 20px;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--theme-card-shadow);
   height: calc(100vh - 87px);
   box-sizing: border-box;
   display: flex;
@@ -288,7 +290,8 @@ onMounted(() => {
 /* 左侧实体面板 */
 .entity-panel {
   width: 265px;
-  background: #f7f8fa;
+  background: var(--theme-shell-soft, var(--theme-surface-soft));
+  border: 1px solid var(--theme-border);
   border-radius: 6px;
   padding: 16px;
   display: flex;
@@ -303,7 +306,7 @@ onMounted(() => {
   margin: 0 0 12px 0;
   font-size: 16px;
   font-weight: 600;
-  color: #1d2129;
+  color: var(--theme-text);
 }
 
 .entity-type-selector {
@@ -334,8 +337,8 @@ onMounted(() => {
   padding: 16px;
   border-radius: 6px;
   margin-bottom: 8px;
-  background: #fff;
-  border: 1px solid #e5e6eb;
+  background: var(--theme-surface);
+  border: 1px solid var(--theme-border);
   cursor: pointer;
   transition: all 0.2s ease;
   box-sizing: border-box;
@@ -344,13 +347,13 @@ onMounted(() => {
 }
 
 .entity-item:hover {
-  border-color: #165dff;
-  box-shadow: 0 2px 8px rgba(22, 93, 255, 0.1);
+  border-color: var(--theme-accent);
+  box-shadow: 0 12px 24px rgba(var(--theme-accent-rgb), 0.12);
 }
 
 .entity-item.active {
-  border-color: #165dff;
-  background: #f2f7ff;
+  border-color: var(--theme-accent);
+  background: rgba(var(--theme-accent-rgb), 0.14);
 }
 
 .entity-info {
@@ -375,8 +378,8 @@ onMounted(() => {
 }
 
 .entity-item.active .entity-avatar {
-  background: #e8f3ff;
-  color: #165dff;
+  background: rgba(var(--theme-accent-rgb), 0.18);
+  color: var(--theme-accent);
 }
 
 .entity-details {
@@ -386,7 +389,7 @@ onMounted(() => {
 
 .entity-name {
   font-weight: 500;
-  color: #1d2129;
+  color: var(--theme-text);
   margin-bottom: 4px;
   font-size: 15px;
   white-space: nowrap;
@@ -396,7 +399,7 @@ onMounted(() => {
 
 .entity-meta {
   font-size: 13px;
-  color: #86909c;
+  color: var(--theme-text-tertiary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -405,13 +408,14 @@ onMounted(() => {
 .pagination-section {
   margin-top: auto;
   padding-top: 16px;
-  border-top: 1px solid #e5e6eb;
+  border-top: 1px solid var(--theme-border);
 }
 
 /* 右侧权限面板 */
 .permission-panel {
   flex: 1;
-  border: 1px solid #e5e6eb;
+  background: var(--theme-card-bg);
+  border: 1px solid var(--theme-card-border);
   border-radius: 6px;
   display: flex;
   flex-direction: column;
@@ -428,7 +432,7 @@ onMounted(() => {
 
 .empty-state {
   text-align: center;
-  color: #86909c;
+  color: var(--theme-text-tertiary);
 }
 
 .empty-state i {
@@ -452,8 +456,8 @@ onMounted(() => {
 
 .details-header {
   padding: 20px;
-  border-bottom: 1px solid #e5e6eb;
-  background: #fafbfc;
+  border-bottom: 1px solid var(--theme-border);
+  background: var(--theme-surface);
 }
 
 .details-header .entity-info {
@@ -471,13 +475,13 @@ onMounted(() => {
   margin: 0 0 4px 0;
   font-size: 18px;
   font-weight: 600;
-  color: #1d2129;
+  color: var(--theme-text);
 }
 
 .details-header .entity-details p {
   margin: 0;
   font-size: 14px;
-  color: #86909c;
+  color: var(--theme-text-tertiary);
 }
 
 .permission-tree-container {
@@ -519,7 +523,7 @@ onMounted(() => {
 .pagination-total {
   text-align: center;
   font-size: 12px;
-  color: #86909c;
+  color: var(--theme-text-tertiary);
   margin-bottom: 4px;
 }
 
@@ -537,5 +541,27 @@ onMounted(() => {
 .pagination-size :deep(.arco-select-view-single) {
   min-width: 100px !important;
   width: 100px !important;
+}
+
+:deep(.arco-radio-group-button .arco-radio-button) {
+  background: var(--theme-surface);
+  border-color: var(--theme-border);
+  color: var(--theme-text-secondary);
+}
+
+:deep(.arco-radio-group-button .arco-radio-button.arco-radio-checked) {
+  background: rgba(var(--theme-accent-rgb), 0.14);
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+:deep(.arco-radio-group-button .arco-radio-button:hover) {
+  color: var(--theme-accent);
+}
+
+:deep(.arco-pagination-item),
+:deep(.arco-pagination-prev),
+:deep(.arco-pagination-next) {
+  color: var(--theme-text-secondary);
 }
 </style>

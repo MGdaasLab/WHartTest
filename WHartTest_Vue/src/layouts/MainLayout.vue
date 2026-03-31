@@ -124,14 +124,14 @@
             <a href="#" @click="checkProjectAndNavigate($event, '/requirements')">需求管理</a>
           </a-menu-item>
 
-          <a-menu-item key="ai-diagram" v-if="hasLangGraphChatPermission">
-            <template #icon><icon-mind-mapping /></template>
-            <a href="#" @click="checkProjectAndNavigate($event, '/ai-diagram')">智能图表</a>
-          </a-menu-item>
-
           <a-menu-item key="ui-automation" v-if="hasUiAutomationPermission">
             <template #icon><icon-computer /></template>
             <a href="#" @click="checkProjectAndNavigate($event, '/ui-automation')">UI自动化</a>
+          </a-menu-item>
+
+          <a-menu-item key="task-center" v-if="hasTaskCenterPermission">
+            <template #icon><icon-schedule /></template>
+            <a href="#" @click="checkProjectAndNavigate($event, '/task-center')">任务中心</a>
           </a-menu-item>
 
           <!-- 测试管理子菜单 -->
@@ -273,6 +273,7 @@ import {
   IconExperiment,
   IconHome,
   IconComputer,
+  IconSchedule,
   IconSunFill,
   IconMoonFill,
 } from '@arco-design/web-vue/es/icon';
@@ -342,7 +343,7 @@ const activeMenu = computed(() => {
   if (path.startsWith('/permissions')) return 'permissions';
   if (path.startsWith('/llm-configs')) return 'llm-configs';
   if (path.startsWith('/langgraph-chat')) return 'langgraph-chat';
-  if (path.startsWith('/ai-diagram')) return 'ai-diagram';
+  if (path.startsWith('/task-center')) return 'task-center';
   if (path.startsWith('/knowledge-management')) return 'knowledge-management';
   if (path.startsWith('/api-keys')) return 'api-keys';
   if (path.startsWith('/remote-mcp-configs')) return 'remote-mcp-configs';
@@ -391,6 +392,10 @@ const hasUiAutomationPermission = computed(() => {
 
 const hasKnowledgePermission = computed(() => {
   return authStore.hasPermission('knowledge.view_knowledgebase');
+});
+
+const hasTaskCenterPermission = computed(() => {
+  return authStore.hasPermission('task_center.view_scheduledtask');
 });
 
 const hasUsersPermission = computed(() => {
@@ -567,9 +572,9 @@ onMounted(async () => {
   height: 56px;
   line-height: 56px;
   color: #333333;
-  margin: 10px 10px;
+  margin: 10px 10px 5px 10px;
   border-radius: 8px;
-  box-shadow: -4px -4px 10px rgba(0, 0, 0, 0.2), 4px 0 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
 }
 
 .left-section {
@@ -821,9 +826,9 @@ onMounted(async () => {
 
 .sider {
   background: #ffffff;
-  margin: 0 0 10px 10px;
+  margin: 5px 5px 10px 10px;
   border-radius: 8px;
-  box-shadow: -4px 0 10px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
   height: auto; /* 让 flex 自动撑开 */
 }
 
@@ -976,17 +981,17 @@ onMounted(async () => {
 }
 
 .inner-layout {
-  height: calc(100vh - 76px); /* Header(56px) + margin(10px*2) = 76px */
+  height: calc(100vh - 71px); /* Header(56px) + header-margin-top(10px) + header-margin-bottom(5px) = 71px */
 }
 
 .content {
   padding: 0;
   background-color: var(--theme-page-bg);
-  height: calc(100vh - 86px); /* 保持 86px 是因为底部还有 10px 的 margin */
-  margin: 0 10px 10px 10px;
+  height: calc(100vh - 86px); /* inner-layout(100vh-71px) - content-margin-top(5px) - content-margin-bottom(10px) = 100vh-86px */
+  margin: 5px 10px 10px 5px;
   overflow: hidden; /* 让子组件自行控制滚动 */
   border-radius: 8px;
-  box-shadow: 4px 0 10px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
 }
 
 .sider-footer {

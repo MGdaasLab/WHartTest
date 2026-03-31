@@ -28,6 +28,7 @@
 import { ref, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import MessageItem from './MessageItem.vue';
 import { brandLogoUrl } from '@/utils/assetUrl';
+import type { ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
 
 interface ChatMessage {
   content: string;
@@ -40,6 +41,9 @@ interface ChatMessage {
   isStreaming?: boolean;
   imageBase64?: string;
   imageDataUrl?: string;
+  fileAttachments?: ToolFileAttachment[];
+  imageBase64List?: string[];
+  imageDataUrls?: string[];
   isThinkingProcess?: boolean;
   isThinkingExpanded?: boolean;
   // Agent Step 专用字段

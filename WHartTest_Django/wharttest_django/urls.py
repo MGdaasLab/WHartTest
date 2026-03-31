@@ -48,6 +48,7 @@ from testcases.views import (
 from skills.views import SkillViewSet
 
 # 导入 OpenAPI schema 与文档视图。
+from task_center.views import ScheduledTaskViewSet, TaskExecutionViewSet as TaskExecViewSet  # 导入任务中心视图集
 from drf_spectacular.views import (
     SpectacularAPIView,
     SpectacularSwaggerView,
@@ -87,6 +88,8 @@ projects_router.register(
 
 # 注册项目下技能路由。
 projects_router.register(r"skills", SkillViewSet, basename="project-skills")
+projects_router.register(r'scheduled-tasks', ScheduledTaskViewSet, basename='project-scheduled-tasks')
+projects_router.register(r'task-executions', TaskExecViewSet, basename='project-task-executions')
 
 # 定义根 URL 路由表。
 urlpatterns = [

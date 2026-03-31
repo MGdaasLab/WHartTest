@@ -1192,7 +1192,9 @@ onBeforeUnmount(() => {
 .document-detail {
   padding: 24px;
   background: transparent; /* 使用主布局的背景 */
-  min-height: 100%; /* 适应父容器 */
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
 }
 
 .page-header {

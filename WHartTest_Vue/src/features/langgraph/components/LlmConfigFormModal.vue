@@ -232,6 +232,9 @@ const defaultFormData: CreateLlmConfigRequest = {
 };
 const formData = ref<CreateLlmConfigRequest>({ ...defaultFormData });
 const currentConfigId = ref<number | null>(null);
+const modalSessionId = ref(0);
+const modelRequestId = ref(0);
+const testRequestId = ref(0);
 
 // 编辑模式：考虑 props.configData 或自动保存后的 currentConfigId
 const isEditing = computed(() => !!(props.configData?.id || currentConfigId.value));
@@ -260,6 +263,26 @@ const apiHintText = computed(() => (
     : 'OpenAI 兼容供应商请填写兼容 API 地址'
 ));
 
+const invalidateAsyncState = () => {
+  modalSessionId.value += 1;
+  modelRequestId.value += 1;
+  testRequestId.value += 1;
+  loadingModels.value = false;
+  testingModel.value = false;
+};
+
+const isActiveModelRequest = (sessionId: number, requestId: number) => (
+  props.visible
+  && modalSessionId.value === sessionId
+  && modelRequestId.value === requestId
+);
+
+const isActiveTestRequest = (sessionId: number, requestId: number) => (
+  props.visible
+  && modalSessionId.value === sessionId
+  && testRequestId.value === requestId
+);
+
 const loadProviderOptions = async () => {
   try {
     const response = await getProviders();
@@ -284,6 +307,9 @@ const handleProviderChange = (provider?: string) => {
 watch(
   () => props.visible,
   (newVal) => {
+    invalidateAsyncState();
+    modelOptions.value = [];
+
     if (newVal) {
       currentConfigId.value = null;
       void loadProviderOptions();
@@ -367,6 +393,7 @@ const handleSubmit = async () => {
 };
 
 const handleCancel = () => {
+  invalidateAsyncState();
   emit('cancel');
 };
 
@@ -377,6 +404,8 @@ const fetchAvailableModels = async () => {
     return;
   }
 
+  const sessionId = modalSessionId.value;
+  const requestId = ++modelRequestId.value;
   loadingModels.value = true;
 
   try {
@@ -387,7 +416,11 @@ const fetchAvailableModels = async () => {
       formData.value.api_key || undefined,
       configId
     );
-    
+
+    if (!isActiveModelRequest(sessionId, requestId)) {
+      return;
+    }
+
     if (response.status === 'success' && response.data?.models) {
       modelOptions.value = response.data.models;
       if (response.data.models.length > 0) {
@@ -400,11 +433,16 @@ const fetchAvailableModels = async () => {
       modelOptions.value = [];
     }
   } catch (error: any) {
+    if (!isActiveModelRequest(sessionId, requestId)) {
+      return;
+    }
     console.error('获取模型列表失败:', error);
     Message.error('获取模型列表失败');
     modelOptions.value = [];
   } finally {
-    loadingModels.value = false;
+    if (isActiveModelRequest(sessionId, requestId)) {
+      loadingModels.value = false;
+    }
   }
 };
 
@@ -417,6 +455,8 @@ const testLlmModel = async () => {
     return;
   }
 
+  const sessionId = modalSessionId.value;
+  const requestId = ++testRequestId.value;
   testingModel.value = true;
   try {
     let configId = props.configData?.id || currentConfigId.value;
@@ -424,6 +464,9 @@ const testLlmModel = async () => {
     // 如果是新建且未保存，先保存
     if (!configId) {
       const createResp = await createLlmConfig(formData.value);
+      if (!isActiveTestRequest(sessionId, requestId)) {
+        return;
+      }
       if (createResp.status !== 'success' || !createResp.data) {
         Message.error(createResp.message || '保存配置失败');
         return;
@@ -446,6 +489,9 @@ const testLlmModel = async () => {
       if (formData.value.supports_vision !== undefined) partialData.supports_vision = formData.value.supports_vision;
       if (formData.value.context_limit !== undefined) partialData.context_limit = formData.value.context_limit;
       const updateResp = await partialUpdateLlmConfig(configId, partialData);
+      if (!isActiveTestRequest(sessionId, requestId)) {
+        return;
+      }
       if (updateResp.status !== 'success') {
         Message.error(updateResp.message || '保存配置失败');
         return;
@@ -454,16 +500,24 @@ const testLlmModel = async () => {
 
     // 调用后端测试接口
     const testResp = await testLlmConnection(configId);
+    if (!isActiveTestRequest(sessionId, requestId)) {
+      return;
+    }
     if (testResp.status === 'success') {
       Message.success(testResp.data?.message || '连接测试成功');
     } else {
       Message.error(testResp.message || '连接测试失败');
     }
   } catch (error: any) {
+    if (!isActiveTestRequest(sessionId, requestId)) {
+      return;
+    }
     console.error('测试失败:', error);
     Message.error('测试失败: ' + (error.message || '未知错误'));
   } finally {
-    testingModel.value = false;
+    if (isActiveTestRequest(sessionId, requestId)) {
+      testingModel.value = false;
+    }
   }
 };
 

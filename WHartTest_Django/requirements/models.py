@@ -99,6 +99,9 @@ class RequirementDocument(models.Model):
     has_images = models.BooleanField(_('包含图片'), default=False)
     image_count = models.IntegerField(_('图片数量'), default=0)
 
+    # 拆分层级
+    last_split_level = models.IntegerField(_('最近拆分层级'), default=0)
+
     class Meta:
         verbose_name = _('需求文档')
         verbose_name_plural = _('需求文档')

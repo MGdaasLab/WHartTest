@@ -1,6 +1,5 @@
 <template>
   <div class="chat-input-container">
-    <!-- 引用消息预览 -->
     <div v-if="quotedMessage" class="quote-preview-wrapper">
       <div class="quote-preview">
         <icon-reply class="quote-icon" />
@@ -11,24 +10,34 @@
       </div>
     </div>
 
-    <!-- 图片预览区域 -->
-    <div v-if="imagePreview" class="image-preview-wrapper">
-      <div class="image-preview">
-        <img :src="imagePreview" alt="预览图片" />
-        <a-button
-          class="remove-image-btn"
-          type="text"
-          size="small"
-          @click="removeImage"
-        >
-          <template #icon>
-            <icon-close />
-          </template>
+    <div v-if="imagePreviews.length > 0" class="image-preview-wrapper">
+      <div class="image-preview-header">
+        <span class="image-preview-count">已选择 {{ imagePreviews.length }} 张图片</span>
+        <a-button type="text" size="mini" class="clear-images-btn" @click="clearImages">
+          清空
         </a-button>
+      </div>
+      <div class="image-preview-list">
+        <div
+          v-for="(preview, index) in imagePreviews"
+          :key="`${preview}-${index}`"
+          class="image-preview"
+        >
+          <img :src="preview" :alt="`预览图片 ${index + 1}`" />
+          <span class="image-order-badge">{{ index + 1 }}</span>
+          <a-button
+            class="remove-image-btn"
+            type="text"
+            size="small"
+            @click="removeImage(index)"
+          >
+            <template #icon><icon-close /></template>
+          </a-button>
+        </div>
       </div>
     </div>
 
-    <div 
+    <div
       class="input-wrapper"
       :class="{ 'drag-over': isDragOver }"
       @drop.prevent="handleDrop"
@@ -38,7 +47,7 @@
       <div class="textarea-wrapper">
         <a-textarea
           v-model="inputMessage"
-          :placeholder="supportsVision ? '输入消息、拖拽或粘贴图片... (Shift+Enter换行，Enter发送)' : '请输入你的消息... (Shift+Enter换行，Enter发送)'"
+          :placeholder="supportsVision ? '输入消息、拖拽、粘贴或选择图片... (Shift+Enter换行，Enter发送)' : '请输入你的消息... (Shift+Enter换行，Enter发送)'"
           :disabled="isLoading"
           class="chat-input"
           :auto-size="{ minRows: 1, maxRows: 6 }"
@@ -46,44 +55,58 @@
           @paste="handlePaste"
         />
 
-        <!-- 拖拽提示遮罩 -->
         <div v-if="isDragOver && supportsVision" class="drag-overlay">
           <icon-image class="drag-icon" />
           <span>释放以上传图片</span>
         </div>
       </div>
 
-      <!-- Token 使用率指示器 -->
       <TokenUsageIndicator
         v-if="contextTokenCount > 0 || contextLimit > 0"
         :current-tokens="contextTokenCount"
         :max-tokens="contextLimit"
       />
 
-      <!-- 发送/停止按钮 -->
-      <a-button
-        v-if="!isLoading"
-        type="primary"
-        class="send-button"
-        @click="handleSendMessage"
-      >
-        <template #icon>
-          <icon-send />
-        </template>
-        <span>发送</span>
-      </a-button>
-      <a-button
-        v-else
-        type="primary"
-        status="danger"
-        class="stop-button"
-        @click="handleStopGeneration"
-      >
-        <template #icon>
-          <icon-record-stop />
-        </template>
-        <span>停止</span>
-      </a-button>
+      <div class="input-actions">
+        <input
+          ref="fileInputRef"
+          type="file"
+          accept="image/jpeg,image/png,image/gif"
+          multiple
+          class="hidden-file-input"
+          @change="handleFileInputChange"
+        />
+
+        <a-button
+          v-if="supportsVision && !isLoading"
+          type="secondary"
+          class="upload-button"
+          @click="openFilePicker"
+        >
+          <template #icon><icon-image /></template>
+          <span>图片</span>
+        </a-button>
+
+        <a-button
+          v-if="!isLoading"
+          type="primary"
+          class="send-button"
+          @click="handleSendMessage"
+        >
+          <template #icon><icon-send /></template>
+          <span>发送</span>
+        </a-button>
+        <a-button
+          v-else
+          type="primary"
+          status="danger"
+          class="stop-button"
+          @click="handleStopGeneration"
+        >
+          <template #icon><icon-record-stop /></template>
+          <span>停止</span>
+        </a-button>
+      </div>
     </div>
   </div>
 </template>
@@ -105,6 +128,8 @@ interface ChatMessage {
   messageType?: 'human' | 'ai' | 'tool' | 'system' | 'agent_step' | 'step_separator';
   imageBase64?: string;
   imageDataUrl?: string;
+  imageBase64List?: string[];
+  imageDataUrls?: string[];
 }
 
 interface Props {
@@ -123,12 +148,18 @@ const props = withDefaults(defineProps<Props>(), {
 });
 
 const emit = defineEmits<{
-  'send-message': [data: { message: string; image?: string; imageDataUrl?: string; quotedMessage?: ChatMessage | null }];
+  'send-message': [data: {
+    message: string;
+    image?: string;
+    imageDataUrl?: string;
+    images?: string[];
+    imageDataUrls?: string[];
+    quotedMessage?: ChatMessage | null;
+  }];
   'clear-quote': [];
   'stop-generation': [];
 }>();
 
-// 截断引用文本
 const truncateQuote = (text: string): string => {
   const maxLen = 80;
   const singleLine = text.replace(/\n/g, ' ').trim();
@@ -136,33 +167,37 @@ const truncateQuote = (text: string): string => {
 };
 
 const inputMessage = ref('');
-const imageFile = ref<File | null>(null);
-const imagePreview = ref<string>('');
+const imageFiles = ref<File[]>([]);
+const imagePreviews = ref<string[]>([]);
+const fileInputRef = ref<HTMLInputElement | null>(null);
 const isDragOver = ref(false);
 
-// 停止生成
 const handleStopGeneration = () => {
   emit('stop-generation');
 };
 
-// 移除图片
-const removeImage = () => {
-  imageFile.value = null;
-  imagePreview.value = '';
+const removeImage = (index: number) => {
+  imageFiles.value = imageFiles.value.filter((_, fileIndex) => fileIndex !== index);
+  imagePreviews.value = imagePreviews.value.filter((_, previewIndex) => previewIndex !== index);
 };
 
-// 发送消息
+const clearImages = () => {
+  imageFiles.value = [];
+  imagePreviews.value = [];
+  if (fileInputRef.value) {
+    fileInputRef.value.value = '';
+  }
+};
+
 const handleSendMessage = async () => {
   const message = inputMessage.value.trim();
-  
-  // 检查是否有内容（文本或图片）
-  if (!message && !imageFile.value) {
+
+  if (!message && imageFiles.value.length === 0) {
     Message.warning('请输入消息或上传图片！');
     return;
   }
 
-  // 如果有图片但模型不支持
-  if (imageFile.value && !props.supportsVision) {
+  if (imageFiles.value.length > 0 && !props.supportsVision) {
     Message.error({
       content: '❌ 当前AI模型不支持图片输入\n' +
                '请先移除图片或切换到支持多模态的模型\n' +
@@ -172,16 +207,15 @@ const handleSendMessage = async () => {
     return;
   }
 
-  let imageBase64: string | undefined;
-  let imageDataUrl: string | undefined;
-  
-  // 如果有图片，转换为base64
-  if (imageFile.value) {
+  let imageBase64List: string[] = [];
+  let imageDataUrlList: string[] = [];
+
+  if (imageFiles.value.length > 0) {
     try {
-      const result = await fileToBase64WithDataUrl(imageFile.value);
-      imageBase64 = result.base64;
-      imageDataUrl = result.dataUrl;
-    } catch (error) {
+      const results = await Promise.all(imageFiles.value.map((file) => fileToBase64WithDataUrl(file)));
+      imageBase64List = results.map((result) => result.base64);
+      imageDataUrlList = results.map((result) => result.dataUrl);
+    } catch {
       Message.error('图片处理失败，请重试');
       return;
     }
@@ -189,23 +223,22 @@ const handleSendMessage = async () => {
 
   emit('send-message', {
     message: message || '请查看图片',
-    image: imageBase64,
-    imageDataUrl: imageDataUrl,
+    image: imageBase64List[0],
+    imageDataUrl: imageDataUrlList[0],
+    images: imageBase64List,
+    imageDataUrls: imageDataUrlList,
     quotedMessage: props.quotedMessage
   });
 
-  // 清空输入
   inputMessage.value = '';
-  removeImage();
+  clearImages();
 };
 
-// 文件转base64（返回纯Base64和完整Data URL）
 const fileToBase64WithDataUrl = (file: File): Promise<{ base64: string; dataUrl: string }> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = reader.result as string;
-      // 移除data:image/xxx;base64,前缀得到纯Base64
       const base64 = dataUrl.split(',')[1];
       resolve({ base64, dataUrl });
     };
@@ -214,53 +247,88 @@ const fileToBase64WithDataUrl = (file: File): Promise<{ base64: string; dataUrl:
   });
 };
 
-// 处理键盘事件
-const handleKeyDown = (event: KeyboardEvent) => {
-  // Enter键发送消息，Shift+Enter换行
-  if (event.key === 'Enter' && !event.shiftKey) {
-    event.preventDefault(); // 阻止默认的换行行为
-    handleSendMessage();
-  }
-  // Shift+Enter允许换行，不做任何处理，让默认行为发生
+const readFileAsDataUrl = (file: File): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
 };
 
-// 处理图片文件（公共方法）
-const processImageFile = (file: File) => {
-  // 检查是否是图片
+const isDuplicateImageFile = (file: File) => {
+  return imageFiles.value.some((existingFile) => (
+    existingFile.name === file.name
+    && existingFile.size === file.size
+    && existingFile.lastModified === file.lastModified
+  ));
+};
+
+const handleKeyDown = (event: KeyboardEvent) => {
+  if (event.key === 'Enter' && !event.shiftKey) {
+    event.preventDefault();
+    void handleSendMessage();
+  }
+};
+
+const validateImageFile = (file: File) => {
   if (!file.type.startsWith('image/')) {
     Message.error('只能上传图片文件');
     return false;
   }
 
-  // 检查文件大小（最大10MB）
   const maxSize = 10 * 1024 * 1024;
   if (file.size > maxSize) {
     Message.error('图片大小不能超过10MB');
     return false;
   }
 
-  // 检查文件类型
   const validTypes = ['image/jpeg', 'image/png', 'image/gif'];
   if (!validTypes.includes(file.type)) {
     Message.error('仅支持JPG、PNG、GIF格式的图片');
     return false;
   }
 
-  imageFile.value = file;
+  if (isDuplicateImageFile(file)) {
+    Message.warning(`${file.name} 已存在，无需重复上传`);
+    return false;
+  }
 
-  // 生成预览
-  const reader = new FileReader();
-  reader.onload = (e) => {
-    imagePreview.value = e.target?.result as string;
-  };
-  reader.readAsDataURL(file);
-  
   return true;
 };
 
-// 拖拽相关处理
+const appendImageFiles = async (files: File[]) => {
+  const validFiles = files.filter(validateImageFile);
+  if (validFiles.length === 0) {
+    return;
+  }
+
+  try {
+    const previews = await Promise.all(validFiles.map((file) => readFileAsDataUrl(file)));
+    imageFiles.value = [...imageFiles.value, ...validFiles];
+    imagePreviews.value = [...imagePreviews.value, ...previews];
+  } catch {
+    Message.error('图片预览生成失败，请重试');
+  }
+};
+
+const openFilePicker = () => {
+  fileInputRef.value?.click();
+};
+
+const handleFileInputChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const files = input.files ? Array.from(input.files) : [];
+  if (!files.length) {
+    return;
+  }
+
+  await appendImageFiles(files);
+  input.value = '';
+};
+
 const handleDragOver = (_e: DragEvent) => {
-  if (!props.supportsVision || props.isLoading || imageFile.value) return;
+  if (!props.supportsVision || props.isLoading) return;
   isDragOver.value = true;
 };
 
@@ -270,7 +338,7 @@ const handleDragLeave = (_e: DragEvent) => {
 
 const handleDrop = (e: DragEvent) => {
   isDragOver.value = false;
-  
+
   if (!props.supportsVision) {
     Message.warning({
       content: '💡 当前AI模型不支持图片输入\n请在模型管理中选择支持多模态的模型（如GPT-4V、Claude 3、Qwen-VL等）',
@@ -278,56 +346,64 @@ const handleDrop = (e: DragEvent) => {
     });
     return;
   }
-  
-  if (props.isLoading || imageFile.value) return;
 
-  const files = e.dataTransfer?.files;
-  if (!files || files.length === 0) return;
+  if (props.isLoading) return;
 
-  processImageFile(files[0]);
+  const files = e.dataTransfer?.files ? Array.from(e.dataTransfer.files) : [];
+  if (!files.length) return;
+
+  void appendImageFiles(files);
 };
 
-// 粘贴处理
 const handlePaste = (e: ClipboardEvent) => {
-  if (props.isLoading || imageFile.value) return;
+  if (props.isLoading) return;
 
   const items = e.clipboardData?.items;
   if (!items) return;
 
-  // 查找图片项
+  const imageFilesFromClipboard: File[] = [];
+
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
-    if (item.type.startsWith('image/')) {
-      e.preventDefault(); // 阻止默认粘贴行为
-      
-      // 如果不支持视觉模型,拦截并提示
-      if (!props.supportsVision) {
-        Message.warning({
-          content: '💡 当前AI模型不支持图片输入\n请在模型管理中选择支持多模态的模型\n（推荐：GPT-4V、Claude 3、Gemini Vision、Qwen-VL）',
-          duration: 4000
-        });
-        return;
-      }
-      
-      const file = item.getAsFile();
-      if (file) {
-        processImageFile(file);
-        Message.success('图片已粘贴');
-      }
-      break;
+    if (!item.type.startsWith('image/')) {
+      continue;
+    }
+    const file = item.getAsFile();
+    if (file) {
+      imageFilesFromClipboard.push(file);
     }
   }
+
+  if (!imageFilesFromClipboard.length) {
+    return;
+  }
+
+  e.preventDefault();
+
+  if (!props.supportsVision) {
+    Message.warning({
+      content: '💡 当前AI模型不支持图片输入\n请在模型管理中选择支持多模态的模型\n（推荐：GPT-4V、Claude 3、Gemini Vision、Qwen-VL）',
+      duration: 4000
+    });
+    return;
+  }
+
+  void appendImageFiles(imageFilesFromClipboard);
+  Message.success(imageFilesFromClipboard.length === 1 ? '图片已粘贴' : `已粘贴 ${imageFilesFromClipboard.length} 张图片`);
 };
 </script>
 
 <style scoped>
+.hidden-file-input {
+  display: none;
+}
+
 .chat-input-container {
   padding: 16px 20px;
   background-color: white;
   border-top: 1px solid #e5e6eb;
 }
 
-/* 引用消息预览 */
 .quote-preview-wrapper {
   margin-bottom: 12px;
 }
@@ -366,28 +442,63 @@ const handlePaste = (e: ClipboardEvent) => {
   color: #f53f3f !important;
 }
 
-/* 图片预览区域 */
 .image-preview-wrapper {
   margin-bottom: 12px;
 }
 
+.image-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.image-preview-count {
+  font-size: 12px;
+  color: #4e5969;
+  font-weight: 500;
+}
+
+.clear-images-btn {
+  color: #86909c !important;
+}
+
+.image-preview-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .image-preview {
   position: relative;
-  display: inline-block;
-  max-width: 200px;
-  max-height: 150px;
-  border-radius: 8px;
+  width: 108px;
+  height: 108px;
+  border-radius: 10px;
   overflow: hidden;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: #f7f8fa;
 }
 
 .image-preview img {
   width: 100%;
   height: 100%;
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain;
+  object-fit: cover;
   display: block;
+}
+
+.image-order-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.65);
+  color: white;
+  font-size: 11px;
+  line-height: 20px;
+  text-align: center;
 }
 
 .remove-image-btn {
@@ -423,7 +534,6 @@ const handlePaste = (e: ClipboardEvent) => {
   transform: scale(1.02);
 }
 
-/* 文本框容器 */
 .textarea-wrapper {
   position: relative;
   flex: 1;
@@ -443,7 +553,6 @@ const handlePaste = (e: ClipboardEvent) => {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
-/* 确保文本框内容样式正确 */
 .chat-input :deep(.arco-textarea) {
   border-radius: 12px;
   padding: 8px 12px;
@@ -451,7 +560,6 @@ const handlePaste = (e: ClipboardEvent) => {
   min-height: 36px;
 }
 
-/* 拖拽覆盖层 */
 .drag-overlay {
   position: absolute;
   top: 0;
@@ -493,7 +601,16 @@ const handlePaste = (e: ClipboardEvent) => {
   }
 }
 
-.send-button {
+.input-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.upload-button,
+.send-button,
+.stop-button {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -504,13 +621,6 @@ const handlePaste = (e: ClipboardEvent) => {
 }
 
 .stop-button {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 20px;
-  padding: 0 16px;
-  height: 36px;
-  flex-shrink: 0;
   animation: pulse-stop 1.5s ease-in-out infinite;
 }
 

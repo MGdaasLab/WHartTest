@@ -50,15 +50,15 @@
         </a-descriptions>
       </div>
 
-      <!-- 文档分块内容 -->
+      <!-- 文档内容区域 -->
       <div v-if="showChunks" class="chunks-section">
         <div class="section-header">
-          <h4>文档内容（分块显示）</h4>
+          <h4>文档内容</h4>
           <div class="content-actions">
             <a-switch
               v-model="includeChunks"
-              checked-text="显示分块"
-              unchecked-text="隐藏分块"
+              checked-text="分块视图"
+              unchecked-text="原始内容"
               @change="handleChunksToggle"
             />
             <a-button
@@ -80,6 +80,7 @@
           </div>
         </div>
 
+        <!-- 分块视图 -->
         <div v-if="includeChunks && documentContent.chunks" class="chunks-content">
           <div class="chunks-info">
             <span class="chunks-summary">
@@ -124,7 +125,7 @@
           </div>
         </div>
 
-        <!-- 当分块隐藏时显示原始内容预览 -->
+        <!-- 原始内容视图（图文混排） -->
         <div v-else class="original-content-preview">
           <div class="preview-notice">
             <p>分块显示已关闭，以下是原始文档内容预览：</p>
@@ -161,12 +162,11 @@ const emit = defineEmits<{
 // 响应式数据
 const loading = ref(false);
 const documentContent = ref<DocumentContentResponse | null>(null);
-const includeChunks = ref(true);
+const includeChunks = ref(false);
 const chunkPagination = ref({
   current: 1,
   pageSize: 10,
 });
-
 // 计算属性
 const showChunks = computed(() => {
   if (!documentContent.value) return false;
@@ -373,7 +373,7 @@ watch(
   max-height: 400px;
   overflow-y: auto;
   padding: 16px;
-  background-color: #fafbfc;
+  background-color: var(--theme-surface-soft);
 }
 
 .content-text {
@@ -387,7 +387,7 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: break-word;
-  color: #1d2129;
+  color: var(--theme-text-primary);
 }
 
 .original-content-preview {
@@ -407,7 +407,6 @@ watch(
   margin: 0;
   font-size: 14px;
 }
-
 .chunks-info {
   margin-bottom: 12px;
   padding: 8px 12px;
@@ -482,4 +481,5 @@ watch(
   word-break: break-word;
   overflow-wrap: break-word;
 }
+
 </style>

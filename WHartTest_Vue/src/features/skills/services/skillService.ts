@@ -46,7 +46,7 @@ export class SkillService {
   /**
    * 上传 Skill zip 文件
    */
-  static async uploadSkill(projectId: number, file: File): Promise<Skill> {
+  static async uploadSkill(projectId: number, file: File): Promise<Skill[]> {
     const formData = new FormData()
     formData.append('file', file)
 
@@ -58,7 +58,7 @@ export class SkillService {
 
     const api = response.data as any
     if (response.success && api?.data) {
-      return api.data
+      return Array.isArray(api.data) ? api.data : [api.data]
     }
     throw new Error(api?.message || response.error || '上传 Skill 失败')
   }

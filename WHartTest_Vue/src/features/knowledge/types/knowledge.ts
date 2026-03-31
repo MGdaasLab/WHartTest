@@ -196,7 +196,7 @@ export interface DocumentContentResponse {
   };
   file_name?: string;
   file_url?: string;
-  url?: string; // 添加 URL 字段支持
+  url?: string;
   chunk_count: number;
   chunks?: {
     total_count: number;

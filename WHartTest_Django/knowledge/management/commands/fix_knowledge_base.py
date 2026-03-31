@@ -92,9 +92,9 @@ class Command(BaseCommand):
     def _rebuild_kb(self, kb):
         """重建单个知识库的实现"""
         try:
-            # 1. 清理旧数据
+            # 1. 删除旧的 Qdrant 集合并清理缓存
             self.stdout.write('  🗑️  清理旧的向量存储...')
-            VectorStoreManager.clear_cache(kb.id)
+            VectorStoreManager.drop_collection(kb.id)
             
             # 2. 获取已完成的文档
             docs = kb.documents.filter(status='completed')

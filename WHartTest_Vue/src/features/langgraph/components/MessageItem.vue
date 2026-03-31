@@ -34,15 +34,29 @@
         <img :src="toolImageSrc" alt="工具截图" class="float-placeholder-thumb" />
         <span class="float-placeholder-label">悬浮预览中</span>
       </div>
-      <div v-else-if="message.imageDataUrl || message.imageBase64" class="message-image-container">
-        <img 
-          :src="imageDisplaySrc" 
-          alt="上传的图片" 
-          class="message-image" 
+      <div v-else-if="isToolImage" class="message-image-container">
+        <img
+          :src="toolImageSrc!"
+          alt="上传的图片"
+          class="message-image"
         />
         <div v-if="isToolImage" class="float-action-btn" @click="emit('float-tool-image', toolImageSrc!)">
           悬浮
         </div>
+      </div>
+      <div
+        v-else-if="messageImageSrcList.length > 0"
+        class="message-image-container"
+        :class="{ 'message-image-grid': messageImageSrcList.length > 1 }"
+      >
+        <img
+          v-for="(imageSrc, index) in messageImageSrcList"
+          :key="`${imageSrc}-${index}`"
+          :src="imageSrc"
+          :alt="`上传的图片 ${index + 1}`"
+          class="message-image"
+          :class="{ 'message-image-multi': messageImageSrcList.length > 1 }"
+        />
       </div>
       
       <div ref="messageBubbleRef" class="message-bubble">
@@ -60,6 +74,21 @@
             :key="message.content"
             v-html="formattedContent"
           ></div>
+          <div v-if="toolFileAttachments.length > 0" class="tool-file-list">
+            <div v-for="file in toolFileAttachments" :key="`${file.url}-${file.name}`" class="tool-file-item">
+              <div class="tool-file-main">
+                <div class="tool-file-name">{{ file.name }}</div>
+                <div class="tool-file-meta">
+                  <span v-if="file.mimeType">{{ file.mimeType }}</span>
+                  <span v-if="file.size !== undefined">{{ formatFileSize(file.size) }}</span>
+                </div>
+              </div>
+              <div class="tool-file-actions">
+                <a :href="file.url" target="_blank" rel="noopener noreferrer" class="tool-file-link">打开</a>
+                <a :href="file.url" :download="file.name" class="tool-file-link">下载</a>
+              </div>
+            </div>
+          </div>
           <div
             v-if="shouldCollapse"
             class="expand-button"
@@ -150,6 +179,8 @@ import { marked } from 'marked';
 import { brandLogoUrl } from '@/utils/assetUrl';
 import { extractDiagramToolPayload } from '../utils/diagramToolParser';
 import { extractHtmlPreviewContent } from '../utils/htmlPreviewParser';
+import type { ToolFileAttachment } from '../utils/toolResultParser';
+import { parseToolResultDisplayPayload } from '../utils/toolResultParser';
 
 // 配置marked以确保代码块正确渲染
 // marked v5+ API发生了变化，许多选项被移除或更改。
@@ -176,6 +207,9 @@ interface ChatMessage {
   isStreaming?: boolean; // 标识是否正在流式输出
   imageBase64?: string; // 消息携带的图片(Base64)
   imageDataUrl?: string; // 完整的图片Data URL
+  fileAttachments?: ToolFileAttachment[]; // 工具返回的可下载文件
+  imageBase64List?: string[]; // 多张图片(Base64)
+  imageDataUrls?: string[]; // 多张图片Data URL
   isThinkingProcess?: boolean; // 是否是思考过程
   isThinkingExpanded?: boolean; // 思考过程是否展开
   // Agent Step 专用字段
@@ -207,9 +241,13 @@ const emit = defineEmits<{
 }>();
 
 // 工具图片相关
+const toImageDataUrl = (base64?: string) => {
+  return base64 ? `data:image/jpeg;base64,${base64}` : null;
+};
+
 const toolImageSrc = computed(() => {
   if (props.message.messageType !== 'tool') return null;
-  return props.message.imageDataUrl || (props.message.imageBase64 ? `data:image/jpeg;base64,${props.message.imageBase64}` : null);
+  return props.message.imageDataUrl || toImageDataUrl(props.message.imageBase64);
 });
 
 const isToolImage = computed(() => props.message.messageType === 'tool' && !!toolImageSrc.value);
@@ -218,8 +256,23 @@ const isThisImageFloating = computed(() => {
   return isToolImage.value && props.floatingToolImageSrc === toolImageSrc.value;
 });
 
-const imageDisplaySrc = computed(() => {
-  return props.message.imageDataUrl || `data:image/jpeg;base64,${props.message.imageBase64}`;
+const messageImageSrcList = computed(() => {
+  if (props.message.messageType === 'tool') {
+    return [];
+  }
+
+  if (Array.isArray(props.message.imageDataUrls) && props.message.imageDataUrls.length > 0) {
+    return props.message.imageDataUrls.filter((item): item is string => Boolean(item));
+  }
+
+  if (Array.isArray(props.message.imageBase64List) && props.message.imageBase64List.length > 0) {
+    return props.message.imageBase64List
+      .map((item) => toImageDataUrl(item))
+      .filter((item): item is string => Boolean(item));
+  }
+
+  const singleImage = props.message.imageDataUrl || toImageDataUrl(props.message.imageBase64);
+  return singleImage ? [singleImage] : [];
 });
 
 // 工具图片被检测到时通知父组件
@@ -248,6 +301,22 @@ const htmlPreviewContent = computed(() => {
 const canPreviewHtml = computed(() => {
   return Boolean(htmlPreviewContent.value);
 });
+
+const toolFileAttachments = computed(() => {
+  if (props.message.messageType !== 'tool') return [];
+  if (Array.isArray(props.message.fileAttachments) && props.message.fileAttachments.length > 0) {
+    return props.message.fileAttachments;
+  }
+  return parseToolResultDisplayPayload(props.message.content).fileAttachments;
+});
+
+const formatFileSize = (size: number) => {
+  if (!Number.isFinite(size) || size < 0) return '';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(size / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
 const messageBubbleRef = ref<HTMLElement | null>(null);
 let previewScrollRafId: number | null = null;
 
@@ -353,6 +422,10 @@ const shouldCollapse = computed(() => {
 
 const canPreviewDiagram = computed(() => {
   return Boolean(diagramPayload.value?.xml);
+});
+
+const shouldWrapCodeBlocks = computed(() => {
+  return props.message.messageType === 'ai' && !props.message.isThinkingProcess;
 });
 
 const diagramPreviewUrl = computed(() => {
@@ -502,7 +575,9 @@ const formattedContent = computed(() => {
 
     // 使用marked解析Markdown (同步版本)
     let htmlContent = marked(processedContent) as string;
-    htmlContent = wrapCodeBlocksAsCollapsible(htmlContent, Boolean(props.message.isStreaming));
+    if (shouldWrapCodeBlocks.value) {
+      htmlContent = wrapCodeBlocksAsCollapsible(htmlContent, Boolean(props.message.isStreaming));
+    }
 
     // 使用DOMPurify净化HTML防止XSS攻击
     return DOMPurify.sanitize(htmlContent, {
@@ -614,6 +689,16 @@ const handleStreamingMarkdown = (content: string) => {
 
 // 格式化工具消息
 const formatToolMessage = (content: string) => {
+  const parsedPayload = parseToolResultDisplayPayload(content);
+  if (parsedPayload.fileAttachments.length > 0 || parsedPayload.imageDataUrl) {
+    if (parsedPayload.content && parsedPayload.content.trim()) {
+      return parsedPayload.content;
+    }
+    if (parsedPayload.fileAttachments.length > 0) {
+      return `已生成 ${parsedPayload.fileAttachments.length} 个文件，可直接下载。`;
+    }
+  }
+
   try {
     // 先尝试解析为 JSON
     let jsonData = JSON.parse(content);
@@ -686,6 +771,11 @@ const formatToolMessage = (content: string) => {
         return trimmedContent;
       }
       
+      // 包含 Markdown 图片语法时，直接返回让 marked 渲染
+      if (/!\[.*?\]\(.*?\)/.test(trimmedContent)) {
+        return trimmedContent;
+      }
+
       // 其他情况包装为代码块
       return `\`\`\`\n${content}\n\`\`\``;
     }
@@ -874,6 +964,17 @@ const formatToolMessage = (content: string) => {
   position: relative;
 }
 
+.message-image-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  max-width: min(100%, 360px);
+  width: min(100%, 360px);
+  box-shadow: none;
+  overflow: visible;
+  background: transparent;
+}
+
 .float-action-btn {
   position: absolute;
   top: 6px;
@@ -926,6 +1027,15 @@ const formatToolMessage = (content: string) => {
   cursor: pointer;
   transition: transform 0.2s ease;
   object-fit: contain;
+}
+
+.message-image-multi {
+  width: 100%;
+  max-width: none;
+  aspect-ratio: 1 / 1;
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  object-fit: cover;
 }
 
 .message-image:hover {
@@ -1046,6 +1156,62 @@ const formatToolMessage = (content: string) => {
   height: 40px;
   background: linear-gradient(transparent, color-mix(in srgb, var(--theme-surface) 78%, white 22%));
   pointer-events: none;
+}
+
+.tool-file-list {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e5e6eb;
+  border-radius: 10px;
+  background: #f7f8fa;
+}
+
+.tool-file-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-file-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1d2129;
+  word-break: break-all;
+}
+
+.tool-file-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: #86909c;
+  flex-wrap: wrap;
+}
+
+.tool-file-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.tool-file-link {
+  font-size: 12px;
+  color: #165dff;
+  text-decoration: none;
+}
+
+.tool-file-link:hover {
+  text-decoration: underline;
 }
 
 
@@ -1527,11 +1693,22 @@ const formatToolMessage = (content: string) => {
   .message-image {
     max-width: min(100%, 320px);
   }
+
+  .message-image-grid {
+    max-width: min(100%, 300px);
+    width: min(100%, 300px);
+  }
 }
 
 @media (max-width: 480px) {
   .message-image {
     max-width: min(100%, 240px);
+  }
+
+  .message-image-grid {
+    grid-template-columns: 1fr 1fr;
+    max-width: min(100%, 240px);
+    width: min(100%, 240px);
   }
 }
 
@@ -1549,6 +1726,10 @@ const formatToolMessage = (content: string) => {
   justify-content: flex-end; /* 用户消息的图片靠右对齐 */
 }
 
+.user-message .message-image-container.message-image-grid {
+  margin-left: auto;
+}
+
 .user-message .message-image {
   max-width: min(100%, 400px);
 }
@@ -1557,6 +1738,10 @@ const formatToolMessage = (content: string) => {
 .ai-message .message-image-container {
   display: flex;
   justify-content: flex-start; /* AI消息的图片靠左对齐 */
+}
+
+.ai-message .message-image-container.message-image-grid {
+  margin-right: auto;
 }
 
 .thinking-header:hover {
