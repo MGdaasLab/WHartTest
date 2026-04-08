@@ -1,6 +1,6 @@
 # Django Web框架 - BSD许可证 (当前版本: 5.2)
 # https://github.com/django/django/blob/main/LICENSE
-Django==5.2
+Django==5.2.13
 
 # Django REST框架 - BSD许可证 (当前版本: 3.16.0)
 # https://github.com/encode/django-rest-framework/blob/master/LICENSE.md
@@ -8,7 +8,7 @@ djangorestframework==3.16.0
 
 # JWT认证支持 - MIT许可证 (当前版本: 5.3.1)
 # https://github.com/jazzband/djangorestframework-simplejwt/blob/master/LICENSE
-djangorestframework-simplejwt==5.3.1
+djangorestframework-simplejwt==5.5.1
 
 # API文档生成 - BSD许可证 (当前版本: 0.28.0)
 # https://github.com/tfranzel/drf-spectacular/blob/master/LICENSE
@@ -42,7 +42,7 @@ drf-nested-routers==0.94.2
 
 # LangGraph工作流框架 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langgraph/blob/main/LICENSE
-langgraph==1.0.6
+langgraph==1.0.10rc1
 
 # LangChain主库 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langchain/blob/master/LICENSE
@@ -63,7 +63,7 @@ langchain-qwq==0.3.4
 
 # LangChain核心库 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langchain/blob/master/libs/core/LICENSE
-langchain-core==1.2.7
+langchain-core==1.2.22
 
 # LangChain实验性功能 - MIT许可证 (已移除 - 项目未使用)
 # 注意：langchain-experimental 尚未适配 v1.x 生态
@@ -192,7 +192,7 @@ beautifulsoup4==4.13.3
 # 文档处理依赖
 # PDF文件处理 - BSD许可证 (当前版本: 5.6.0)
 # https://github.com/py-pdf/pypdf/blob/main/LICENSE
-pypdf==5.6.0
+pypdf==6.9.2
 
 # Word文档处理 - MIT许可证 (当前版本: 1.1.2)
 # https://github.com/python-openxml/python-docx/blob/master/LICENSE
@@ -224,7 +224,7 @@ markdown==3.9
 
 # 非结构化文档处理 - Apache 2.0许可证 (当前版本: 0.17.2)
 # https://github.com/Unstructured-IO/unstructured/blob/main/LICENSE.md
-unstructured==0.17.2
+unstructured==0.18.18
 
 # HuggingFace模型依赖（已弃用 - 现使用CustomAPIEmbeddings通过API调用嵌入模型）
 # 如需使用本地嵌入模型，请取消注释以下依赖包：
