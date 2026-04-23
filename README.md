@@ -86,7 +86,7 @@ AI 驱动的需求质量评估，提前识别潜在风险：
 - **历史对比**：支持执行结果的历史趋势分析
 
 ## 文档
-详细文档请访问：https://mgdaaslab.github.io/WHartTest/
+详细文档请访问：https://docs.wharttest.mgdaas.cn:4430/
 
 ## 快速开始
 
@@ -157,12 +157,7 @@ DOCKER_PIP_CANDIDATES_EXTRA="corp|https://pypi.example.com/simple|https://pypi.e
 DOCKER_BUILD_NO_CACHE=1 ./run_compose.sh local
 ```
 
-> ⚠️ **生产环境提示**：请登录后台删除默认API Key并创建新的安全密钥。详见 [快速启动指南](./docs/QUICK_START.md)
-
-详细的部署说明请参考：
-- [快速启动指南](./docs/QUICK_START.md) - **推荐新用户阅读**
-- [GitHub 自动构建部署指南](./docs/github-docker-deployment.md)
-- [完整部署文档](https://mgdaaslab.github.io/WHartTest/)
+> ⚠️ **生产环境提示**：请登录后台删除默认API Key并创建新的安全密钥。
 
 ## 页面展示
 
