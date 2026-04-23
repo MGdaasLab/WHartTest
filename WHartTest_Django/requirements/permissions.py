@@ -165,7 +165,7 @@ class CanManageRequirementDocument(permissions.BasePermission):
             return True
             
         # 项目管理员可以管理项目内的所有文档
-        if request.method in ['PUT', 'PATCH', 'DELETE']:
+        if request.method in ['POST', 'PUT', 'PATCH', 'DELETE']:
             return IsProjectAdminForRequirement().has_object_permission(request, view, obj)
             
         # 项目成员可以查看文档

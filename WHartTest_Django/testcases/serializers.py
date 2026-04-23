@@ -40,6 +40,33 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
+class TestCaseListSerializer(serializers.ModelSerializer):
+    """列表专用序列化器，不包含 steps 以减少数据传输量"""
+
+    creator_detail = UserDetailSerializer(source="creator", read_only=True)
+    module_detail = serializers.StringRelatedField(source="module", read_only=True)
+
+    class Meta:
+        model = TestCase
+        fields = [
+            "id",
+            "project",
+            "module_id",
+            "module_detail",
+            "name",
+            "precondition",
+            "level",
+            "notes",
+            "creator",
+            "creator_detail",
+            "created_at",
+            "updated_at",
+            "review_status",
+            "test_type",
+        ]
+        read_only_fields = fields
+
+
 class TestCaseSerializer(serializers.ModelSerializer):
     """
     用例序列化器，支持嵌套创建和更新用例步骤

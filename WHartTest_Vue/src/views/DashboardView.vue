@@ -155,6 +155,7 @@
                   <div class="token-sub">
                     <span class="token-detail">入 {{ formatTokenCount(tokenStats?.total?.input_tokens || 0) }}</span>
                     <span class="token-detail">出 {{ formatTokenCount(tokenStats?.total?.output_tokens || 0) }}</span>
+                    <span class="token-detail">缓存 {{ formatTokenCount(tokenStats?.total?.cache_read_tokens || 0) }}</span>
                   </div>
                 </div>
                 <div class="resource-block">
@@ -739,6 +740,7 @@ onMounted(() => {
   font-size: 12px;
   color: var(--theme-text-tertiary);
 }
+
 
 /* 趋势图 */
 .trend-section {

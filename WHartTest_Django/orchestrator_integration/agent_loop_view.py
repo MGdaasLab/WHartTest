@@ -51,6 +51,7 @@ from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .stop_signal import should_stop, clear_stop_signal
 from langgraph_integration.models import ChatSession, LLMConfig
 from langgraph_integration.views import (
+    _extract_requirement_doc_images_for_message,
     create_llm_instance,
     create_sse_data,
     get_effective_system_prompt_async,
@@ -363,6 +364,93 @@ async def _collect_linked_image_data_urls(
     return data_urls
 
 
+async def _prepare_agent_loop_human_message(
+    user_message: str,
+    *,
+    project: Project,
+    supports_vision: bool,
+    uploaded_images_base64: Optional[List[str]] = None,
+) -> tuple[Any, Dict[str, Any], str]:
+    """
+    规范化 Agent Loop 的用户消息。
+
+    - 将需求文档中的 `docimg://` 占位符替换为可访问的 `/api/.../images/...` URL
+    - 当模型支持视觉时，把需求文档图片与普通 HTTP(S) 图片一并转成多模态输入
+    - 返回：LangChain HumanMessage content、additional_kwargs、展示用文本
+    """
+    display_message = (user_message or "").strip()
+    uploaded_images_base64 = uploaded_images_base64 or []
+
+    (
+        display_message,
+        requirement_doc_image_data_urls,
+        requirement_document_id,
+    ) = await _extract_requirement_doc_images_for_message(display_message, project)
+
+    if requirement_doc_image_data_urls and not supports_vision:
+        logger.warning(
+            "AgentLoopStreamAPI: Requirement document images detected but current model does not support vision"
+        )
+
+    linked_image_data_urls: List[str] = []
+    linked_image_urls = _extract_linked_image_urls(display_message)
+    if linked_image_urls:
+        logger.info(
+            "AgentLoopStreamAPI: Extracted %s candidate linked image URLs from message",
+            len(linked_image_urls),
+        )
+        if supports_vision:
+            linked_image_data_urls = await _collect_linked_image_data_urls(
+                display_message,
+                linked_urls=linked_image_urls,
+            )
+            if linked_image_data_urls:
+                logger.info(
+                    "AgentLoopStreamAPI: Loaded %s linked images for multimodal input",
+                    len(linked_image_data_urls),
+                )
+        else:
+            logger.warning(
+                "AgentLoopStreamAPI: Found %s linked image URLs but current model does not support vision",
+                len(linked_image_urls),
+            )
+    elif "http://" in display_message.lower() or "https://" in display_message.lower():
+        logger.warning(
+            "AgentLoopStreamAPI: Message contains URL text but extractor found 0 valid URLs"
+        )
+
+    multimodal_image_data_urls = requirement_doc_image_data_urls + linked_image_data_urls
+
+    additional_kwargs: Dict[str, Any] = {}
+    if requirement_document_id:
+        additional_kwargs["requirement_document_id"] = requirement_document_id
+        if requirement_doc_image_data_urls:
+            additional_kwargs["image_source"] = "requirement_document"
+
+    if supports_vision and (uploaded_images_base64 or multimodal_image_data_urls):
+        human_message_content: Any = [{"type": "text", "text": display_message}]
+        for data_url in multimodal_image_data_urls:
+            human_message_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": data_url},
+                }
+            )
+        for image_base64 in uploaded_images_base64:
+            human_message_content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_base64}"
+                    },
+                }
+            )
+    else:
+        human_message_content = display_message
+
+    return human_message_content, additional_kwargs, display_message
+
+
 def process_mcp_tool_output(content: Any) -> tuple:
     """
     处理 MCP 工具返回的内容，提取实际数据并生成摘要
@@ -562,13 +650,22 @@ async def _sanitize_history_before_model_call(
 
 
 def calculate_context_tokens(
-    messages: List[Any], model_name: str = "gpt-4o"
+    messages: List[Any],
+    model_name: str = "gpt-4o",
+    tools: Optional[list] = None,
+    system_prompt: Optional[str] = None,
 ) -> tuple[int, int, int]:
     """
     计算当前上下文 Token
 
     优先使用最后一条带 usage_metadata 的消息；
-    如果 provider 未返回 usage_metadata，则回退到内容估算（与中间件保持一致的 3x 系数）。
+    如果 provider 未返回 usage_metadata，则回退到内容估算 + 真实开销。
+
+    Args:
+        messages: 消息列表
+        model_name: 模型名称
+        tools: 工具对象列表，用于精确计算开销
+        system_prompt: 系统提示词，用于精确计算开销
     """
     # 1) 优先使用 usage_metadata（最准确）
     for msg in reversed(messages):
@@ -583,14 +680,18 @@ def calculate_context_tokens(
             if total_tokens > 0:
                 return input_tokens, output_tokens, total_tokens
 
-    # 2) 回退到内容估算（避免 context_update 始终为 0）
+    # 2) 回退到内容估算 + 真实开销（避免 context_update 始终为 0）
+    from orchestrator_integration.middleware_config import _calculate_overhead_tokens
+
+    overhead = _calculate_overhead_tokens(model_name, tools, system_prompt)
+
     content_tokens = 0
     for msg in messages:
         if hasattr(msg, "content") and msg.content:
             content = msg.content if isinstance(msg.content, str) else str(msg.content)
             content_tokens += context_checker.count_tokens(content, model_name)
 
-    estimated_total = content_tokens * 3
+    estimated_total = content_tokens + overhead
     return 0, 0, estimated_total
 
 
@@ -684,9 +785,10 @@ class AgentLoopStreamAPIView(View):
     MAX_STEPS = 500
 
     def _update_session_token_usage(
-        self, session_id: str, input_tokens: int, output_tokens: int
+        self, session_id: str, input_tokens: int, output_tokens: int,
+        cache_read_tokens: int = 0, user_id=None, project_id=None,
     ):
-        """更新会话的 Token 使用统计"""
+        """更新会话的 Token 使用统计，同时写入独立的 TokenUsageRecord"""
         try:
             from django.db.models import F
             from django.utils import timezone
@@ -695,11 +797,28 @@ class AgentLoopStreamAPIView(View):
                 total_input_tokens=F("total_input_tokens") + input_tokens,
                 total_output_tokens=F("total_output_tokens") + output_tokens,
                 total_tokens=F("total_tokens") + input_tokens + output_tokens,
+                total_cache_read_tokens=F("total_cache_read_tokens") + cache_read_tokens,
                 request_count=F("request_count") + 1,
                 updated_at=timezone.now(),
             )
         except Exception as e:
             logger.warning(f"Failed to update session token usage: {e}")
+
+        # 写入独立记录（不随会话删除而丢失）
+        try:
+            from langgraph_integration.models import TokenUsageRecord
+
+            TokenUsageRecord.objects.create(
+                user_id=user_id,
+                project_id=project_id,
+                session_id=session_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+                cache_read_tokens=cache_read_tokens,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create TokenUsageRecord: {e}")
 
     async def authenticate_request(self, request):
         """JWT 认证"""
@@ -891,58 +1010,21 @@ class AgentLoopStreamAPIView(View):
                 ) + PLAYWRIGHT_SCRIPT_INSTRUCTION
                 logger.info(f"AgentLoopStreamAPI: 已追加脚本生成指令")
 
-            # 9. 构建用户消息（支持多模态：上传图片 + 链接图片）
-            linked_image_data_urls: List[str] = []
-            linked_image_urls = _extract_linked_image_urls(user_message)
-            if linked_image_urls:
-                logger.info(
-                    "AgentLoopStreamAPI: Extracted %s candidate image URLs from message",
-                    len(linked_image_urls),
-                )
-                if active_config.supports_vision:
-                    linked_image_data_urls = await _collect_linked_image_data_urls(
-                        user_message,
-                        linked_urls=linked_image_urls,
-                    )
-                    if linked_image_data_urls:
-                        logger.info(
-                            "AgentLoopStreamAPI: Loaded %s linked images for multimodal input",
-                            len(linked_image_data_urls),
-                        )
-                else:
-                    logger.warning(
-                        "AgentLoopStreamAPI: Found %s linked image URLs but model %s does not support vision",
-                        len(linked_image_urls),
-                        active_config.name,
-                    )
-            elif (
-                "http://" in user_message.lower() or "https://" in user_message.lower()
-            ):
-                logger.warning(
-                    "AgentLoopStreamAPI: Message contains URL text but extractor found 0 valid URLs"
-                )
-
-            if uploaded_images_base64 or linked_image_data_urls:
-                human_message_content = [{"type": "text", "text": user_message}]
-                for data_url in linked_image_data_urls:
-                    human_message_content.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": data_url},
-                        }
-                    )
-                for image_base64 in uploaded_images_base64 or []:
-                    human_message_content.append(
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{image_base64}"
-                            },
-                        }
-                    )
-            else:
-                human_message_content = user_message
-            user_msg = HumanMessage(content=human_message_content)
+            # 9. 构建用户消息（支持多模态：上传图片 + HTTP(S) 图片 + 需求文档图片）
+            (
+                human_message_content,
+                human_message_kwargs,
+                display_user_message,
+            ) = await _prepare_agent_loop_human_message(
+                user_message,
+                project=project,
+                supports_vision=active_config.supports_vision,
+                uploaded_images_base64=uploaded_images_base64,
+            )
+            user_msg = HumanMessage(
+                content=human_message_content,
+                additional_kwargs=human_message_kwargs,
+            )
 
             # 10. 获取工具名列表用于 HITL
             tool_names = [t.name for t in tools] if tools else None
@@ -954,6 +1036,7 @@ class AgentLoopStreamAPIView(View):
                     "session_id": session_id,
                     "thread_id": thread_id,
                     "project_id": project_id,
+                    "display_message": display_user_message,
                     "mode": "agent_loop",
                     "created_at": chat_session.created_at.isoformat()
                     if chat_session and chat_session.created_at
@@ -970,6 +1053,8 @@ class AgentLoopStreamAPIView(View):
                     user=request.user,
                     session_id=session_id,
                     all_tool_names=tool_names,
+                    tools=tools,
+                    system_prompt=effective_prompt,
                 )
 
                 agent = create_agent(
@@ -1292,7 +1377,10 @@ class AgentLoopStreamAPIView(View):
 
                     # 获取当前上下文 token 使用量（优先 usage_metadata，回退估算）
                     input_tokens, output_tokens, total_tokens = (
-                        calculate_context_tokens(all_messages, model_name)
+                        calculate_context_tokens(
+                            all_messages, model_name,
+                            tools=tools, system_prompt=effective_prompt,
+                        )
                     )
 
                     yield create_sse_data(
@@ -1303,13 +1391,29 @@ class AgentLoopStreamAPIView(View):
                         }
                     )
 
-                    # 记录 Token 使用量到 ChatSession
+                    # 记录 Token 使用量到 ChatSession + TokenUsageRecord
                     if input_tokens > 0 or output_tokens > 0:
+                        # 提取缓存命中信息
+                        cache_read_tokens = 0
+                        for msg in reversed(all_messages):
+                            if hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                                cache_info = msg.usage_metadata.get("input_token_details", {})
+                                cache_read_tokens = cache_info.get("cache_read", 0) or 0
+                                logger.info(
+                                    "AgentLoopStreamAPI: Token usage - input=%d, output=%d, cache_read=%d, cache_info=%s",
+                                    input_tokens, output_tokens, cache_read_tokens, cache_info,
+                                )
+                                break
+                        else:
+                            logger.info(
+                                f"AgentLoopStreamAPI: Token usage recorded - input={input_tokens}, output={output_tokens}"
+                            )
+
                         await sync_to_async(self._update_session_token_usage)(
-                            session_id, input_tokens, output_tokens
-                        )
-                        logger.info(
-                            f"AgentLoopStreamAPI: Token usage recorded - input={input_tokens}, output={output_tokens}"
+                            session_id, input_tokens, output_tokens,
+                            cache_read_tokens=cache_read_tokens,
+                            user_id=request.user.id,
+                            project_id=int(project_id) if project_id else None,
                         )
                 except Exception as e:
                     logger.warning(
@@ -1848,6 +1952,17 @@ class AgentLoopResumeAPIView(View):
                     )
 
                 # 5. 获取工具名列表和中间件配置
+                # 尝试从 ChatSession 关联的 prompt 获取系统提示词，用于精确计算 overhead
+                resume_system_prompt = None
+                try:
+                    chat_session = await sync_to_async(
+                        ChatSession.objects.filter(session_id=session_id).select_related("prompt").first
+                    )()
+                    if chat_session and chat_session.prompt and chat_session.prompt.content:
+                        resume_system_prompt = chat_session.prompt.content
+                except Exception:
+                    pass
+
                 tool_names = [t.name for t in tools] if tools else []
                 middleware = await sync_to_async(get_middleware_from_config)(
                     active_config,
@@ -1855,6 +1970,8 @@ class AgentLoopResumeAPIView(View):
                     user=user,
                     session_id=session_id,
                     all_tool_names=tool_names,
+                    tools=tools,
+                    system_prompt=resume_system_prompt,
                 )
 
                 # 6. 创建 agent
@@ -2104,7 +2221,10 @@ class AgentLoopResumeAPIView(View):
 
                     # 获取当前上下文 token 使用量（优先 usage_metadata，回退估算）
                     input_tokens, output_tokens, total_tokens = (
-                        calculate_context_tokens(all_messages, model_name)
+                        calculate_context_tokens(
+                            all_messages, model_name,
+                            tools=tools, system_prompt=resume_system_prompt,
+                        )
                     )
 
                     yield create_sse_data(
@@ -2115,13 +2235,27 @@ class AgentLoopResumeAPIView(View):
                         }
                     )
 
-                    # 记录 Token 使用量到 ChatSession
+                    # 记录 Token 使用量到 ChatSession + TokenUsageRecord
                     if input_tokens > 0 or output_tokens > 0:
+                        # 提取缓存命中信息
+                        cache_read_tokens = 0
+                        for msg in reversed(all_messages):
+                            if hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                                cache_info = msg.usage_metadata.get("input_token_details", {})
+                                cache_read_tokens = cache_info.get("cache_read", 0) or 0
+                                break
+
                         await sync_to_async(
                             AgentLoopStreamAPIView()._update_session_token_usage
-                        )(session_id, input_tokens, output_tokens)
+                        )(
+                            session_id, input_tokens, output_tokens,
+                            cache_read_tokens=cache_read_tokens,
+                            user_id=user.id,
+                            project_id=int(project_id) if project_id else None,
+                        )
                         logger.info(
-                            f"AgentLoopResumeAPI: Token usage recorded - input={input_tokens}, output={output_tokens}"
+                            "AgentLoopResumeAPI: Token usage - input=%d, output=%d, cache_read=%d",
+                            input_tokens, output_tokens, cache_read_tokens,
                         )
                 except Exception as e:
                     logger.warning(

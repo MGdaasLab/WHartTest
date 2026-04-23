@@ -33,7 +33,7 @@ data
 temp/
 tmp/
 docker-images
-
+PandaWiki-skill/
 # Cache directories
 .cache/
 .npm/
@@ -70,3 +70,4 @@ WHartTest_Django/chat_history.sqlite-wal
 WHartTest_Actuator/browsers/
 .github/copilot-instructions.md
 WHartTest_Django/celerybeat-schedule
+AGENTS.md

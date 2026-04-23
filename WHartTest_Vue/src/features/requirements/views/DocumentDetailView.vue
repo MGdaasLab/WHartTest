@@ -22,6 +22,16 @@
         </div>
       </div>
       <div class="header-actions">
+        <a-button
+          v-if="supportsDocxEditor"
+          type="outline"
+          @click="goToDocxEditor"
+          :loading="docxEditorLoading"
+        >
+          <template #icon><icon-edit /></template>
+          进入在线编辑
+        </a-button>
+
         <!-- 上传状态优先拆分 -->
         <a-button
           v-if="document?.status === 'uploaded'"
@@ -179,8 +189,22 @@
     </div>
 
 
+    <div v-if="showLatestDocumentContent" class="modules-section">
+      <a-card class="modules-card">
+        <template #title>
+          <div class="modules-header">
+            <span>最新文档内容</span>
+          </div>
+        </template>
+        <div
+          class="segment-content markdown-body latest-document-content"
+          v-html="renderMarkdownWithImages(document?.content || '')"
+        />
+      </a-card>
+    </div>
+
     <!-- 模块管理区域 -->
-    <div v-if="document?.modules && document.modules.length > 0" class="modules-section">
+    <div v-if="document?.modules && document.modules.length > 0 && !showLatestDocumentContent" class="modules-section">
       <a-card class="modules-card">
         <template #title>
           <div class="modules-header">
@@ -240,14 +264,19 @@
               }"
               @mouseenter="hoveredModuleId = module.id"
               @mouseleave="hoveredModuleId = null"
-              @click="toggleModuleSelection(module.id)"
+              @click="handleModuleSegmentClick(module.id)"
             >
               <!-- 模块标签 -->
               <div
                 class="module-label"
                 :style="{ backgroundColor: getModuleColor(index) }"
+                @click.stop="toggleModuleExpand(module.id)"
               >
                 <div class="label-content">
+                  <component
+                    :is="isModuleExpanded(module.id) ? IconDown : IconRight"
+                    class="expand-indicator"
+                  />
                   <span class="module-number">{{ module.order }}</span>
                   <span
                     class="module-title-inline"
@@ -267,7 +296,7 @@
               </div>
 
               <!-- 内容编辑区域 -->
-              <div v-if="editingContentId === module.id" class="inline-content-edit">
+              <div v-if="isModuleExpanded(module.id) && editingContentId === module.id" class="inline-content-edit">
                 <a-textarea
                   v-model="editingContent"
                   :auto-size="{ minRows: 3 }"
@@ -282,7 +311,7 @@
 
               <!-- 内容显示区域 -->
               <div
-                v-else
+                v-else-if="isModuleExpanded(module.id)"
                 class="segment-content markdown-body"
                 @dblclick="editModuleContent(module)"
                 :style="{
@@ -291,6 +320,9 @@
                 }"
                 v-html="renderMarkdownWithImages(module.content)"
               />
+              <div v-else class="segment-collapsed-placeholder">
+                点击模块标题展开内容
+              </div>
             </div>
           </div>
 
@@ -433,6 +465,8 @@ import {
   IconArrowLeft,
   IconCheckCircle,
   IconPlus,
+  IconRight,
+  IconDown,
   IconEdit,
   IconDelete,
   IconFile,
@@ -465,6 +499,7 @@ const projectStore = useProjectStore();
 const loading = ref(false);
 const splitLoading = ref(false);
 const reviewLoading = ref(false);
+const docxEditorLoading = ref(false);
 const document = ref<DocumentDetail | null>(null);
 const expandedModules = ref<string[]>([]);
 
@@ -513,6 +548,17 @@ let isPollingActive = false;
 const sortedModules = computed(() => {
   if (!document.value?.modules) return [];
   return [...document.value.modules].sort((a, b) => a.order - b.order);
+});
+
+const showLatestDocumentContent = computed(() => {
+  if (!document.value?.content?.trim()) return false;
+  if (!document.value?.modules?.length) return true;
+  return document.value.status === 'uploaded';
+});
+
+const supportsDocxEditor = computed(() => {
+  if (!document.value?.file) return false;
+  return document.value.document_type === 'doc' || document.value.document_type === 'docx';
 });
 
 // 方法
@@ -627,6 +673,45 @@ const loadDocument = async () => {
 // 返回列表
 const goBack = () => {
   router.push('/requirements');
+};
+
+const goToDocxEditor = async () => {
+  if (!document.value?.id || docxEditorLoading.value) return;
+
+  const pendingWindow = window.open('', '_blank');
+  if (pendingWindow) {
+    pendingWindow.document.write('<title>进入在线编辑</title><p>处理中...</p>');
+  }
+
+  docxEditorLoading.value = true;
+  try {
+    const response = await RequirementDocumentService.launchOnlineEditor(document.value.id);
+    if (response.status !== 'success' || !response.data?.launch_url) {
+      throw new Error(response.message || '打开在线编辑失败');
+    }
+
+    const launchUrl = response.data.launch_url;
+    if (pendingWindow && !pendingWindow.closed) {
+      pendingWindow.opener = null;
+      pendingWindow.location.href = launchUrl;
+    } else {
+      window.location.href = launchUrl;
+    }
+  } catch (error) {
+    if (pendingWindow && !pendingWindow.closed) {
+      pendingWindow.close();
+    }
+
+    const message = error instanceof Error ? error.message : '打开在线编辑失败';
+    if (message.includes('未接入') || message.includes('未配置') || message.includes('不可用') || message.includes('未部署') || message.toLowerCase().includes('not integrated')) {
+      Message.warning(message || '在线编辑功能未接入，请先配置 docx-editor 连接。');
+      return;
+    }
+
+    Message.error(message || '打开在线编辑失败');
+  } finally {
+    docxEditorLoading.value = false;
+  }
 };
 
 // 查看评审报告
@@ -836,6 +921,10 @@ const toggleModuleExpand = (moduleId: string) => {
   }
 };
 
+const isModuleExpanded = (moduleId: string) => {
+  return expandedModules.value.includes(moduleId);
+};
+
 // 编辑模块
 const editModule = (module: DocumentModule) => {
   currentEditingModule.value = module;
@@ -939,6 +1028,15 @@ const toggleModuleSelection = (moduleId: string) => {
   }
 };
 
+const handleModuleSegmentClick = (moduleId: string) => {
+  if (!isModuleExpanded(moduleId)) {
+    toggleModuleExpand(moduleId);
+    return;
+  }
+
+  toggleModuleSelection(moduleId);
+};
+
 const getModuleColor = (index: number, alpha: number = 1) => {
   const colors = [
     `rgba(0, 160, 233, ${alpha})`,   // 蓝色
@@ -1017,6 +1115,9 @@ const cancelTitleEdit = () => {
 };
 
 const editModuleContent = (module: DocumentModule) => {
+  if (!expandedModules.value.includes(module.id)) {
+    expandedModules.value.push(module.id);
+  }
   editingContentId.value = module.id;
   editingContent.value = module.content;
   nextTick(() => {
@@ -1673,6 +1774,11 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.expand-indicator {
+  font-size: 14px;
+  opacity: 0.95;
+}
+
 .module-number {
   background: rgba(255, 255, 255, 0.2);
   padding: 2px 6px;
@@ -1761,6 +1867,18 @@ onBeforeUnmount(() => {
   color: #333;
   min-height: 40px;
   border: 1px solid rgba(0, 0, 0, 0.05);
+  text-align: left;
+}
+
+.segment-collapsed-placeholder {
+  margin-top: 18px;
+  padding: 16px 12px 8px;
+  color: #86909c;
+  font-size: 13px;
+}
+
+.latest-document-content {
+  margin-top: 0;
 }
 
 /* Markdown 渲染样式 */

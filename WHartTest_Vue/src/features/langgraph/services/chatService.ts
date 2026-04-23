@@ -555,7 +555,9 @@ export async function sendChatMessageStream(
                 contextLimit: contextLimit,
                 currentStep: 0,
                 maxSteps: initialMaxSteps,
-                userMessage: data.message, // 保存用户消息
+                userMessage: typeof parsed.display_message === 'string' && parsed.display_message.trim()
+                  ? parsed.display_message
+                  : data.message, // 优先使用后端规范化后的展示文本
                 userMessageTime: formatIsoTime(parsed.created_at) // 使用会话创建时间
               };
               onStart(streamSessionId);

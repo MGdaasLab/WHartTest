@@ -1478,6 +1478,7 @@ configure_local_base_images() {
   # 构建参数中的基础镜像
   apply_remote_image_override DOCKER_PYTHON_BASE_IMAGE "python:3.11-slim" "$dockerhub_candidate"
   apply_remote_image_override DOCKER_NODE_BASE_IMAGE "node:20-alpine" "$dockerhub_candidate"
+  apply_remote_image_override DOCKER_NODE_22_BASE_IMAGE "node:22-alpine" "$dockerhub_candidate"
   apply_remote_image_override DOCKER_NGINX_BASE_IMAGE "nginx:alpine" "$dockerhub_candidate"
 
   # 直接拉取的服务镜像
@@ -1489,6 +1490,7 @@ configure_local_base_images() {
   echo "已选择基础镜像源："
   echo "- Python: ${DOCKER_PYTHON_BASE_IMAGE:-python:3.11-slim}"
   echo "- Node: ${DOCKER_NODE_BASE_IMAGE:-node:20-alpine}"
+  echo "- Node 22: ${DOCKER_NODE_22_BASE_IMAGE:-node:22-alpine}"
   echo "- Nginx: ${DOCKER_NGINX_BASE_IMAGE:-nginx:alpine}"
   echo "- PostgreSQL: ${DOCKER_POSTGRES_IMAGE:-postgres:16-alpine}"
   echo "- Redis: ${DOCKER_REDIS_IMAGE:-redis:7-alpine}"

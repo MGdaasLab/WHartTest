@@ -69,6 +69,8 @@ services:
       - ./data:/app/data
       - backend-static:/app/static
       - ./WHartTest_Skills:/app/bundled_skills:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       # 数据库配置
       # 默认使用 PostgreSQL（生产环境推荐）
@@ -96,6 +98,10 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       # 内部API基础URL - 使用localhost因为在同一容器
       - DJANGO_BASE_URL=http://localhost:8000
+      - WEIXIN_PLUGIN_HOST_URL=http://weixin-plugin-host:3001
+      - DOCX_EDITOR_BASE_URL=${DOCX_EDITOR_BASE_URL:-http://host.docker.internal:18080}
+      - DOCX_EDITOR_PUBLIC_BASE_URL=${DOCX_EDITOR_PUBLIC_BASE_URL:-}
+      - DOCX_EDITOR_SERVICE_KEY=${DOCX_EDITOR_SERVICE_KEY:-docx-editor-default-integration-key-2026}
       # Qdrant向量数据库
       - QDRANT_URL=http://qdrant:6333
       - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://huggingface.co}
@@ -106,15 +112,47 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      weixin-plugin-host:
+        condition: service_started
     networks:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/')" ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  weixin-plugin-host:
+    build:
+      context: ./WHartTest_WeixinPluginHost
+      dockerfile: Dockerfile
+      args:
+        NODE_BASE_IMAGE: ${DOCKER_NODE_22_BASE_IMAGE:-node:22-alpine}
+        NPM_REGISTRY: ${DOCKER_NPM_REGISTRY:-https://registry.npmjs.org}
+    container_name: wharttest-weixin-plugin-host
+    ports:
+      - "0.0.0.0:8922:3001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - WHARTTEST_BACKEND_URL=http://backend:8000
+      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}
+      - WHARTTEST_SHARED_DATA_DIR=/app/data
+      - OPENCLAW_STATE_DIR=/app/data/openclaw-state
+      - OPENCLAW_CONFIG=/app/data/openclaw-state/openclaw.json
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3001/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   # 前端 Vue 服务
   frontend:
@@ -135,7 +173,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -174,7 +212,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/')" ]
+      test: [ "CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8006), 5).close(); socket.create_connection(('127.0.0.1', 8007), 5).close()" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -185,8 +223,8 @@ services:
     image: ${DOCKER_PLAYWRIGHT_MCP_IMAGE:-mcr.microsoft.com/playwright/mcp}
     container_name: wharttest-playwright-mcp
     user: root # 以 root 用户运行,确保有权限写入挂载目录
-    entrypoint: node
-    command: [ "cli.js", "--no-sandbox", "--host", "0.0.0.0", "--allowed-hosts", "*", "--config", "/app/playwright-mcp-config.json" ]
+    entrypoint: [ "node", "/app/cli.js" ]
+    command: [ "--no-sandbox", "--host", "0.0.0.0", "--allowed-hosts", "*", "--config", "/app/playwright-mcp-config.json" ]
     ports:
       - "0.0.0.0:8916:8931"
     volumes:
@@ -196,7 +234,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--spider", "-q", "http://localhost:8931/mcp" ]
+      test: [ "CMD", "node", "-e", "require('http').get('http://localhost:8931/mcp', res => process.exit(res.statusCode ? 0 : 1)).on('error', () => process.exit(1))" ]
       interval: 30s
       timeout: 10s
       retries: 3

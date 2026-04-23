@@ -1,7 +1,7 @@
 {
   "name": "wharttest_vue",
   "private": false,
-  "version": "2.2.0",
+  "version": "2.3.0",
   "type": "module",
   "license": "MIT",
   "author": "WHartTest Team",
@@ -37,6 +37,7 @@
     "marked": "^15.0.12",
     "monaco-editor": "^0.55.1",
     "pinia": "^3.0.2",
+    "qrcode": "^1.5.4",
     "vue": "^3.5.13",
     "vue-router": "^4.5.1",
     "vuedraggable": "^4.1.0",

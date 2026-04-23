@@ -418,39 +418,95 @@ def _is_unreliable_default_detected_limit(
     return True
 
 
+def _calculate_overhead_tokens(
+    model_name: str,
+    tools: Optional[list] = None,
+    system_prompt: Optional[str] = None,
+) -> int:
+    """
+    计算系统提示词 + 工具定义 + 消息结构的真实 token 开销
+
+    这些在整个对话中不变，只需在创建 token_counter 时算一次。
+
+    Args:
+        model_name: 模型名称，用于选择 tiktoken 编码器
+        tools: 工具对象列表（有 .name, .description, .args_schema 等属性）
+        system_prompt: 系统提示词内容
+    """
+    import json
+
+    overhead = 0
+
+    # 1. 系统提示词
+    if system_prompt:
+        overhead += context_checker.count_tokens(system_prompt, model_name)
+
+    # 2. 工具定义（JSON Schema）
+    if tools:
+        for tool in tools:
+            try:
+                tool_text = getattr(tool, "name", "") or ""
+                tool_text += getattr(tool, "description", "") or ""
+                args_schema = getattr(tool, "args_schema", None)
+                if args_schema:
+                    if callable(getattr(args_schema, "model_json_schema", None)):
+                        schema_dict = args_schema.model_json_schema()
+                    elif callable(getattr(args_schema, "schema", None)):
+                        schema_dict = args_schema.schema()
+                    else:
+                        schema_dict = {}
+                    tool_text += json.dumps(schema_dict, ensure_ascii=False)
+                overhead += context_checker.count_tokens(tool_text, model_name)
+            except Exception:
+                overhead += 200
+
+    # 3. 消息结构开销（role token、分隔符等）
+    overhead += 200
+
+    return overhead
+
+
 def _create_token_counter(model_name: str) -> Callable[[Iterable], int]:
     """
-    创建基于 usage_metadata 的 Token 计数器
+    创建纯消息内容的 Token 计数器
 
-    注意：SummarizationMiddleware 需要的 token_counter 签名是:
-    Callable[[Iterable[MessageLikeRepresentation]], int]
-    即接收消息列表，返回总 token 数
+    注意：SummarizationMiddleware 内部会将此 counter 用于多个场景：
+    1. _should_summarize() — 判断是否触发摘要
+    2. _trim_messages_for_summary() — 裁剪待摘要消息
+    3. _find_token_based_cutoff() — 二分搜索切割点
 
-    计算逻辑：取最后一条有 usage_metadata 的消息的 input_tokens + output_tokens
-    这代表当前上下文的真实 token 使用量
+    场景 2 和 3 需要准确反映消息本身的大小，不能包含系统提示词和工具定义的开销。
+    因此此 counter 只计算消息内容 token，不加 overhead。
+    overhead 通过降低 trigger 阈值来补偿（在 get_summarization_middleware 中处理）。
+
+    计算逻辑：
+    1. 优先取最后一条有 usage_metadata 的消息的 total_tokens
+       （这是 LLM API 返回的真实值，最准确）
+    2. 如果没有 usage_metadata，使用 tiktoken 计算消息内容 token
+
+    Args:
+        model_name: 模型名称，用于 tiktoken 编码器
     """
 
     def token_counter(messages: Iterable) -> int:
         """计算当前上下文的 token 数（使用最后一条消息的 usage_metadata）"""
         try:
-            # 将 Iterable 转换为列表以便反向遍历
             messages_list = list(messages)
 
-            # 优先使用最后一条消息的 usage_metadata
-            # 注意：每次 LLM 返回的 input_tokens 已包含完整上下文，不能累加
+            # 优先使用最后一条消息的 usage_metadata（LLM API 返回的真实值）
             for msg in reversed(messages_list):
                 if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                    input_tokens = msg.usage_metadata.get("input_tokens", 0)
-                    output_tokens = msg.usage_metadata.get("output_tokens", 0)
-                    total = input_tokens + output_tokens
+                    usage = msg.usage_metadata
+                    total = usage.get("total_tokens", 0) or (
+                        usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                    )
                     if total > 0:
                         logger.debug(
-                            f"token_counter: usage_metadata = {total} (input={input_tokens}, output={output_tokens})"
+                            f"token_counter: usage_metadata total = {total}"
                         )
                         return total
 
-            # 如果没有 usage_metadata，使用 tiktoken 估算内容 token
-            # 并乘以估算系数（考虑工具定义等额外 token）
+            # 没有 usage_metadata 时，tiktoken 计算消息内容
             content_tokens = 0
             for msg in messages_list:
                 if hasattr(msg, "content") and msg.content:
@@ -461,15 +517,14 @@ def _create_token_counter(model_name: str) -> Callable[[Iterable], int]:
                     )
                     content_tokens += context_checker.count_tokens(content, model_name)
 
-            # 估算系数：工具定义、系统提示词等通常占总 token 的 2-3 倍
-            estimated_total = content_tokens * 3
             logger.debug(
-                f"token_counter: tiktoken 估算 = {estimated_total} (content={content_tokens} * 3)"
+                f"token_counter: tiktoken 估算 = {content_tokens}"
             )
-            return estimated_total
+            return content_tokens
         except Exception as e:
             logger.warning(f"Token 计数失败: {e}")
-            return 0
+            # 返回保守估算值，避免返回 0 导致摘要永远不触发
+            return len(messages_list) * 500 if messages_list else 0
 
     return token_counter
 
@@ -668,18 +723,24 @@ def get_summarization_middleware(
     trigger_tokens: int = 96000,  # 128k 的 75%
     keep_messages: int = 4,
     model_name: str = "gpt-4o",  # 用于精确 Token 计数
+    tools: Optional[list] = None,  # 工具对象列表，用于计算真实开销
+    system_prompt: Optional[str] = None,  # 系统提示词，用于计算真实开销
 ) -> Optional[SummarizationMiddleware]:
     """
     获取摘要中间件
 
-    替代 ConversationCompressor 的手动上下文压缩逻辑
+    替代 ConversationCompressor 的手动上下文压缩逻辑。
+    token_counter 只计算消息内容 token（不含系统提示词和工具定义），
+    overhead 通过降低 trigger 阈值来补偿，确保 trim 和 cutoff 逻辑不受污染。
 
     Args:
         model: 用于生成摘要的模型（字符串或 BaseChatModel 实例）
                如果为 None，则返回 None（不使用摘要中间件）
-        trigger_tokens: 触发摘要的 Token 阈值
+        trigger_tokens: 触发摘要的 Token 阈值（基于完整上下文限制计算）
         keep_messages: 保留最近的消息数量
         model_name: 模型名称，用于精确 Token 计数（基于 tiktoken）
+        tools: 工具对象列表，传入后可精确计算工具定义的 token 开销
+        system_prompt: 系统提示词内容，传入后可精确计算其 token 开销
 
     Returns:
         SummarizationMiddleware 实例，如果 model 为 None 则返回 None
@@ -687,11 +748,35 @@ def get_summarization_middleware(
     if model is None:
         return None
 
+    # 计算系统提示词 + 工具定义的真实 token 开销
+    overhead = _calculate_overhead_tokens(model_name, tools, system_prompt)
+    logger.info(
+        "SummarizationMiddleware overhead: %d tokens (tools=%d, has_prompt=%s)",
+        overhead,
+        len(tools) if tools else 0,
+        bool(system_prompt),
+    )
+
+    # token_counter 只计算消息内容，不含 overhead。
+    # 所以 trigger 阈值要减去 overhead，确保在真实上下文接近阈值时触发摘要。
+    effective_trigger = max(1, trigger_tokens - overhead)
+
+    # trim_tokens_to_summarize：裁剪待摘要消息的上限。
+    # 按 effective_trigger 的 50% 设置，确保摘要 LLM 调用不会超限。
+    # 同时不能超过摘要模型自身的上下文能力（保守估计，取 trigger 的 50%）。
+    trim_limit = max(effective_trigger // 2, 8000)
+
+    logger.info(
+        "SummarizationMiddleware config: trigger=%d (raw=%d - overhead=%d), trim_limit=%d",
+        effective_trigger, trigger_tokens, overhead, trim_limit,
+    )
+
     return SummarizationMiddleware(
         model=model,
-        trigger=("tokens", trigger_tokens),
+        trigger=("tokens", effective_trigger),
         keep=("messages", keep_messages),
         token_counter=_create_token_counter(model_name),
+        trim_tokens_to_summarize=trim_limit,
     )
 
 
@@ -954,6 +1039,8 @@ def get_standard_middleware(
     summarization_trigger_tokens: int = 96000,
     summarization_keep_messages: int = 4,
     model_name: str = "gpt-4o",  # 用于精确 Token 计数
+    tools: Optional[list] = None,  # 工具对象列表，用于精确计算 token 开销
+    system_prompt: Optional[str] = None,  # 系统提示词，用于精确计算 token 开销
 ) -> List:
     """
     获取标准中间件组合
@@ -993,6 +1080,8 @@ def get_standard_middleware(
             trigger_tokens=summarization_trigger_tokens,
             keep_messages=summarization_keep_messages,
             model_name=model_name,
+            tools=tools,
+            system_prompt=system_prompt,
         )
         if summarization_mw is not None:
             middleware.append(summarization_mw)
@@ -1126,6 +1215,8 @@ def get_middleware_from_config(
     user=None,
     session_id: Optional[str] = None,
     all_tool_names: Optional[List[str]] = None,
+    tools: Optional[list] = None,
+    system_prompt: Optional[str] = None,
 ) -> List:
     """
     从 LLMConfig 模型配置构建中间件列表
@@ -1226,6 +1317,8 @@ def get_middleware_from_config(
         summarization_trigger_tokens=trigger_tokens,
         summarization_keep_messages=4,
         model_name=model_name,
+        tools=tools,
+        system_prompt=system_prompt,
     )
 
 
@@ -1374,6 +1467,8 @@ async def get_standard_middleware_async(
     summarization_trigger_tokens: int = 96000,
     summarization_keep_messages: int = 4,
     model_name: str = "gpt-4o",
+    tools: Optional[list] = None,
+    system_prompt: Optional[str] = None,
 ) -> List:
     """获取标准中间件组合（异步版本）"""
     middleware = []
@@ -1392,6 +1487,8 @@ async def get_standard_middleware_async(
             trigger_tokens=summarization_trigger_tokens,
             keep_messages=summarization_keep_messages,
             model_name=model_name,
+            tools=tools,
+            system_prompt=system_prompt,
         )
         if summarization_mw is not None:
             middleware.append(summarization_mw)
@@ -1430,6 +1527,8 @@ async def get_middleware_from_config_async(
     user=None,
     session_id: Optional[str] = None,
     all_tool_names: Optional[List[str]] = None,
+    tools: Optional[list] = None,
+    system_prompt: Optional[str] = None,
 ) -> List:
     """从 LLMConfig 模型配置构建中间件列表（异步版本）"""
     if agent_type == "brain":
@@ -1490,4 +1589,6 @@ async def get_middleware_from_config_async(
         summarization_trigger_tokens=trigger_tokens,
         summarization_keep_messages=4,
         model_name=model_name,
+        tools=tools,
+        system_prompt=system_prompt,
     )

@@ -380,12 +380,12 @@ const showGenerateCasesModal = () => {
 const handleGenerateCasesSubmit = async (formData: {
   generateMode: 'full' | 'title_only' | 'kb_complete' | 'kb_generate',
   requirementDocumentId: string,
-  requirementModuleId: string,
+  requirementModuleIds: string[],
   promptId: number,
   useKnowledgeBase: boolean,
   knowledgeBaseId?: string | null,
   testCaseModuleId: number,
-  selectedModule: { title: string, content: string },
+  selectedModules: { title: string, content: string }[],
   selectedTestCaseIds: number[],
   selectedTestCases: TestCase[],
   testTypes: string[],
@@ -407,20 +407,20 @@ const handleGenerateCasesSubmit = async (formData: {
 
   switch (formData.generateMode) {
     case 'full':
-      // 完整生成模式（原有逻辑）
+      // 完整生成模式
       message = `
 请根据以下需求模块信息，为我生成测试用例。
 
 ${testTypePrompt}
 
----
-[需求模块标题]
-${formData.selectedModule.title}
+${formData.selectedModules.map((mod, idx) => `---
+[需求模块${formData.selectedModules.length > 1 ? ` ${idx + 1}` : ''}标题]
+${mod.title}
 
 ---
-[需求模块内容]
-${formData.selectedModule.content}
----
+[需求模块${formData.selectedModules.length > 1 ? ` ${idx + 1}` : ''}内容]
+${mod.content}
+---`).join('\n\n')}
 
 请注意：生成的测试用例最终需要被保存在 **项目ID "${currentProjectId.value}"** 下的 **测试用例模块ID "${formData.testCaseModuleId}"** 中。
 (此需求模块来源于需求文档ID: ${formData.requirementDocumentId})
@@ -437,14 +437,14 @@ ${formData.selectedModule.content}
 
 ${testTypePrompt}
 
----
-[需求模块标题]
-${formData.selectedModule.title}
+${formData.selectedModules.map((mod, idx) => `---
+[需求模块${formData.selectedModules.length > 1 ? ` ${idx + 1}` : ''}标题]
+${mod.title}
 
 ---
-[需求模块内容]
-${formData.selectedModule.content}
----
+[需求模块${formData.selectedModules.length > 1 ? ` ${idx + 1}` : ''}内容]
+${mod.content}
+---`).join('\n\n')}
 
 请注意：
 - 只需要生成用例标题，不需要生成详细的测试步骤和预期结果
@@ -494,8 +494,7 @@ ${testTypePrompt}
 ${formData.selectedTestCases.map(tc => `- 用例ID: ${tc.id}, 名称: ${tc.name}, 优先级: ${tc.level}, 模块ID: ${tc.module_id ?? '未分配'}, 模块: ${tc.module_detail || '未分配'}`).join('\n')}
 
 [需求模块参考]
-标题: ${formData.selectedModule?.title || '无'}
-内容: ${formData.selectedModule?.content || '无'}
+${formData.selectedModules.length > 0 ? formData.selectedModules.map((mod, idx) => `模块${formData.selectedModules.length > 1 ? ` ${idx + 1}` : ''} 标题: ${mod.title}\n模块${formData.selectedModules.length > 1 ? ` ${idx + 1}` : ''} 内容: ${mod.content}`).join('\n\n') : '无'}
 
 项目ID: ${currentProjectId.value}
       `.trim();

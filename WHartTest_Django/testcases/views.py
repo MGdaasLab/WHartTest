@@ -24,11 +24,13 @@ from .models import (
 )
 from .serializers import (
     TestCaseSerializer,
+    TestCaseListSerializer,
     TestCaseModuleSerializer,
     TestCaseScreenshotSerializer,
 )
 from .permissions import IsProjectMemberForTestCase, IsProjectMemberForTestCaseModule
 from .filters import TestCaseFilter  # 导入自定义过滤器
+from wharttest_django.pagination import StandardPagination
 
 # 确保导入项目自定义的权限类
 from wharttest_django.permissions import HasModelPermission, permission_required
@@ -69,12 +71,18 @@ class TestCaseViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = TestCaseSerializer
+    pagination_class = StandardPagination
     filter_backends = [
         DjangoFilterBackend,
         filters.SearchFilter,
     ]  # 添加 DjangoFilterBackend
     filterset_class = TestCaseFilter  # 使用自定义的 FilterSet
     search_fields = ["name", "precondition"]
+
+    def get_serializer_class(self):
+        if self.action == "list":
+            return TestCaseListSerializer
+        return TestCaseSerializer
 
     def get_permissions(self):
         """
@@ -96,15 +104,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         project_pk = self.kwargs.get("project_pk")
         if project_pk:
             project = get_object_or_404(Project, pk=project_pk)
-            # 权限类 IsProjectMemberForTestCase 已经检查了用户是否是此项目的成员
-            # 所以这里可以直接返回项目下的用例
-            return (
-                TestCase.objects.filter(project=project)
-                .select_related("creator", "module")
-                .prefetch_related("steps")
+            qs = TestCase.objects.filter(project=project).select_related(
+                "creator", "module"
             )
-        # 如果没有 project_pk (理论上不应该发生，因为路由是嵌套的)
-        # 返回空 queryset 或根据需求抛出错误
+            if self.action != "list":
+                qs = qs.prefetch_related("steps")
+            return qs
         return TestCase.objects.none()
 
     def perform_create(self, serializer):
@@ -169,8 +174,6 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 try:
                     testcase_ids = [int(id) for id in ids_data]
                 except (ValueError, TypeError):
-                    from rest_framework.response import Response
-
                     return Response(
                         {"error": "ids参数格式错误，应为数字列表"}, status=400
                     )
@@ -192,8 +195,6 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         int(id.strip()) for id in ids_param.split(",") if id.strip()
                     ]
                 except ValueError:
-                    from rest_framework.response import Response
-
                     return Response(
                         {"error": "ids参数格式错误，应为逗号分隔的数字列表"}, status=400
                     )

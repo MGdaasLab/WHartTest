@@ -71,7 +71,7 @@
 import { ref, computed, watch } from 'vue';
 import { Message, Modal } from '@arco-design/web-vue';
 import { moduleApi } from '../api';
-import type { UiModule, UiModuleForm } from '../types';
+import { extractResponseData, type UiModule, type UiModuleForm } from '../types';
 import { useProjectStore } from '@/store/projectStore';
 
 const emit = defineEmits<{
@@ -132,8 +132,7 @@ const fetchModules = async () => {
   try {
     const res = await moduleApi.tree(projectId.value);
     console.log('[ModulePanel] API response:', res);
-    // 兼容两种响应格式
-    const data = res.data?.data || res.data || [];
+    const data = extractResponseData<UiModule[]>(res) || [];
     console.log('[ModulePanel] extracted data:', data);
     treeData.value = Array.isArray(data) ? data : [];
   } catch (error) {

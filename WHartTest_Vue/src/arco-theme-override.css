@@ -955,3 +955,23 @@
 :root[data-theme='black'] body[arco-theme='dark'] .arco-drawer-resize-trigger {
   background: rgba(148, 163, 184, 0.14) !important;
 }
+
+/* ===== 亮色主题表格背景修复 ===== */
+/* 为表格元素添加过渡，使亮暗主题切换时背景色平滑变化 */
+.arco-table-body,
+.arco-table-td,
+.arco-table-th,
+.arco-table-header {
+  transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+}
+
+/* 亮色主题下明确设置表格单元格背景为白色，防止主题切换后残留暗色背景 */
+body:not([arco-theme='dark']) .arco-table-body,
+body:not([arco-theme='dark']) .arco-table-td {
+  background-color: #fff !important;
+}
+
+body:not([arco-theme='dark']) .arco-table-th,
+body:not([arco-theme='dark']) .arco-table-header {
+  background-color: var(--color-neutral-2) !important;
+}

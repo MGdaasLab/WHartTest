@@ -416,8 +416,10 @@ const shouldCollapse = computed(() => {
     return true;
   }
 
-  const lines = props.message.content.split('\n').length;
-  return lines > 4;
+  const content = props.message.content;
+  const lines = content.split('\n').length;
+  // 紧凑JSON可能只有1行但格式化后很长，同时检查字符长度
+  return lines > 4 || content.length > 200;
 });
 
 const canPreviewDiagram = computed(() => {
@@ -456,6 +458,7 @@ const handlePreviewHtml = () => {
 
 const REQUIREMENT_DOC_ID_RE = /需求文档ID[:：]\s*([0-9a-fA-F-]{36})/;
 const CODE_LANG_CLASS_RE = /\blanguage-([a-zA-Z0-9_+-]+)\b/;
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*?\]\((?:docimg:\/\/|\/api\/requirements\/documents\/|https?:\/\/)[^)]+\)/;
 
 const replaceDocImgPlaceholders = (content: string): string => {
   if (!content || !content.includes('docimg://')) return content;
@@ -474,6 +477,53 @@ const escapeHtml = (text: string): string => {
   return div.innerHTML;
 };
 
+const renderSafeMarkdown = (content: string): string => {
+  const escapedContent = escapeHtml(content);
+  const htmlContent = marked(escapedContent) as string;
+  return DOMPurify.sanitize(htmlContent, {
+    ADD_TAGS: ['img', 'details', 'summary'],
+    ADD_ATTR: ['src', 'alt', 'title', 'class'],
+  });
+};
+
+const tryFormatJsonCodeBlock = (content: string): string | null => {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed === null || typeof parsed !== 'object') return null;
+    return `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
+  } catch {
+    return null;
+  }
+};
+
+const looksLikeStructuredAiPayload = (content: string): boolean => {
+  const trimmed = content.trim();
+  if (!trimmed || trimmed.includes('```')) return false;
+  if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return false;
+  if (/^#{1,6}\s|^[-*]\s|^\d+\.\s/m.test(trimmed)) return false;
+
+  const keyMatches = trimmed.match(/"[^"\n]+"\s*:/g) || [];
+  return keyMatches.length >= 1;
+};
+
+const formatAiMessage = (content: string): string => {
+  const trimmed = content.trim();
+  if (!trimmed || trimmed.includes('```')) return content;
+
+  const formattedJson = tryFormatJsonCodeBlock(trimmed);
+  if (formattedJson) {
+    return formattedJson;
+  }
+
+  if (looksLikeStructuredAiPayload(trimmed)) {
+    return `\`\`\`\n${trimmed}\n\`\`\``;
+  }
+
+  return content;
+};
 const getCodePreviewText = (preElement: HTMLElement, maxLines = 3, fromEnd = false): string => {
   const codeElement = preElement.querySelector('code');
   const rawCode = (codeElement?.textContent || preElement.textContent || '').replace(/\r\n/g, '\n');
@@ -550,6 +600,11 @@ const formattedContent = computed(() => {
 
     // 用户消息（human类型）：先转义HTML，确保用户发送的HTML代码能正确显示
     if (props.message.isUser || props.message.messageType === 'human') {
+      processedContent = replaceDocImgPlaceholders(processedContent);
+      if (MARKDOWN_IMAGE_RE.test(processedContent)) {
+        return renderSafeMarkdown(processedContent);
+      }
+
       // 转义HTML标签，使其显示为文本
       processedContent = escapeHtml(processedContent);
       // 将换行符转换为<br>标签，保持换行

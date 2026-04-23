@@ -114,6 +114,8 @@ class ChatSession(models.Model):
                                                  help_text="该会话累计消耗的输出 Token 数")
     total_tokens = models.BigIntegerField(default=0, verbose_name="累计总 Token",
                                           help_text="该会话累计消耗的总 Token 数（输入+输出）")
+    total_cache_read_tokens = models.BigIntegerField(default=0, verbose_name="累计缓存命中 Token",
+                                                      help_text="该会话累计缓存命中的 Token 数")
     request_count = models.IntegerField(default=0, verbose_name="请求次数",
                                         help_text="该会话的 LLM 请求次数")
 
@@ -127,6 +129,45 @@ class ChatSession(models.Model):
         
     def __str__(self):
         return f"{self.user.username} - {self.title}"
+
+
+class TokenUsageRecord(models.Model):
+    """
+    独立的 Token 使用记录 — 不随会话删除而丢失
+
+    每次 LLM 请求产生一条记录。session_id 仅存字符串，不依赖 ChatSession 外键，
+    因此删除对话不影响统计数据。
+    """
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
+        verbose_name="用户",
+    )
+    project = models.ForeignKey(
+        'projects.Project', on_delete=models.SET_NULL,
+        null=True, blank=True, verbose_name="关联项目",
+    )
+    session_id = models.CharField(
+        max_length=255, verbose_name="会话ID",
+        help_text="关联的会话标识（非外键）",
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+
+    input_tokens = models.IntegerField(default=0, verbose_name="输入 Token")
+    output_tokens = models.IntegerField(default=0, verbose_name="输出 Token")
+    total_tokens = models.IntegerField(default=0, verbose_name="总 Token")
+    cache_read_tokens = models.IntegerField(default=0, verbose_name="缓存命中 Token")
+
+    class Meta:
+        verbose_name = "Token 使用记录"
+        verbose_name_plural = "Token 使用记录"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['created_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.user_id} - {self.session_id} - {self.total_tokens} tokens"
 
 
 class UserToolApproval(models.Model):

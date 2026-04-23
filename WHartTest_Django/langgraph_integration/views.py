@@ -10,7 +10,7 @@ from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.exceptions import AuthenticationFailed
-from .models import LLMConfig, ChatSession, ChatMessage
+from .models import LLMConfig, ChatSession, ChatMessage, TokenUsageRecord
 from .serializers import LLMConfigSerializer
 import logging
 from asgiref.sync import sync_to_async
@@ -3404,7 +3404,7 @@ class TokenUsageStatsAPIView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 构建查询
+        # 构建查询 — 使用 TokenUsageRecord（不受会话删除影响）
         import logging
 
         logger = logging.getLogger("langgraph_integration")
@@ -3412,11 +3412,11 @@ class TokenUsageStatsAPIView(APIView):
             f"[TokenUsageStats] 查询日期范围: {start_date} ~ {end_date}, group_by={group_by}"
         )
 
-        queryset = ChatSession.objects.filter(
+        queryset = TokenUsageRecord.objects.filter(
             created_at__date__gte=start_date, created_at__date__lte=end_date
         )
 
-        logger.info(f"[TokenUsageStats] 查询到 {queryset.count()} 个会话")
+        logger.info(f"[TokenUsageStats] 查询到 {queryset.count()} 条记录")
 
         # 用于个人统计的查询（只看自己的数据）
         if target_user_id:
@@ -3431,11 +3431,12 @@ class TokenUsageStatsAPIView(APIView):
         user_stats = (
             all_users_queryset.values("user__username", "user_id")
             .annotate(
-                total_input=Sum("total_input_tokens"),
-                total_output=Sum("total_output_tokens"),
+                total_input=Sum("input_tokens"),
+                total_output=Sum("output_tokens"),
                 total_tokens=Sum("total_tokens"),
-                total_requests=Sum("request_count"),
-                session_count=Count("id"),
+                total_cache_read=Sum("cache_read_tokens"),
+                total_requests=Count("id"),
+                session_count=Count("session_id", distinct=True),
             )
             .order_by("-total_tokens")
         )
@@ -3449,22 +3450,24 @@ class TokenUsageStatsAPIView(APIView):
             personal_queryset.annotate(period=trunc_func("created_at"))
             .values("period")
             .annotate(
-                total_input=Sum("total_input_tokens"),
-                total_output=Sum("total_output_tokens"),
+                total_input=Sum("input_tokens"),
+                total_output=Sum("output_tokens"),
                 total_tokens=Sum("total_tokens"),
-                total_requests=Sum("request_count"),
-                session_count=Count("id"),
+                total_cache_read=Sum("cache_read_tokens"),
+                total_requests=Count("id"),
+                session_count=Count("session_id", distinct=True),
             )
             .order_by("period")
         )
 
         # 总计统计（使用个人数据）
         total_stats = personal_queryset.aggregate(
-            total_input=Sum("total_input_tokens"),
-            total_output=Sum("total_output_tokens"),
+            total_input=Sum("input_tokens"),
+            total_output=Sum("output_tokens"),
             total_tokens=Sum("total_tokens"),
-            total_requests=Sum("request_count"),
-            session_count=Count("id"),
+            total_cache_read=Sum("cache_read_tokens"),
+            total_requests=Count("id"),
+            session_count=Count("session_id", distinct=True),
         )
 
         return Response(
@@ -3478,6 +3481,7 @@ class TokenUsageStatsAPIView(APIView):
                     "input_tokens": total_stats["total_input"] or 0,
                     "output_tokens": total_stats["total_output"] or 0,
                     "total_tokens": total_stats["total_tokens"] or 0,
+                    "cache_read_tokens": total_stats["total_cache_read"] or 0,
                     "request_count": total_stats["total_requests"] or 0,
                     "session_count": total_stats["session_count"] or 0,
                 },
@@ -3488,6 +3492,7 @@ class TokenUsageStatsAPIView(APIView):
                         "input_tokens": item["total_input"] or 0,
                         "output_tokens": item["total_output"] or 0,
                         "total_tokens": item["total_tokens"] or 0,
+                        "cache_read_tokens": item["total_cache_read"] or 0,
                         "request_count": item["total_requests"] or 0,
                         "session_count": item["session_count"] or 0,
                     }
@@ -3501,6 +3506,7 @@ class TokenUsageStatsAPIView(APIView):
                         "input_tokens": item["total_input"] or 0,
                         "output_tokens": item["total_output"] or 0,
                         "total_tokens": item["total_tokens"] or 0,
+                        "cache_read_tokens": item["total_cache_read"] or 0,
                         "request_count": item["total_requests"] or 0,
                         "session_count": item["session_count"] or 0,
                     }

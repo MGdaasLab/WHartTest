@@ -6,6 +6,8 @@ import yaml
 import shutil
 from pathlib import Path, PurePosixPath
 from django.db import models, transaction
+from django.db.models.signals import post_delete
+from django.dispatch import receiver
 from django.contrib.auth.models import User
 from django.utils.translation import gettext_lazy as _
 from django.core.exceptions import ValidationError
@@ -401,18 +403,23 @@ class Skill(models.Model):
 
             return created_skills
 
-    def delete(self, *args, **kwargs):
-        """删除 Skill 时同时删除文件"""
-        full_path = self.get_full_path()
-        if full_path:
-            from django.conf import settings
-            media_root = Path(settings.MEDIA_ROOT).resolve(strict=False)
-            expected_root = (media_root / 'skills' / str(self.project_id) / str(self.id)).resolve(strict=False)
-            target = Path(full_path).resolve(strict=False)
-            # 条件：路径精确匹配预期目录；动作：递归删除；结果：防止误删非 Skill 目录。
-            if target == expected_root and target.exists():
-                shutil.rmtree(target, ignore_errors=True)
-            elif target.exists():
-                # 路径异常时仅告警不删除，避免潜在路径拼接错误导致数据破坏。
-                logger.warning("Refusing to delete unexpected Skill path: %s (expected %s)", target, expected_root)
-        super().delete(*args, **kwargs)
+
+@receiver(post_delete, sender=Skill)
+def _cleanup_skill_files(sender, instance, **kwargs):
+    """删除 Skill 记录后清理磁盘文件（适用于所有删除场景，包括 QuerySet 批量删除和 CASCADE 级联删除）"""
+    full_path = instance.get_full_path()
+    if not full_path:
+        return
+    from django.conf import settings
+    media_root = Path(settings.MEDIA_ROOT).resolve(strict=False)
+    expected_root = (media_root / 'skills' / str(instance.project_id) / str(instance.id)).resolve(strict=False)
+    target = Path(full_path).resolve(strict=False)
+    # 条件：路径精确匹配预期目录；动作：递归删除；结果：防止误删非 Skill 目录。
+    if target == expected_root and target.exists():
+        try:
+            shutil.rmtree(target)
+        except OSError as e:
+            logger.warning("Failed to delete Skill files at %s: %s", target, e)
+    elif target.exists():
+        # 路径异常时仅告警不删除，避免潜在路径拼接错误导致数据破坏。
+        logger.warning("Refusing to delete unexpected Skill path: %s (expected %s)", target, expected_root)

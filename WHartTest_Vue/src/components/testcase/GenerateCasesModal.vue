@@ -55,12 +55,22 @@
           </a-select>
         </div>
         <div class="form-row-item">
-          <span class="form-row-label required">需求模块</span>
+          <span class="form-row-label required">
+            需求模块
+            <a-tooltip content="全选">
+              <icon-select-all
+                class="select-all-icon"
+                :class="{ active: formState.requirementModuleIds.length === requirementModules.length && requirementModules.length > 0 }"
+                @click="toggleSelectAllModules"
+              />
+            </a-tooltip>
+          </span>
           <a-select
-            v-model="formState.requirementModuleId"
+            v-model="formState.requirementModuleIds"
             placeholder="请先选择需求文档"
             :loading="isReqModuleLoading"
             :disabled="!formState.requirementDocumentId"
+            multiple
             style="width: 100%;"
           >
             <a-option v-for="module in requirementModules" :key="module.id" :value="module.id">
@@ -305,7 +315,7 @@ const testCaseColumns = [
 const formState = reactive({
   generateMode: 'full' as GenerateMode,
   requirementDocumentId: null as string | null,
-  requirementModuleId: null as string | null,
+  requirementModuleIds: [] as string[],
   promptId: null as number | null,
   useKnowledgeBase: false,
   knowledgeBaseId: null as string | null,
@@ -377,14 +387,14 @@ const handleOk = () => {
 
   // 根据模式验证必填项
   if (['full', 'title_only'].includes(formState.generateMode)) {
-    if (!formState.requirementDocumentId || !formState.requirementModuleId || !formState.testCaseModuleId) {
+    if (!formState.requirementDocumentId || formState.requirementModuleIds.length === 0 || !formState.testCaseModuleId) {
       Message.error('请填写所有必填项');
       return;
     }
   }
 
   if (formState.generateMode === 'kb_generate') {
-    if (!formState.requirementDocumentId || !formState.requirementModuleId) {
+    if (!formState.requirementDocumentId || formState.requirementModuleIds.length === 0) {
       Message.error('请选择需求文档和模块');
       return;
     }
@@ -408,12 +418,12 @@ const handleOk = () => {
     return;
   }
 
-  const selectedReqModule = requirementModules.value.find(m => m.id === formState.requirementModuleId);
+  const selectedReqModules = requirementModules.value.filter(m => formState.requirementModuleIds.includes(m.id));
   const selectedTestCases = testCaseData.value.filter(tc => selectedTestCaseIds.value.includes(tc.id));
 
   emit('submit', {
     ...formState,
-    selectedModule: selectedReqModule,
+    selectedModules: selectedReqModules,
     selectedTestCaseIds: selectedTestCaseIds.value,
     selectedTestCases: selectedTestCases,
   });
@@ -427,6 +437,15 @@ const handleModeChange = () => {
   if (showTestCaseSelector.value) {
     fetchTestCases();
     fetchModules();
+  }
+};
+
+const toggleSelectAllModules = () => {
+  if (requirementModules.value.length === 0) return;
+  if (formState.requirementModuleIds.length === requirementModules.value.length) {
+    formState.requirementModuleIds = [];
+  } else {
+    formState.requirementModuleIds = requirementModules.value.map(m => m.id);
   }
 };
 
@@ -454,7 +473,7 @@ const fetchRequirementDocuments = async () => {
 const fetchRequirementModules = async (documentId: string) => {
   isReqModuleLoading.value = true;
   requirementModules.value = [];
-  formState.requirementModuleId = null;
+  formState.requirementModuleIds = [];
   try {
     const response = await RequirementDocumentService.getDocumentDetail(documentId);
     if (response.status === 'success' && response.data?.modules) {
@@ -474,7 +493,7 @@ const handleDocumentChange = (value: any) => {
     fetchRequirementModules(value);
   } else {
     requirementModules.value = [];
-    formState.requirementModuleId = null;
+    formState.requirementModuleIds = [];
   }
 };
 
@@ -639,7 +658,7 @@ watch(() => props.visible, (newVal) => {
     // 每次打开弹窗时重置表单
     formState.generateMode = 'full';
     formState.requirementDocumentId = null;
-    formState.requirementModuleId = null;
+    formState.requirementModuleIds = [];
     formState.promptId = null;
     formState.useKnowledgeBase = false;
     formState.knowledgeBaseId = null;
@@ -708,12 +727,30 @@ watch(() => props.visible, (newVal) => {
 .form-row-label {
   font-size: 14px;
   color: var(--color-text-1);
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .form-row-label.required::before {
   content: '*';
   color: rgb(var(--danger-6));
   margin-right: 4px;
+}
+
+.select-all-icon {
+  cursor: pointer;
+  font-size: 16px;
+  color: var(--color-text-3);
+  transition: color 0.2s;
+}
+
+.select-all-icon:hover {
+  color: rgb(var(--primary-6));
+}
+
+.select-all-icon.active {
+  color: rgb(var(--primary-6));
 }
 
 .testcase-selector-section {

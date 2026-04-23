@@ -66,6 +66,12 @@ export interface CreateDocumentRequest {
   content?: string;
 }
 
+export interface DocxEditorSession {
+  iframe_url: string;
+  expires_at?: string;
+  document_id: string;
+  title: string;
+}
 // 文档模块接口
 export interface DocumentModule {
   id: string;
@@ -152,6 +158,13 @@ export interface DocumentInfo {
   content_length: number;
   word_count: number;
   page_count: number;
+}
+
+export interface DocxEditorLaunchResult {
+  bindingId?: string;
+  documentId?: string;
+  launch_url: string;
+  expires_at?: string;
 }
 
 // 上下文检测响应

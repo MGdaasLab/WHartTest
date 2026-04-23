@@ -221,6 +221,7 @@ COPY requirements/ /app/requirements/
 COPY skills/ /app/skills/
 COPY task_center/ /app/task_center/
 COPY ui_automation/ /app/ui_automation/
+COPY weixin_integration/ /app/weixin_integration/
 COPY testcase_templates/ /app/testcase_templates/
 COPY testcases/ /app/testcases/
 COPY wharttest_django/ /app/wharttest_django/

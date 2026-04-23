@@ -1,4 +1,4 @@
-import { request } from '@/utils/request';
+import httpService, { request } from '@/utils/request';
 import type {
   ApiResponse,
   PaginatedResponse,
@@ -16,7 +16,9 @@ import type {
   SplitModulesRequest,
   SplitModulesResponse,
   ContextCheckResponse,
-  DocumentStructureResponse
+  DocumentStructureResponse,
+  DocxEditorSession,
+  DocxEditorLaunchResult
 } from '../types';
 
 // API基础路径
@@ -125,6 +127,109 @@ export class RequirementDocumentService {
         errors: { detail: response.error }
       };
     }
+  }
+
+  /**
+   * 发起在线编辑
+   */
+  static async launchOnlineEditor(id: string): Promise<ApiResponse<DocxEditorLaunchResult>> {
+    const response = await request<DocxEditorLaunchResult>({
+      url: `${BASE_URL}/documents/${id}/launch-online-editor/`,
+      method: 'POST'
+    }) as any;
+
+    if (response.success) {
+      return {
+        status: 'success',
+        code: 200,
+        message: response.message || 'Online editor launched successfully',
+        data: response.data!,
+        errors: null
+      };
+    }
+
+    return {
+      status: 'error',
+      code: response.status || 500,
+      message: response.error || 'Failed to launch online editor',
+      data: null,
+      errors: { detail: response.error }
+    };
+  }
+
+  /**
+   * 下载文档原始文件
+   */
+  static async downloadFile(id: string): Promise<ArrayBuffer> {
+    const response = await httpService.request<ArrayBuffer>({
+      url: `${BASE_URL}/documents/${id}/download-file/`,
+      method: 'GET',
+      responseType: 'arraybuffer'
+    });
+    return response.data;
+  }
+
+  /**
+   * 上传编辑后的 Word 文件
+   */
+  static async uploadEditedFile(
+    id: string,
+    file: File
+  ): Promise<ApiResponse<{ content: string; word_count: number; page_count: number }>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await request<{ content: string; word_count: number; page_count: number }>({
+      url: `${BASE_URL}/documents/${id}/upload-edited-file/`,
+      method: 'POST',
+      data: formData,
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+
+    if (response.success) {
+      return {
+        status: 'success',
+        code: 200,
+        message: 'success',
+        data: response.data!,
+        errors: null
+      };
+    }
+
+    return {
+      status: 'error',
+      code: 500,
+      message: response.error || 'Failed to upload file',
+      data: null,
+      errors: { detail: response.error }
+    };
+  }
+
+  /**
+   * 创建 DOCX Editor 在线编辑会话
+   */
+  static async createDocxEditorSession(id: string): Promise<ApiResponse<DocxEditorSession>> {
+    const response = await request<DocxEditorSession>({
+      url: `${BASE_URL}/documents/${id}/docx-editor/session/`,
+      method: 'POST'
+    });
+
+    if (response.success) {
+      return {
+        status: 'success',
+        code: 200,
+        message: response.message || 'Session created',
+        data: response.data!,
+        errors: null
+      };
+    }
+
+    return {
+      status: 'error',
+      code: 500,
+      message: response.error || 'Failed to create docx editor session',
+      data: null,
+      errors: { detail: response.error }
+    };
   }
 
   /**

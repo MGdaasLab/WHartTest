@@ -26,6 +26,7 @@
         @clear-chat="clearChat"
         @show-system-prompt="showSystemPromptModal"
         @show-tool-approval-settings="isToolApprovalSettingsVisible = true"
+        @show-weixin-connect="isWeixinConnectVisible = true"
         @update:use-knowledge-base="useKnowledgeBase = $event"
         @update:selected-knowledge-base-id="selectedKnowledgeBaseId = $event"
         @update:similarity-threshold="similarityThreshold = $event"
@@ -97,6 +98,12 @@
     <ToolApprovalSettingsModal
       v-model:visible="isToolApprovalSettingsVisible"
       :session-id="sessionId"
+    />
+
+    <WeixinConnectModal
+      v-model:visible="isWeixinConnectVisible"
+      :project-id="projectStore.currentProjectId"
+      :selected-prompt-id="selectedPromptId"
     />
 
     <!-- 图表预览弹窗 -->
@@ -184,6 +191,7 @@ import ChatInput from '../components/ChatInput.vue';
 import SystemPromptModal from '../components/SystemPromptModal.vue';
 import ToolApprovalCard from '../components/ToolApprovalCard.vue';
 import ToolApprovalSettingsModal from '../components/ToolApprovalSettingsModal.vue';
+import WeixinConnectModal from '../components/WeixinConnectModal.vue';
 import type { InterruptEvent } from '../components/ToolApprovalCard.vue';
 
 // 配置marked
@@ -258,6 +266,7 @@ const diagramPreviewXml = ref('');
 const diagramPreviewIframeRef = ref<HTMLIFrameElement | null>(null);
 const diagramPreviewReady = ref(false);
 const htmlPreviewVisible = ref(false);
+const isWeixinConnectVisible = ref(false);
 const htmlPreviewContent = ref('');
 const htmlPreviewContainerRef = ref<HTMLElement | null>(null);
 const isHtmlPreviewFullscreen = ref(false);

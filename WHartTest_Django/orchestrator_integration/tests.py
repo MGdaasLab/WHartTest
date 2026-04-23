@@ -2,7 +2,11 @@ import os
 import tempfile
 from unittest.mock import patch
 
+from asgiref.sync import async_to_sync
+from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import SimpleTestCase
+from django.test import TestCase
 from django.test.utils import override_settings
 
 from . import agent_loop_view
@@ -10,6 +14,7 @@ from .agent_loop_view import (
     _extract_linked_image_urls,
     _is_linked_image_url_allowed,
     _normalize_uploaded_image_base64_list,
+    _prepare_agent_loop_human_message,
 )
 from .builtin_tools.skill_tools import (
     _build_skill_artifacts_dir,
@@ -21,6 +26,8 @@ from .builtin_tools.skill_tools import (
 )
 from .builtin_tools.output_sanitizer import strip_terminal_control_sequences
 from .middleware_config import get_user_friendly_llm_error, _model_retry_should_retry
+from projects.models import Project, ProjectMember
+from requirements.models import DocumentImage, RequirementDocument
 
 
 class LLMFriendlyErrorTests(SimpleTestCase):
@@ -129,6 +136,111 @@ class UploadedImageNormalizationTests(SimpleTestCase):
         result = _normalize_uploaded_image_base64_list(None, " legacy-img ")
 
         self.assertEqual(result, ["legacy-img"])
+
+
+class AgentLoopRequirementImageMessageTests(TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.override_media = override_settings(MEDIA_ROOT=self.temp_dir.name)
+        self.override_media.enable()
+        self.addCleanup(self.override_media.disable)
+
+        self.user = get_user_model().objects.create_user(
+            username="agent-loop-user",
+            password="password123",
+        )
+        self.project = Project.objects.create(
+            name="Agent Loop Image Project",
+            creator=self.user,
+        )
+        ProjectMember.objects.create(
+            project=self.project,
+            user=self.user,
+            role="member",
+        )
+        self.document = RequirementDocument.objects.create(
+            project=self.project,
+            title="Requirement With Images",
+            document_type="docx",
+            uploader=self.user,
+            has_images=True,
+            image_count=1,
+        )
+        DocumentImage.objects.create(
+            document=self.document,
+            image_id="img_000",
+            order=0,
+            content_type="image/png",
+            file_size=3,
+            image_file=SimpleUploadedFile(
+                "img-000.png",
+                b"png",
+                content_type="image/png",
+            ),
+        )
+
+    def test_prepare_agent_loop_human_message_rewrites_requirement_placeholders(self):
+        message = (
+            "请分析以下需求\n\n"
+            "![图片](docimg://img_000)\n\n"
+            f"(这些需求模块来源于需求文档ID: {self.document.id})"
+        )
+
+        human_message_content, additional_kwargs, display_message = async_to_sync(
+            _prepare_agent_loop_human_message
+        )(
+            message,
+            project=self.project,
+            supports_vision=False,
+            uploaded_images_base64=[],
+        )
+
+        expected_url = (
+            f"/api/requirements/documents/{self.document.id}/images/img_000/"
+        )
+        self.assertEqual(human_message_content, display_message)
+        self.assertIn(expected_url, display_message)
+        self.assertEqual(
+            additional_kwargs["requirement_document_id"], str(self.document.id)
+        )
+
+    def test_prepare_agent_loop_human_message_attaches_requirement_images_for_vision(self):
+        message = (
+            "请分析以下需求\n\n"
+            "![图片](docimg://img_000)\n\n"
+            f"(这些需求模块来源于需求文档ID: {self.document.id})"
+        )
+
+        human_message_content, additional_kwargs, display_message = async_to_sync(
+            _prepare_agent_loop_human_message
+        )(
+            message,
+            project=self.project,
+            supports_vision=True,
+            uploaded_images_base64=[],
+        )
+
+        self.assertIsInstance(human_message_content, list)
+        self.assertEqual(human_message_content[0]["type"], "text")
+        self.assertIn(
+            f"/api/requirements/documents/{self.document.id}/images/img_000/",
+            human_message_content[0]["text"],
+        )
+        self.assertEqual(human_message_content[1]["type"], "image_url")
+        self.assertTrue(
+            human_message_content[1]["image_url"]["url"].startswith(
+                "data:image/png;base64,"
+            )
+        )
+        self.assertEqual(
+            additional_kwargs["requirement_document_id"], str(self.document.id)
+        )
+        self.assertEqual(additional_kwargs["image_source"], "requirement_document")
+        self.assertIn(
+            f"/api/requirements/documents/{self.document.id}/images/img_000/",
+            display_message,
+        )
 
 
 class SkillScreenshotDirectoryTests(SimpleTestCase):

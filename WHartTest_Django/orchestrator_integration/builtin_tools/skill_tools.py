@@ -640,7 +640,7 @@ def get_skill_tools(
         session_id: Optional[str] = None,
         commands: Optional[list[dict[str, str]]] = None,
         parallel: bool = True,
-        max_workers: int = 10,
+        max_workers: int = 5,
     ) -> str:
         """
         执行 Skill 命令，支持单个执行或批量并发执行。
@@ -658,7 +658,7 @@ def get_skill_tools(
                     {"skill_name": "whart-test", "command": "python whart_tools.py --action add_testcase ..."}
                 ]
             parallel: 批量模式下是否并发执行（默认 True）
-            max_workers: 批量模式下最大并发数（默认 10）
+            max_workers: 批量模式下最大并发数（默认 5）
 
         Returns:
             单个模式返回命令输出；如执行中生成了文件，会追加可下载附件信息。
@@ -667,6 +667,8 @@ def get_skill_tools(
         """
         import json
         from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        from django.db import close_old_connections
 
         # 批量执行模式
         if commands:
@@ -707,6 +709,8 @@ def get_skill_tools(
                         "command": cmd_command,
                         "error": str(e),
                     }
+                finally:
+                    close_old_connections()
 
             results: list[Optional[dict[str, object]]] = [None] * len(commands)
 

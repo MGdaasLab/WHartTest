@@ -129,6 +129,7 @@ INSTALLED_APPS = [
     "skills",  # Skill 管理应用。
     "testcase_templates",  # 用例模板应用。
     "ui_automation",  # UI 自动化应用。
+    "weixin_integration",  # 微信扫码登录与消息集成。
     'task_center', # 任务中心应用
     'django_celery_beat', # Celery Beat 数据库调度器
 ]
@@ -193,6 +194,27 @@ WSGI_APPLICATION = "wharttest_django.wsgi.application"
 # DATABASE_PATH: SQLite 文件路径（仅 sqlite 模式）
 # POSTGRES_*: PostgreSQL 连接参数（仅 postgres 模式）
 
+# 根据 git 分支后缀自动选择本地开发数据库，避免切分支时来回跑迁移。
+# -github → wharttest_dev_github, -pro → wharttest_dev_pro, 其他 → wharttest_dev
+def _get_postgres_db_name():
+    env_db = os.environ.get("POSTGRES_DB")
+    if env_db:
+        return env_db
+    import subprocess
+    try:
+        branch = subprocess.check_output(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            stderr=subprocess.DEVNULL, cwd=BASE_DIR,
+        ).decode().strip()
+        if branch.endswith("-github"):
+            return "wharttest_dev_github"
+        if branch.endswith("-pro"):
+            return "wharttest_dev_pro"
+    except Exception:
+        pass
+    return "wharttest_dev"
+
+
 # 读取数据库类型（默认 postgres）。
 DATABASE_TYPE = os.environ.get("DATABASE_TYPE", "postgres")
 
@@ -202,7 +224,7 @@ if DATABASE_TYPE == "postgres":
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.postgresql",
-            "NAME": os.environ.get("POSTGRES_DB", "wharttest"),
+            "NAME": _get_postgres_db_name(),
             "USER": os.environ.get("POSTGRES_USER", "postgres"),
             "PASSWORD": os.environ.get("POSTGRES_PASSWORD", "postgres"),
             "HOST": os.environ.get("POSTGRES_HOST", "127.0.0.1"),
@@ -334,10 +356,6 @@ REST_FRAMEWORK = {
         # 可以取消下面这行注释。但请注意，它的输出不会经过 UnifiedResponseRenderer。
         # 可按需启用 BrowsableAPIRenderer。
     ),
-    # 'DEFAULT_PARSER_CLASSES': [ # 如需显式声明，可保留 JSONParser
-    #     # 可按需显式启用 JSONParser。
-    # ],
-    # 'EXCEPTION_HANDLER': 'your_project_name.utils.custom_exception_handler', # 如果需要更细致的异常处理
 }
 
 # CORS 配置
@@ -687,3 +705,11 @@ CELERY_WORKER_TASK_LOG_FORMAT = "[%(asctime)s: %(levelname)s/%(processName)s][%(
 # 在本地开发环境中可以使用 http://localhost:8000
 # 内部服务调用基础地址。
 BASE_URL = os.environ.get("DJANGO_BASE_URL", "http://localhost:8000")
+
+# DOCX Editor 集成配置
+# 主项目后端服务端访问 docx-editor 的地址，例如 http://127.0.0.1:18080
+DOCX_EDITOR_BASE_URL = os.environ.get("DOCX_EDITOR_BASE_URL", "").rstrip("/")
+# 可选：覆盖 docx-editor 返回给浏览器的外部地址，例如 http://172.16.3.183:18080
+DOCX_EDITOR_PUBLIC_BASE_URL = os.environ.get("DOCX_EDITOR_PUBLIC_BASE_URL", "").rstrip("/")
+# 主项目调用 docx-editor 集成接口时使用的服务密钥。
+DOCX_EDITOR_SERVICE_KEY = os.environ.get("DOCX_EDITOR_SERVICE_KEY", "").strip()

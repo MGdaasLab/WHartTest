@@ -208,9 +208,12 @@ class DocumentProcessor:
             separators=["\n\n", "\n", "。", ".", " ", ""],
         )
 
-    def extract_content(self, document: RequirementDocument) -> str:
+    def extract_content(self, document: RequirementDocument, force_file: bool = False) -> str:
         """提取文档内容"""
         try:
+            if force_file and document.file:
+                return self._extract_from_file(document.file, document)
+
             if document.content:
                 return document.content
 
@@ -224,6 +227,45 @@ class DocumentProcessor:
 
     SUPPORTED_EXTENSIONS = {"txt", "md", "pdf", "doc", "docx"}
 
+    def _clear_document_images(self, document: Optional[RequirementDocument]) -> None:
+        """清理文档旧图片，确保重新提取时按新文件全量覆盖。"""
+        if not document:
+            return
+
+        existing_images = list(document.images.all())
+        for doc_image in existing_images:
+            try:
+                if doc_image.image_file:
+                    doc_image.image_file.delete(save=False)
+            except Exception as exc:
+                logger.warning("删除旧图片文件失败 %s: %s", doc_image.image_id, exc)
+            doc_image.delete()
+
+        if existing_images or document.has_images or document.image_count:
+            document.has_images = False
+            document.image_count = 0
+            document.save(update_fields=["has_images", "image_count"])
+
+    def _append_image_placeholder(
+        self,
+        content_parts: list[str],
+        image_rids: list[str],
+        rid: Optional[str],
+        image_order: int,
+    ) -> int:
+        """追加图片占位符，并过滤 Word XML 中连续重复的同一图片引用。"""
+        if not rid:
+            return image_order
+
+        if image_rids and image_rids[-1] == rid:
+            logger.debug("跳过连续重复图片引用: %s", rid)
+            return image_order
+
+        image_id = f"img_{image_order:03d}"
+        content_parts.append(f"\n![图片](docimg://{image_id})\n")
+        image_rids.append(rid)
+        return image_order + 1
+
     def _extract_from_file(self, file, document: RequirementDocument = None) -> str:
         """从文件提取内容"""
         try:
@@ -235,6 +277,9 @@ class DocumentProcessor:
                 raise ValueError(
                     f"不支持的文件格式: .{file_extension}。支持的格式: PDF、Word(.doc/.docx)、TXT、Markdown"
                 )
+
+            if document and file_extension in {"doc", "docx"}:
+                self._clear_document_images(document)
 
             if file_extension == "txt":
                 return self._extract_from_txt(file)
@@ -388,13 +433,12 @@ class DocumentProcessor:
                                 embed = blip.get(
                                     "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
                                 )
-                                if embed:
-                                    image_id = f"img_{image_order:03d}"
-                                    content_parts.append(
-                                        f"\n![图片](docimg://{image_id})\n"
-                                    )
-                                    image_rids.append(embed)
-                                    image_order += 1
+                                image_order = self._append_image_placeholder(
+                                    content_parts,
+                                    image_rids,
+                                    embed,
+                                    image_order,
+                                )
 
                         for pict in inline_pics:
                             # 从 v:imagedata 元素获取 r:id 属性
@@ -403,13 +447,12 @@ class DocumentProcessor:
                                 rid = imgdata.get(
                                     "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
                                 )
-                                if rid:
-                                    image_id = f"img_{image_order:03d}"
-                                    content_parts.append(
-                                        f"\n![图片](docimg://{image_id})\n"
-                                    )
-                                    image_rids.append(rid)
-                                    image_order += 1
+                                image_order = self._append_image_placeholder(
+                                    content_parts,
+                                    image_rids,
+                                    rid,
+                                    image_order,
+                                )
 
                 elif element.tag.endswith("tbl"):  # 表格元素
                     table = table_map.get(element)
@@ -516,10 +559,9 @@ class DocumentProcessor:
                 logger.error(f"保存图片失败 (rId={rid}): {e}")
                 continue
 
-        if saved_count > 0:
-            document.has_images = True
-            document.image_count = saved_count
-            document.save(update_fields=["has_images", "image_count"])
+        document.has_images = saved_count > 0
+        document.image_count = saved_count
+        document.save(update_fields=["has_images", "image_count"])
 
     def _extract_and_save_images(self, doc, document: RequirementDocument) -> None:
         """提取 DOCX 中的图片并保存到 DocumentImage"""
@@ -586,10 +628,9 @@ class DocumentProcessor:
                     continue
 
         # 更新文档图片统计
-        if image_order > 0:
-            document.has_images = True
-            document.image_count = image_order
-            document.save(update_fields=["has_images", "image_count"])
+        document.has_images = image_order > 0
+        document.image_count = image_order
+        document.save(update_fields=["has_images", "image_count"])
 
     def _extract_from_word_simple(self, file) -> str:
         """简化的Word文档提取方法（备用）"""

@@ -78,6 +78,7 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { IconRefresh } from '@arco-design/web-vue/es/icon'
 import { actuatorApi, type ActuatorInfo } from '../api'
+import { extractResponseData } from '../types'
 
 void IconRefresh
 
@@ -89,10 +90,8 @@ const loadActuators = async () => {
   loading.value = true
   try {
     const res = await actuatorApi.list()
-    // 拦截器处理: res.data = { success, data: 原始response.data }
-    // 原始 response.data = { status, data: { count, items } }
-    const innerData = res.data?.data?.data
-    actuators.value = innerData?.items || []
+    const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
+    actuators.value = data?.items || []
   } catch (e) {
     console.error('Load actuators error:', e)
     actuators.value = []
