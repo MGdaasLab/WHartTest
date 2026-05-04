@@ -9,7 +9,7 @@
   "dependencies": {
     "@tencent-weixin/openclaw-weixin": "2.0.1",
     "dotenv": "^17.3.1",
-    "openclaw": "2026.3.23",
+    "openclaw": "2026.5.3",
     "tsx": "^4.20.6"
   }
 }
