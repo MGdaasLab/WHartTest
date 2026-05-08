@@ -148,7 +148,7 @@ onUnmounted(() => {
 })
 </script>
 
-<style scoped lang="scss">
+<style scoped>
 .actuator-list {
   padding: 16px;
 }
@@ -158,23 +158,23 @@ onUnmounted(() => {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 16px;
+}
 
-  .title {
-    display: flex;
-    align-items: center;
-    gap: 12px;
+.header .title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 
-    h3 {
-      margin: 0;
-      font-size: 18px;
-      font-weight: 600;
-    }
+.header .title h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
 
-    .count {
-      color: var(--color-text-3);
-      font-size: 14px;
-    }
-  }
+.header .title .count {
+  color: var(--color-text-3);
+  font-size: 14px;
 }
 
 .mb-4 {

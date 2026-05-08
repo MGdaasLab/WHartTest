@@ -14,8 +14,9 @@ export interface VersionInfo {
 }
 
 // GitHub 仓库配置
-const GITHUB_REPO = 'mgdaaslab/WHartTest'
+const GITHUB_REPO = import.meta.env.VITE_GITHUB_REPO || 'mgdaaslab/WHartTest'
 const GITHUB_API_BASE = 'https://api.github.com'
+const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`
 
 // 缓存版本信息，避免频繁请求
 let cachedVersionInfo: VersionInfo | null = null
@@ -74,12 +75,17 @@ export async function checkLatestVersion(): Promise<VersionInfo> {
     )
     
     if (!response.ok) {
-      // 可能是没有发布的 release，或者 API 限制
-      console.warn('无法获取最新版本信息:', response.status)
+      // 404: 仓库未创建 Release；403: GitHub API 匿名请求限流
+      if (response.status !== 404 && response.status !== 403) {
+        console.warn('无法获取最新版本信息:', response.status)
+      }
       return versionInfo
     }
     
     const release = await response.json()
+    if (release?.message && typeof release.message === 'string' && release.message.includes('API rate limit exceeded')) {
+      return versionInfo
+    }
     const latestVersion = release.tag_name?.replace(/^v/, '') || ''
     
     versionInfo.latest = latestVersion
@@ -107,4 +113,8 @@ export function formatVersion(version: string): string {
     return 'dev'
   }
   return `v${version.replace(/^v/, '')}`
+}
+
+export function getGithubReleasesUrl(): string {
+  return GITHUB_RELEASES_URL
 }

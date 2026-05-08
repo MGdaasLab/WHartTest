@@ -92,18 +92,33 @@ P3: 查询增强策略配置化
 
 **P2 已完成第一阶段，但还不是完整版本。**
 
-### 3.3 未完成：P1 Parent-Child 检索
+### 3.3 已完成：P1 Parent-Child 检索
 
-目前还没有真正的双层 chunk 结构。
+已落地能力：
 
-现状仍然是：
+- `DocumentChunk` 已新增：
+  - `parent_chunk`（自引用 ForeignKey）
+  - `chunk_level`（`parent` 或 `child`）
+- `KnowledgeGlobalConfig` 已新增：
+  - `parent_child_enabled`（开关）
+  - `parent_chunk_size`（默认 2000）
+  - `parent_chunk_overlap`（默认 200）
+  - `child_chunk_size`（默认 800）
+  - `child_chunk_overlap`（默认 200）
+- `KnowledgeBase` 支持 per-KB 级别 chunk 参数覆盖
+- 两层切分实现：
+  - Parent 存 PostgreSQL，不向量化
+  - Child 向量化后存 Qdrant，payload 含 `parent_chunk_id`
+- 检索命中 Child 后替换为 Parent 内容
+- 同 Parent 多 Child 命中时去重合并分数
+- 向后兼容：旧文档无 `parent_chunk_id` 时自动走原有邻居扩展逻辑
+- 前端已支持：
+  - 全局配置弹窗支持 Parent-Child 模式开关和参数配置
+  - 知识库级别可覆盖全局配置
 
-- 检索命中的是普通 chunk
-- 返回上下文依赖相邻 chunk 扩展
-- 没有：
-  - `parent_chunk_id`
-  - `chunk_level`
-  - parent chunk 回查逻辑
+当前结论：
+
+**P1 Parent-Child 检索已完全实现并可用。**
 
 ### 3.4 未完成：P3 查询增强配置化
 
@@ -122,47 +137,7 @@ P3: 查询增强策略配置化
 
 ## 4. 当前推荐下一步
 
-### 第一优先级：推进 P1 Parent-Child 检索
-
-这是下一阶段最值得做的部分。
-
-目标：
-
-- 小 chunk 用于召回
-- 大 chunk 用于返回上下文
-- 命中 child 后回查 parent
-
-推荐结构：
-
-```text
-DocumentChunk
-  - parent_chunk_id
-  - chunk_level
-```
-
-或者：
-
-```text
-Document
-  ParentDocumentChunk
-    DocumentChunk
-```
-
-推荐策略：
-
-- Parent chunk：2000-4000 字
-- Child chunk：300-800 字
-- Qdrant 主索引 child chunk
-- payload 中保存 `parent_chunk_id`
-- 最终给 LLM 的上下文来自 parent chunk
-
-价值：
-
-- 减少小切块导致的语义断裂
-- 比单纯继续调 `chunk_size` 更有效
-- 对需求文档、测试规范、流程说明这类长文档收益明显
-
-### 第二优先级：补齐 P2 第二阶段
+### 第一优先级：补齐 P2 第二阶段
 
 当前切分策略已经接通，但还有收尾项。
 
@@ -192,11 +167,11 @@ P3 仍然不建议抢在 P1 前面做。
 7. 后端接通 recursive_character / heading_aware / markdown_header
 8. 前端全局配置弹窗支持切分策略
 
-阶段 C：建议下一步
-9. Parent-Child 数据结构
-10. Parent-Child 入库逻辑
-11. Parent-Child 检索返回逻辑
-12. 同 parent 多 child 命中的去重逻辑
+阶段 C：已完成
+9. Parent-Child 数据结构 ✅
+10. Parent-Child 入库逻辑 ✅
+11. Parent-Child 检索返回逻辑 ✅
+12. 同 parent 多 child 命中的去重逻辑 ✅
 
 阶段 D：后续增强
 13. 结构路径展示
@@ -218,12 +193,12 @@ P3 仍然不建议抢在 P1 前面做。
 - 新上传或重处理文档时按选定策略切分
 - Markdown 文档可按标题层级切分
 
-### P1 未来验收
+### P1 验收（已完成）
 
-- 入库生成 parent/child 双层 chunk
-- Qdrant payload 含 `parent_chunk_id`
-- 命中 child 时返回 parent 作为最终上下文
-- 同 parent 下多 child 命中时能去重
+- 入库生成 parent/child 双层 chunk ✅
+- Qdrant payload 含 `parent_chunk_id` ✅
+- 命中 child 时返回 parent 作为最终上下文 ✅
+- 同 parent 下多 child 命中时能去重 ✅
 
 ## 7. 当前注意事项
 
@@ -237,10 +212,10 @@ P3 仍然不建议抢在 P1 前面做。
 当前方案应更新为：
 
 - **P0：已完成**
-- **P2：已完成第一阶段**
-- **下一步主目标：P1 Parent-Child 检索**
+- **P1：已完成**
+- **P2：已完成第一阶段，第二阶段待补齐**
 - **P3：继续后置**
 
-也就是说，当前不该再把重点放在“是否支持切分策略”上，而应该转向：
+下一步重点应转向：
 
-**如何把召回粒度和返回上下文解耦，也就是 Parent-Child 检索。**
+**补齐 P2 第二阶段的收尾工作，完善用户体验。**
