@@ -32,7 +32,7 @@
     "@types/dompurify": "^3.0.5",
     "@types/marked": "^5.0.2",
     "@vueuse/core": "^13.1.0",
-    "axios": "^1.9.0",
+    "axios": "^1.15.2",
     "dompurify": "^3.2.6",
     "marked": "^15.0.12",
     "monaco-editor": "^0.55.1",
