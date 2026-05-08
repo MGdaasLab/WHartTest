@@ -287,6 +287,10 @@ export class KnowledgeService {
     document_type?: string;
     status?: string;
     search?: string;
+    module?: string;
+    version?: string;
+    business_domain?: string;
+    document_stage?: string;
   }): Promise<Document[]> {
     const response = await request<Document[]>({
       url: `${API_BASE_URL}/documents/`,
@@ -318,6 +322,24 @@ export class KnowledgeService {
     }
     if (data.url) {
       formData.append('url', data.url);
+    }
+    if (data.tags?.length) {
+      formData.append('tags', JSON.stringify(data.tags));
+    }
+    if (data.metadata && Object.keys(data.metadata).length > 0) {
+      formData.append('metadata', JSON.stringify(data.metadata));
+    }
+    if (data.module) {
+      formData.append('module', data.module);
+    }
+    if (data.version) {
+      formData.append('version', data.version);
+    }
+    if (data.business_domain) {
+      formData.append('business_domain', data.business_domain);
+    }
+    if (data.document_stage) {
+      formData.append('document_stage', data.document_stage);
     }
 
     const response = await request<Document | Document[]>({
@@ -390,6 +412,30 @@ export class KnowledgeService {
       return response.data!;
     } else {
       throw new Error(response.error || 'Failed to reprocess document');
+    }
+  }
+
+  /**
+   * 批量重新处理知识库下的文档
+   */
+  static async reprocessKnowledgeBaseDocuments(id: string): Promise<{
+    message: string;
+    queued_count: number;
+    total_count: number;
+  }> {
+    const response = await request<{
+      message: string;
+      queued_count: number;
+      total_count: number;
+    }>({
+      url: `${API_BASE_URL}/knowledge-bases/${id}/reprocess_documents/`,
+      method: 'POST'
+    });
+
+    if (response.success) {
+      return response.data!;
+    } else {
+      throw new Error(response.error || 'Failed to reprocess knowledge base documents');
     }
   }
 

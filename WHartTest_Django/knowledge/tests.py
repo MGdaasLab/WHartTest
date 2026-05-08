@@ -31,6 +31,7 @@ class KnowledgeGlobalConfigSecretHandlingTests(TestCase):
         self.config.reranker_api_url = "https://reranker.example.com/v1/rerank"
         self.config.reranker_api_key = "reranker-real-secret"
         self.config.reranker_model_name = "Qwen3-VL-Reranker-2B"
+        self.config.chunk_strategy = "heading_aware"
         self.config.save()
 
     def test_put_global_config_keeps_real_secret_when_api_key_is_omitted(self):
@@ -41,6 +42,7 @@ class KnowledgeGlobalConfigSecretHandlingTests(TestCase):
             "reranker_service": "custom",
             "reranker_api_url": "https://reranker.example.com/v1/rerank",
             "reranker_model_name": "Qwen3-VL-Reranker-2B",
+            "chunk_strategy": "markdown_header",
             "chunk_size": 1200,
             "chunk_overlap": 150,
         }
@@ -54,6 +56,7 @@ class KnowledgeGlobalConfigSecretHandlingTests(TestCase):
         self.config.refresh_from_db()
         self.assertEqual(self.config.api_key, "nvapi-real-secret-NvRS")
         self.assertEqual(self.config.reranker_api_key, "reranker-real-secret")
+        self.assertEqual(self.config.chunk_strategy, "markdown_header")
         self.assertEqual(self.config.chunk_size, 1200)
         self.assertEqual(self.config.chunk_overlap, 150)
 
@@ -93,6 +96,7 @@ class KnowledgeGlobalConfigSecretHandlingTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
 
         payload = response.json()
+        payload["chunk_strategy"] = "recursive_character"
         payload["chunk_size"] = 1300
         payload["chunk_overlap"] = 160
 
@@ -105,5 +109,6 @@ class KnowledgeGlobalConfigSecretHandlingTests(TestCase):
         self.config.refresh_from_db()
         self.assertEqual(self.config.api_key, "nvapi-real-secret-NvRS")
         self.assertEqual(self.config.reranker_api_key, "reranker-real-secret")
+        self.assertEqual(self.config.chunk_strategy, "recursive_character")
         self.assertEqual(self.config.chunk_size, 1300)
         self.assertEqual(self.config.chunk_overlap, 160)

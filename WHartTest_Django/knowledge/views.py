@@ -163,6 +163,22 @@ class KnowledgeBaseViewSet(BaseModelViewSet):
         query_serializer.is_valid(raise_exception=True)
 
         try:
+            metadata_filter = dict(
+                query_serializer.validated_data.get("metadata_filter") or {}
+            )
+            for key in (
+                "document_type",
+                "module",
+                "version",
+                "business_domain",
+                "document_stage",
+                "tags",
+                "document_ids",
+            ):
+                value = query_serializer.validated_data.get(key)
+                if value:
+                    metadata_filter[key] = value
+
             # 执行查询
             service = KnowledgeBaseService(knowledge_base)
             result = service.query(
@@ -172,6 +188,7 @@ class KnowledgeBaseViewSet(BaseModelViewSet):
                     "similarity_threshold", 0.1
                 ),
                 user=request.user,
+                metadata_filter=metadata_filter,
             )
 
             # 序列化响应
@@ -210,6 +227,40 @@ class KnowledgeBaseViewSet(BaseModelViewSet):
             stats["document_status_distribution"][item["status"]] = item["count"]
 
         return Response(stats)
+
+    @action(detail=True, methods=["post"])
+    def reprocess_documents(self, request, pk=None):
+        """批量重新处理知识库下的文档。"""
+        knowledge_base = self.get_object()
+        documents = knowledge_base.documents.exclude(status="processing").order_by(
+            "-uploaded_at"
+        )
+
+        total_count = documents.count()
+        if total_count == 0:
+            return Response(
+                {
+                    "message": "当前知识库下没有可重新处理的文档",
+                    "queued_count": 0,
+                    "total_count": 0,
+                }
+            )
+
+        queued_count = 0
+        for document in documents:
+            document.status = "pending"
+            document.error_message = ""
+            document.save(update_fields=["status", "error_message"])
+            _dispatch_document_task(document)
+            queued_count += 1
+
+        return Response(
+            {
+                "message": f"已提交 {queued_count} 个文档的重新处理任务",
+                "queued_count": queued_count,
+                "total_count": total_count,
+            }
+        )
 
     @action(detail=True, methods=["get"])
     def content(self, request, pk=None):
@@ -260,6 +311,12 @@ class KnowledgeBaseViewSet(BaseModelViewSet):
                 "file_size": doc.file_size,
                 "page_count": doc.page_count,
                 "word_count": doc.word_count,
+                "tags": doc.tags,
+                "metadata": doc.metadata,
+                "module": doc.module,
+                "version": doc.version,
+                "business_domain": doc.business_domain,
+                "document_stage": doc.document_stage,
             }
 
             # 如果是文件类型，添加文件信息
@@ -367,7 +424,15 @@ class DocumentViewSet(BaseModelViewSet):
         filters.SearchFilter,
         filters.OrderingFilter,
     ]
-    filterset_fields = ["knowledge_base", "document_type", "status"]
+    filterset_fields = [
+        "knowledge_base",
+        "document_type",
+        "status",
+        "module",
+        "version",
+        "business_domain",
+        "document_stage",
+    ]
     search_fields = ["title", "content"]
     ordering_fields = ["uploaded_at", "processed_at", "title"]
     ordering = ["-uploaded_at"]
@@ -510,6 +575,12 @@ class DocumentViewSet(BaseModelViewSet):
             "file_size": document.file_size,
             "page_count": document.page_count,
             "word_count": document.word_count,
+            "tags": document.tags,
+            "metadata": document.metadata,
+            "module": document.module,
+            "version": document.version,
+            "business_domain": document.business_domain,
+            "document_stage": document.document_stage,
             "knowledge_base": {
                 "id": document.knowledge_base.id,
                 "name": document.knowledge_base.name,

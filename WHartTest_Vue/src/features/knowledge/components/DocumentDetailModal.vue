@@ -12,7 +12,6 @@
     </div>
 
     <div v-else-if="documentContent" class="document-detail">
-      <!-- 基本信息 -->
       <div class="info-section">
         <h4>基本信息</h4>
         <a-descriptions :column="2" bordered>
@@ -26,11 +25,6 @@
           <a-descriptions-item label="分块数量">{{ getChunkCount() }}</a-descriptions-item>
           <a-descriptions-item label="上传者">{{ documentContent.uploader_name }}</a-descriptions-item>
           <a-descriptions-item label="上传时间">{{ formatDate(documentContent.uploaded_at) }}</a-descriptions-item>
-          <a-descriptions-item v-if="documentContent.url" label="原始URL" :span="2">
-            <a :href="documentContent.url" target="_blank" rel="noopener noreferrer" class="url-link">
-              {{ documentContent.url }}
-            </a>
-          </a-descriptions-item>
           <a-descriptions-item v-if="documentContent.processed_at" label="处理时间">
             {{ formatDate(documentContent.processed_at) }}
           </a-descriptions-item>
@@ -47,45 +41,56 @@
           <a-descriptions-item v-if="documentContent.file_name" label="文件名">
             {{ documentContent.file_name }}
           </a-descriptions-item>
+          <a-descriptions-item v-if="documentContent.url" label="原始 URL" :span="2">
+            <a :href="documentContent.url" target="_blank" rel="noopener noreferrer" class="url-link">
+              {{ documentContent.url }}
+            </a>
+          </a-descriptions-item>
         </a-descriptions>
       </div>
 
-      <!-- 文档内容区域 -->
-      <div v-if="showChunks" class="chunks-section">
+      <div class="info-section">
+        <h4>业务元数据</h4>
+        <a-descriptions :column="2" bordered>
+          <a-descriptions-item label="模块">{{ documentContent.module || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="版本">{{ documentContent.version || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="业务域">{{ documentContent.business_domain || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="文档阶段">{{ documentContent.document_stage || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="标签" :span="2">
+            <div v-if="documentContent.tags?.length" class="tag-list">
+              <a-tag v-for="tag in documentContent.tags" :key="tag">{{ tag }}</a-tag>
+            </div>
+            <span v-else>-</span>
+          </a-descriptions-item>
+          <a-descriptions-item label="自定义元数据" :span="2">
+            <pre class="metadata-block">{{ formatMetadata(documentContent.metadata) }}</pre>
+          </a-descriptions-item>
+        </a-descriptions>
+      </div>
+
+      <div class="chunks-section">
         <div class="section-header">
           <h4>文档内容</h4>
           <div class="content-actions">
             <a-switch
+              v-if="showChunks"
               v-model="includeChunks"
               checked-text="分块视图"
               unchecked-text="原始内容"
               @change="handleChunksToggle"
             />
-            <a-button
-              v-if="documentContent.file_url"
-              type="outline"
-              size="small"
-              @click="downloadFile"
-            >
+            <a-button v-if="documentContent.file_url" type="outline" size="small" @click="downloadFile">
               下载原文件
             </a-button>
-            <a-button
-              v-if="documentContent.url"
-              type="primary"
-              size="small"
-              @click="openOriginalUrl"
-            >
+            <a-button v-if="documentContent.url" type="primary" size="small" @click="openOriginalUrl">
               查看原网页
             </a-button>
           </div>
         </div>
 
-        <!-- 分块视图 -->
         <div v-if="includeChunks && documentContent.chunks" class="chunks-content">
           <div class="chunks-info">
-            <span class="chunks-summary">
-              共 {{ documentContent.chunks.total_count }} 个分块，当前显示第 {{ chunkPagination.current }} 页
-            </span>
+            共 {{ documentContent.chunks.total_count }} 个分块，当前第 {{ chunkPagination.current }} 页
           </div>
 
           <div class="chunks-pagination">
@@ -103,20 +108,14 @@
           </div>
 
           <div class="chunks-list">
-            <div
-              v-for="chunk in documentContent.chunks.items"
-              :key="chunk.id"
-              class="chunk-item"
-            >
+            <div v-for="chunk in documentContent.chunks.items" :key="chunk.id" class="chunk-item">
               <div class="chunk-header">
                 <span class="chunk-index">分块 #{{ chunk.chunk_index + 1 }}</span>
                 <span class="chunk-length">{{ chunk.content.length }} 字符</span>
                 <span v-if="chunk.start_index !== null && chunk.end_index !== null" class="chunk-range">
                   位置: {{ chunk.start_index }} - {{ chunk.end_index }}
                 </span>
-                <span v-if="chunk.page_number" class="chunk-page">
-                  第 {{ chunk.page_number }} 页
-                </span>
+                <span v-if="chunk.page_number" class="chunk-page">页码: {{ chunk.page_number }}</span>
               </div>
               <div class="chunk-content">
                 <pre>{{ chunk.content }}</pre>
@@ -125,15 +124,9 @@
           </div>
         </div>
 
-        <!-- 原始内容视图（图文混排） -->
-        <div v-else class="original-content-preview">
-          <div class="preview-notice">
-            <p>分块显示已关闭，以下是原始文档内容预览：</p>
-          </div>
-          <div class="content-display">
-            <div class="content-preview">
-              <pre class="content-text">{{ documentContent.content }}</pre>
-            </div>
+        <div v-else class="content-display">
+          <div class="content-preview">
+            <pre class="content-text">{{ documentContent.content }}</pre>
           </div>
         </div>
       </div>
@@ -144,7 +137,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { Message } from '@arco-design/web-vue';
 import { KnowledgeService } from '../services/knowledgeService';
 import type { DocumentContentResponse } from '../types/knowledge';
@@ -159,7 +152,6 @@ const emit = defineEmits<{
   close: [];
 }>();
 
-// 响应式数据
 const loading = ref(false);
 const documentContent = ref<DocumentContentResponse | null>(null);
 const includeChunks = ref(false);
@@ -167,24 +159,27 @@ const chunkPagination = ref({
   current: 1,
   pageSize: 10,
 });
-// 计算属性
+
 const showChunks = computed(() => {
   if (!documentContent.value) return false;
   const chunkCount = documentContent.value.chunks?.total_count ?? documentContent.value.chunk_count ?? 0;
   return chunkCount > 0;
 });
 
-// 方法
-const formatDate = (dateString: string) => {
-  return new Date(dateString).toLocaleString();
-};
+const formatDate = (dateString: string) => new Date(dateString).toLocaleString();
 
 const formatFileSize = (bytes: number) => {
   if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const index = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${parseFloat((bytes / 1024 ** index).toFixed(2))} ${units[index]}`;
+};
+
+const formatMetadata = (metadata?: Record<string, any>) => {
+  if (!metadata || Object.keys(metadata).length === 0) {
+    return '-';
+  }
+  return JSON.stringify(metadata, null, 2);
 };
 
 const getStatusColor = (status: string) => {
@@ -209,12 +204,13 @@ const getStatusText = (status: string) => {
 
 const getDocumentTypeText = (type: string) => {
   const typeMap: Record<string, string> = {
-    pdf: 'PDF文档',
-    docx: 'Word文档',
-    pptx: 'PowerPoint文档',
-    txt: '文本文件',
-    md: 'Markdown文档',
-    html: 'HTML文档',
+    pdf: 'PDF',
+    docx: 'Word',
+    doc: 'Word',
+    pptx: 'PowerPoint',
+    txt: '文本',
+    md: 'Markdown',
+    html: 'HTML',
     url: '网页链接',
   };
   return typeMap[type] || type.toUpperCase();
@@ -222,20 +218,17 @@ const getDocumentTypeText = (type: string) => {
 
 const getChunkCount = () => {
   if (!documentContent.value) return 0;
-  // 优先使用 chunks.total_count，如果没有则使用 chunk_count
   return documentContent.value.chunks?.total_count ?? documentContent.value.chunk_count ?? 0;
 };
 
 const fetchDocumentContent = async (documentId: string) => {
   loading.value = true;
   try {
-    const params = {
+    const response = await KnowledgeService.getDocumentContent(documentId, {
       include_chunks: includeChunks.value,
       chunk_page: chunkPagination.value.current,
       chunk_page_size: chunkPagination.value.pageSize,
-    };
-
-    const response = await KnowledgeService.getDocumentContent(documentId, params);
+    });
     documentContent.value = response;
   } catch (error) {
     console.error('获取文档内容失败:', error);
@@ -248,7 +241,7 @@ const fetchDocumentContent = async (documentId: string) => {
 
 const handleChunksToggle = () => {
   if (props.documentId) {
-    chunkPagination.value.current = 1; // 重置分页
+    chunkPagination.value.current = 1;
     fetchDocumentContent(props.documentId);
   }
 };
@@ -262,7 +255,7 @@ const handleChunkPageChange = (page: number) => {
 
 const handleChunkPageSizeChange = (pageSize: number) => {
   chunkPagination.value.pageSize = pageSize;
-  chunkPagination.value.current = 1; // 重置到第一页
+  chunkPagination.value.current = 1;
   if (props.documentId) {
     fetchDocumentContent(props.documentId);
   }
@@ -284,16 +277,14 @@ const handleClose = () => {
   emit('close');
 };
 
-// 监听器
 watch(
   () => props.visible,
-  (newVisible) => {
-    if (newVisible && props.documentId) {
+  (visible) => {
+    if (visible && props.documentId) {
       fetchDocumentContent(props.documentId);
-    } else if (!newVisible) {
-      // 关闭时重置数据
+    } else if (!visible) {
       documentContent.value = null;
-      includeChunks.value = true;
+      includeChunks.value = false;
       chunkPagination.value = { current: 1, pageSize: 10 };
     }
   }
@@ -301,9 +292,9 @@ watch(
 
 watch(
   () => props.documentId,
-  (newDocumentId) => {
-    if (props.visible && newDocumentId) {
-      fetchDocumentContent(newDocumentId);
+  (documentId) => {
+    if (props.visible && documentId) {
+      fetchDocumentContent(documentId);
     }
   }
 );
@@ -329,7 +320,6 @@ watch(
 }
 
 .info-section,
-.content-section,
 .chunks-section {
   margin-bottom: 24px;
 }
@@ -363,6 +353,28 @@ watch(
   text-decoration: underline;
 }
 
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.metadata-block,
+.content-text,
+.chunk-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+}
+
+.metadata-block {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--theme-surface-soft) 72%, white 28%);
+}
+
 .content-display {
   border: 1px solid var(--theme-border);
   border-radius: 6px;
@@ -376,110 +388,45 @@ watch(
   background-color: var(--theme-surface-soft);
 }
 
-.content-text {
-  margin: 0;
-  padding: 0;
-  background: none;
-  border: none;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
-  font-size: 13px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  color: var(--theme-text-primary);
-}
-
-.original-content-preview {
-  margin-top: 16px;
-}
-
-.preview-notice {
-  margin-bottom: 12px;
-  padding: 8px 12px;
-  background-color: color-mix(in srgb, var(--theme-surface) 90%, rgba(var(--theme-accent-rgb), 0.08));
-  border: 1px solid rgba(var(--theme-accent-rgb), 0.18);
-  border-radius: 4px;
-  color: #d46b08;
-}
-
-.preview-notice p {
-  margin: 0;
-  font-size: 14px;
-}
 .chunks-info {
   margin-bottom: 12px;
   padding: 8px 12px;
-  background-color: color-mix(in srgb, var(--theme-surface-soft) 72%, white 28%);
-  border-radius: 4px;
   border-left: 3px solid #165dff;
-}
-
-.chunks-summary {
-  font-size: 14px;
-  color: #4e5969;
-  font-weight: 500;
+  border-radius: 4px;
+  background-color: color-mix(in srgb, var(--theme-surface-soft) 72%, white 28%);
 }
 
 .chunks-pagination {
-  margin-bottom: 16px;
-  text-align: right;
+  margin-bottom: 12px;
 }
 
 .chunks-list {
-  space-y: 12px;
+  display: grid;
+  gap: 12px;
 }
 
 .chunk-item {
   border: 1px solid var(--theme-border);
   border-radius: 6px;
-  padding: 16px;
-  margin-bottom: 12px;
-  background-color: var(--theme-surface);
-  transition: box-shadow 0.2s ease;
-}
-
-.chunk-item:hover {
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  overflow: hidden;
 }
 
 .chunk-header {
   display: flex;
-  gap: 16px;
-  margin-bottom: 12px;
-  font-size: 12px;
-  color: #86909c;
   flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--theme-surface-soft) 72%, white 28%);
+  font-size: 12px;
+  color: var(--theme-text-secondary);
 }
 
 .chunk-index {
   font-weight: 600;
-  color: #1d2129;
-  background-color: #f2f3f5;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-size: 11px;
-}
-
-.chunk-length {
-  color: #165dff;
-  font-weight: 500;
+  color: var(--theme-text);
 }
 
 .chunk-content {
-  line-height: 1.6;
+  padding: 12px;
 }
-
-.chunk-content pre {
-  margin: 0;
-  padding: 0;
-  background: none;
-  border: none;
-  font-family: inherit;
-  font-size: inherit;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: break-word;
-}
-
 </style>

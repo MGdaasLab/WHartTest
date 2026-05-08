@@ -1,6 +1,13 @@
-@tailwind base;
+@config "../tailwind.config.js";
 @tailwind components;
 @tailwind utilities;
+
+/* 移除 Tailwind Preflight (@tailwind base)，避免与 Arco Design 样式冲突 */
+/* 仅保留 box-sizing 重置，Tailwind 工具类依赖此规则 */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 :root {
   font-family: system-ui, Avenir, Helvetica, Arial, sans-serif; /* Tailwind 将覆盖这个，但保留以防万一 */
   line-height: 1.5;

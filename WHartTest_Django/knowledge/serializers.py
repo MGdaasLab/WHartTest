@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import KnowledgeBase, Document, DocumentChunk, QueryLog, KnowledgeGlobalConfig
 from projects.models import Project
+import json
 
 
 class KnowledgeGlobalConfigSerializer(serializers.ModelSerializer):
@@ -17,7 +18,9 @@ class KnowledgeGlobalConfigSerializer(serializers.ModelSerializer):
             'api_base_url', 'api_key', 'model_name',
             'reranker_service', 'reranker_service_display',
             'reranker_api_url', 'reranker_api_key', 'reranker_model_name',
-            'chunk_size', 'chunk_overlap',
+            'chunk_size', 'chunk_overlap', 'chunk_strategy',
+            'parent_child_enabled', 'parent_chunk_size', 'parent_chunk_overlap',
+            'child_chunk_size', 'child_chunk_overlap',
             'updated_at', 'updated_by', 'updated_by_name'
         ]
         read_only_fields = ['updated_at', 'updated_by']
@@ -39,6 +42,8 @@ class KnowledgeBaseSerializer(serializers.ModelSerializer):
             'id', 'name', 'description', 'project', 'project_name',
             'creator', 'creator_name', 'is_active',
             'chunk_size', 'chunk_overlap',
+            'parent_chunk_size', 'parent_chunk_overlap',
+            'child_chunk_size', 'child_chunk_overlap',
             'document_count', 'chunk_count', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'creator', 'created_at', 'updated_at', 'project_name']
@@ -89,6 +94,7 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
             'id', 'knowledge_base', 'knowledge_base_name', 'title',
             'document_type', 'file', 'url', 'content', 'status',
             'error_message', 'file_size', 'page_count', 'word_count',
+            'tags', 'metadata', 'module', 'version', 'business_domain', 'document_stage',
             'uploader', 'uploader_name', 'uploaded_at', 'processed_at'
         ]
         read_only_fields = [
@@ -99,6 +105,8 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         """验证文档数据"""
+        data["tags"] = self._normalize_tags(data.get("tags", []))
+        data["metadata"] = self._normalize_metadata(data.get("metadata", {}))
         document_type = data.get('document_type')
         file = data.get('file')
         url = data.get('url')
@@ -125,6 +133,33 @@ class DocumentUploadSerializer(serializers.ModelSerializer):
 
         return data
 
+    @staticmethod
+    def _normalize_tags(value):
+        if value in (None, ""):
+            return []
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                value = parsed
+            except json.JSONDecodeError:
+                value = [item.strip() for item in value.split(",")]
+        if not isinstance(value, list):
+            raise serializers.ValidationError("tags 必须是数组或逗号分隔字符串")
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    @staticmethod
+    def _normalize_metadata(value):
+        if value in (None, ""):
+            return {}
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise serializers.ValidationError("metadata 必须是合法 JSON 对象") from exc
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("metadata 必须是对象")
+        return value
+
     def validate_knowledge_base(self, value):
         """验证知识库权限"""
         user = self.context['request'].user
@@ -148,6 +183,7 @@ class DocumentSerializer(serializers.ModelSerializer):
             'id', 'knowledge_base', 'knowledge_base_name', 'title',
             'document_type', 'file', 'url', 'content', 'status',
             'error_message', 'file_size', 'page_count', 'word_count',
+            'tags', 'metadata', 'module', 'version', 'business_domain', 'document_stage',
             'file_extension', 'chunk_count', 'uploader', 'uploader_name',
             'uploaded_at', 'processed_at'
         ]
@@ -170,7 +206,8 @@ class DocumentChunkSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'document', 'document_title', 'chunk_index',
             'content', 'vector_id', 'embedding_hash',
-            'start_index', 'end_index', 'page_number', 'created_at'
+            'start_index', 'end_index', 'page_number', 'created_at',
+            'parent_chunk', 'chunk_level',
         ]
         read_only_fields = ['id', 'created_at']
 
@@ -185,7 +222,7 @@ class QueryLogSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'knowledge_base', 'knowledge_base_name', 'user', 'user_name',
             'query', 'response', 'retrieved_chunks', 'similarity_scores',
-            'retrieval_time', 'generation_time', 'total_time', 'created_at'
+            'metadata_filter', 'retrieval_time', 'generation_time', 'total_time', 'created_at'
         ]
         read_only_fields = ['id', 'user', 'created_at']
 
@@ -199,6 +236,28 @@ class KnowledgeQuerySerializer(serializers.Serializer):
         default=0.1, min_value=0.0, max_value=1.0, help_text="相似度阈值"
     )
     include_metadata = serializers.BooleanField(default=True, help_text="是否包含元数据")
+    document_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text="限定检索的文档ID列表",
+    )
+    document_type = serializers.CharField(required=False, allow_blank=True, help_text="限定文档类型")
+    tags = serializers.ListField(
+        child=serializers.CharField(max_length=100),
+        required=False,
+        allow_empty=True,
+        help_text="限定标签，命中任一标签即可",
+    )
+    module = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    version = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    business_domain = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    document_stage = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    metadata_filter = serializers.DictField(
+        required=False,
+        default=dict,
+        help_text="自定义元数据过滤条件，例如 {'priority': 'P0'}",
+    )
 
     def validate_knowledge_base_id(self, value):
         """验证知识库是否存在且有权限访问"""

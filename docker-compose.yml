@@ -78,7 +78,7 @@ services:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       # 其他配置
       - MEDIA_ROOT=/app/data/media
-      - DJANGO_DEBUG=True
+      - DJANGO_DEBUG=${DJANGO_DEBUG:-False}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80
@@ -107,7 +107,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/')" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -137,7 +137,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3001/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -145,21 +145,24 @@ services:
 
   # 前端 Vue 服务
   frontend:
-    image: ${DOCKER_FRONTEND_IMAGE:-ghcr.io/mgdaaslab/wharttest-frontend:latest}
-    # 如果需要本地构建，注释掉上面的image行，取消注释下面的build部分
-    # build:
-    #   context: ./WHartTest_Vue
-    #   dockerfile: Dockerfile
+    # image: ${DOCKER_FRONTEND_IMAGE:-ghcr.io/mgdaaslab/wharttest-frontend:latest}
+    # 本地构建前端镜像（包含 CSS 布局修复）
+    build:
+      context: ./WHartTest_Vue
+      dockerfile: Dockerfile
     container_name: wharttest-frontend
     ports:
       - "8913:80"
+    volumes:
+      - ./WHartTest_Vue/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
-      - backend
+      backend:
+        condition: service_started
     networks:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -194,7 +197,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/')" ]
+      test: [ "CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8006), 5).close(); socket.create_connection(('127.0.0.1', 8007), 5).close()" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -237,6 +240,36 @@ services:
       resources:
         limits:
           memory: 2G
+
+  xinference:
+    build:
+      context: .
+      dockerfile: deploy-scripts/xinference.Dockerfile
+      args:
+        XINFERENCE_BASE_IMAGE: ${DOCKER_XINFERENCE_IMAGE:-xprobe/xinference:latest-cpu}
+    image: ${DOCKER_XINFERENCE_FIXED_IMAGE:-wharttest-xinference:local}
+    container_name: wharttest-xinference
+    ports:
+      - "8917:9997"
+    volumes:
+      - xinference-data:/root/.xinference
+      - xinference-cache:/root/.cache/huggingface
+    environment:
+      - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://hf-mirror.com}
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    command: xinference-local -H 0.0.0.0
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9997/', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 4G
 
   # Xinference 模型推理服务（Embedding + Reranker）
   # xinference:

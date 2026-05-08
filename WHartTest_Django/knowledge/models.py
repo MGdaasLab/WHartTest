@@ -1,327 +1,413 @@
-from django.db import models
-from django.contrib.auth.models import User
-from django.utils.translation import gettext_lazy as _
-from projects.models import Project
-import uuid
 import os
+import uuid
+
+from django.contrib.auth.models import User
+from django.db import models
+from django.utils.translation import gettext_lazy as _
+
+from projects.models import Project
 
 
 class KnowledgeGlobalConfig(models.Model):
-    """
-    知识库全局配置模型，存储嵌入服务的默认配置
-    采用单例模式，系统中只有一条配置记录
-    """
+    """Global defaults for knowledge base indexing and retrieval."""
+
     EMBEDDING_SERVICE_CHOICES = [
-        ('openai', 'OpenAI'),
-        ('azure_openai', 'Azure OpenAI'),
-        ('ollama', 'Ollama'),
-        ('xinference', 'Xinference'),
-        ('custom', '自定义API'),
+        ("openai", "OpenAI"),
+        ("azure_openai", "Azure OpenAI"),
+        ("ollama", "Ollama"),
+        ("xinference", "Xinference"),
+        ("custom", "Custom API"),
     ]
 
     RERANKER_SERVICE_CHOICES = [
-        ('none', '不启用'),
-        ('xinference', 'Xinference'),
-        ('custom', '自定义API'),
+        ("none", "Disabled"),
+        ("xinference", "Xinference"),
+        ("custom", "Custom API"),
     ]
 
-    # Embedding 配置
+    CHUNK_STRATEGY_CHOICES = [
+        ("recursive_character", "Fixed length"),
+        ("heading_aware", "Structure aware"),
+        ("markdown_header", "Markdown header"),
+    ]
+
     embedding_service = models.CharField(
-        _('嵌入服务'),
+        _("Embedding service"),
         max_length=50,
         choices=EMBEDDING_SERVICE_CHOICES,
-        default='custom',
-        help_text=_('选择嵌入服务提供商')
+        default="custom",
+        help_text=_("Embedding provider used for new or reprocessed documents."),
     )
     api_base_url = models.CharField(
-        _('API基础URL'),
+        _("Embedding API URL"),
         max_length=500,
         blank=True,
         null=True,
-        help_text=_('API服务的基础URL，如：https://api.openai.com/v1 或 http://xinference:9997')
+        help_text=_(
+            "Embedding endpoint, for example https://api.openai.com/v1 or http://xinference:9997."
+        ),
     )
     api_key = models.CharField(
-        _('API密钥'),
+        _("Embedding API key"),
         max_length=500,
         blank=True,
         null=True,
-        help_text=_('API服务的密钥')
+        help_text=_("Authentication key for the embedding service."),
     )
     model_name = models.CharField(
-        _('模型名称'),
+        _("Embedding model"),
         max_length=100,
-        default='qwen3-vl-emb-2b',
-        help_text=_('具体的嵌入模型名称')
+        default="qwen3-vl-emb-2b",
+        help_text=_("Model name used for embeddings."),
     )
 
-    # Reranker 配置（独立）
     reranker_service = models.CharField(
-        _('Reranker服务'),
+        _("Reranker service"),
         max_length=50,
         choices=RERANKER_SERVICE_CHOICES,
-        default='none',
-        help_text=_('选择Reranker精排服务，可独立于嵌入服务配置')
+        default="none",
+        help_text=_("Optional reranker used after recall."),
     )
     reranker_api_url = models.CharField(
-        _('Reranker API地址'),
+        _("Reranker API URL"),
         max_length=500,
         blank=True,
         null=True,
-        help_text=_('Reranker服务的API地址，如：http://xinference:9997')
+        help_text=_(
+            "Reranker endpoint. If empty, the embedding API base URL can be reused."
+        ),
     )
     reranker_api_key = models.CharField(
-        _('Reranker API密钥'),
+        _("Reranker API key"),
         max_length=500,
         blank=True,
         null=True,
-        help_text=_('Reranker服务的API密钥（自定义API可能需要）')
+        help_text=_("Authentication key for the reranker service."),
     )
     reranker_model_name = models.CharField(
-        _('Reranker模型名称'),
+        _("Reranker model"),
         max_length=100,
-        default='Qwen3-VL-Reranker-2B',
+        default="Qwen3-VL-Reranker-2B",
         blank=True,
-        help_text=_('Reranker模型名称')
+        help_text=_("Model name used for reranking."),
     )
 
-    chunk_size = models.PositiveIntegerField(_('默认分块大小'), default=1000)
-    chunk_overlap = models.PositiveIntegerField(_('默认分块重叠'), default=200)
-    
-    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+    chunk_size = models.PositiveIntegerField(_("Chunk size"), default=1000)
+    chunk_overlap = models.PositiveIntegerField(_("Chunk overlap"), default=200)
+    chunk_strategy = models.CharField(
+        _("Chunk strategy"),
+        max_length=50,
+        choices=CHUNK_STRATEGY_CHOICES,
+        default="recursive_character",
+        help_text=_("Default chunking strategy for new or reprocessed documents."),
+    )
+
+    parent_child_enabled = models.BooleanField(
+        _("Enable parent-child chunking"),
+        default=False,
+        help_text=_(
+            "When enabled, documents are split into parent chunks (for context) "
+            "and child chunks (for retrieval). Child chunks are indexed in the "
+            "vector store; parent chunks are returned to the LLM."
+        ),
+    )
+    parent_chunk_size = models.PositiveIntegerField(
+        _("Parent chunk size"), default=2000,
+        help_text=_("Character count for parent chunks."),
+    )
+    parent_chunk_overlap = models.PositiveIntegerField(
+        _("Parent chunk overlap"), default=200,
+        help_text=_("Character overlap between parent chunks."),
+    )
+    child_chunk_size = models.PositiveIntegerField(
+        _("Child chunk size"), default=800,
+        help_text=_(
+            "Character count for child chunks. Should align with the embedding "
+            "model's optimal input length."
+        ),
+    )
+    child_chunk_overlap = models.PositiveIntegerField(
+        _("Child chunk overlap"), default=200,
+        help_text=_("Character overlap between child chunks."),
+    )
+
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
     updated_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='updated_knowledge_configs',
-        verbose_name=_('更新人')
+        related_name="updated_knowledge_configs",
+        verbose_name=_("Updated by"),
     )
 
     class Meta:
-        verbose_name = _('知识库全局配置')
-        verbose_name_plural = _('知识库全局配置')
+        verbose_name = _("Knowledge global config")
+        verbose_name_plural = _("Knowledge global config")
 
     def __str__(self):
-        return f"知识库全局配置 ({self.get_embedding_service_display()})"
-    
+        return f"Knowledge Global Config ({self.get_embedding_service_display()})"
+
     def save(self, *args, **kwargs):
-        """确保只有一条记录（单例模式）"""
         self.pk = 1
         super().save(*args, **kwargs)
-    
+
     @classmethod
     def get_config(cls):
-        """获取全局配置，如果不存在则创建默认配置"""
         config, _ = cls.objects.get_or_create(pk=1)
         return config
 
 
 class KnowledgeBase(models.Model):
-    """
-    知识库模型，支持项目级别的知识库管理
-    嵌入服务配置统一使用 KnowledgeGlobalConfig 全局配置
-    """
+    """Knowledge base under a project."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(_('知识库名称'), max_length=200)
-    description = models.TextField(_('描述'), blank=True, null=True)
+    name = models.CharField(_("Knowledge base name"), max_length=200)
+    description = models.TextField(_("Description"), blank=True, null=True)
     project = models.ForeignKey(
         Project,
         on_delete=models.CASCADE,
-        related_name='knowledge_bases',
-        verbose_name=_('所属项目')
+        related_name="knowledge_bases",
+        verbose_name=_("Project"),
     )
     creator = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
-        related_name='created_knowledge_bases',
-        verbose_name=_('创建人')
+        related_name="created_knowledge_bases",
+        verbose_name=_("Creator"),
     )
-    is_active = models.BooleanField(_('是否启用'), default=True)
-    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
-    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
-    
-    # 文档处理配置（可覆盖全局默认值）
-    chunk_size = models.PositiveIntegerField(_('分块大小'), default=1000)
-    chunk_overlap = models.PositiveIntegerField(_('分块重叠'), default=200)
+    is_active = models.BooleanField(_("Is active"), default=True)
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
+    updated_at = models.DateTimeField(_("Updated at"), auto_now=True)
+    chunk_size = models.PositiveIntegerField(_("Chunk size"), default=1000)
+    chunk_overlap = models.PositiveIntegerField(_("Chunk overlap"), default=200)
+    parent_chunk_size = models.PositiveIntegerField(
+        _("Parent chunk size"), null=True, blank=True,
+        help_text=_("Override global parent chunk size. Null uses global default."),
+    )
+    parent_chunk_overlap = models.PositiveIntegerField(
+        _("Parent chunk overlap"), null=True, blank=True,
+        help_text=_("Override global parent chunk overlap. Null uses global default."),
+    )
+    child_chunk_size = models.PositiveIntegerField(
+        _("Child chunk size"), null=True, blank=True,
+        help_text=_("Override global child chunk size. Null uses global default."),
+    )
+    child_chunk_overlap = models.PositiveIntegerField(
+        _("Child chunk overlap"), null=True, blank=True,
+        help_text=_("Override global child chunk overlap. Null uses global default."),
+    )
 
     class Meta:
-        verbose_name = _('知识库')
-        verbose_name_plural = _('知识库')
-        ordering = ['-created_at']
-        unique_together = ['project', 'name']
+        verbose_name = _("Knowledge base")
+        verbose_name_plural = _("Knowledge base")
+        ordering = ["-created_at"]
+        unique_together = ["project", "name"]
 
     def __str__(self):
         return f"{self.project.name} - {self.name}"
 
 
 def document_upload_path(instance, filename):
-    """生成文档上传路径"""
-    return f'knowledge_bases/{instance.knowledge_base.id}/documents/{filename}'
+    return f"knowledge_bases/{instance.knowledge_base.id}/documents/{filename}"
 
 
 def document_image_upload_path(instance, filename):
-    """生成文档图片上传路径（保留供 migration 引用）"""
-    return f'knowledge_bases/{instance.document.knowledge_base.id}/images/{filename}'
+    return f"knowledge_bases/{instance.document.knowledge_base.id}/images/{filename}"
 
 
 class Document(models.Model):
-    """
-    文档模型，支持多种文档类型
-    """
+    """Source document stored in a knowledge base."""
+
     DOCUMENT_TYPES = [
-        ('pdf', 'PDF'),
-        ('docx', 'Word文档'),
-        ('doc', 'Word文档(旧版)'),
-        ('xlsx', 'Excel表格'),
-        ('xls', 'Excel表格(旧版)'),
-        ('pptx', 'PowerPoint'),
-        ('txt', '文本文件'),
-        ('md', 'Markdown'),
-        ('html', 'HTML'),
-        ('url', '网页链接'),
+        ("pdf", "PDF"),
+        ("docx", "Word"),
+        ("doc", "Word (legacy)"),
+        ("xlsx", "Excel"),
+        ("xls", "Excel (legacy)"),
+        ("pptx", "PowerPoint"),
+        ("txt", "Text"),
+        ("md", "Markdown"),
+        ("html", "HTML"),
+        ("url", "URL"),
     ]
 
     STATUS_CHOICES = [
-        ('pending', '待处理'),
-        ('processing', '处理中'),
-        ('completed', '已完成'),
-        ('failed', '处理失败'),
+        ("pending", "Pending"),
+        ("processing", "Processing"),
+        ("completed", "Completed"),
+        ("failed", "Failed"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     knowledge_base = models.ForeignKey(
         KnowledgeBase,
         on_delete=models.CASCADE,
-        related_name='documents',
-        verbose_name=_('所属知识库')
+        related_name="documents",
+        verbose_name=_("Knowledge base"),
     )
-    title = models.CharField(_('文档标题'), max_length=200)
+    title = models.CharField(_("Document title"), max_length=200)
     document_type = models.CharField(
-        _('文档类型'),
+        _("Document type"),
         max_length=10,
-        choices=DOCUMENT_TYPES
+        choices=DOCUMENT_TYPES,
     )
     file = models.FileField(
-        _('文件'),
+        _("File"),
         upload_to=document_upload_path,
         blank=True,
-        null=True
+        null=True,
     )
-    url = models.URLField(_('网页链接'), blank=True, null=True)
-    content = models.TextField(_('文档内容'), blank=True, null=True)
+    url = models.URLField(_("URL"), blank=True, null=True)
+    content = models.TextField(_("Content"), blank=True, null=True)
 
-    # 处理状态
     status = models.CharField(
-        _('处理状态'),
+        _("Status"),
         max_length=20,
         choices=STATUS_CHOICES,
-        default='pending'
+        default="pending",
     )
-    error_message = models.TextField(_('错误信息'), blank=True, null=True)
+    error_message = models.TextField(_("Error message"), blank=True, null=True)
 
-    # 元数据
-    file_size = models.PositiveIntegerField(_('文件大小(字节)'), null=True, blank=True)
-    page_count = models.PositiveIntegerField(_('页数'), null=True, blank=True)
-    word_count = models.PositiveIntegerField(_('字数'), null=True, blank=True)
+    file_size = models.PositiveIntegerField(_("File size"), null=True, blank=True)
+    page_count = models.PositiveIntegerField(_("Page count"), null=True, blank=True)
+    word_count = models.PositiveIntegerField(_("Word count"), null=True, blank=True)
+    tags = models.JSONField(_("Tags"), default=list, blank=True)
+    metadata = models.JSONField(_("Metadata"), default=dict, blank=True)
+    module = models.CharField(_("Module"), max_length=100, blank=True, default="")
+    version = models.CharField(_("Version"), max_length=100, blank=True, default="")
+    business_domain = models.CharField(
+        _("Business domain"),
+        max_length=100,
+        blank=True,
+        default="",
+    )
+    document_stage = models.CharField(
+        _("Document stage"),
+        max_length=100,
+        blank=True,
+        default="",
+    )
 
     uploader = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
-        related_name='uploaded_documents',
-        verbose_name=_('上传人')
+        related_name="uploaded_documents",
+        verbose_name=_("Uploader"),
     )
-    uploaded_at = models.DateTimeField(_('上传时间'), auto_now_add=True)
-    processed_at = models.DateTimeField(_('处理时间'), null=True, blank=True)
+    uploaded_at = models.DateTimeField(_("Uploaded at"), auto_now_add=True)
+    processed_at = models.DateTimeField(_("Processed at"), null=True, blank=True)
 
     class Meta:
-        verbose_name = _('文档')
-        verbose_name_plural = _('文档')
-        ordering = ['-uploaded_at']
+        verbose_name = _("Document")
+        verbose_name_plural = _("Document")
+        ordering = ["-uploaded_at"]
 
     def __str__(self):
         return f"{self.knowledge_base.name} - {self.title}"
 
     @property
     def file_extension(self):
-        """获取文件扩展名"""
         if self.file:
             return os.path.splitext(self.file.name)[1].lower()
         return None
 
 
 class DocumentChunk(models.Model):
-    """
-    文档分块模型，存储向量化后的文档片段
-    """
+    """Indexed chunk generated from a document."""
+
+    CHUNK_LEVEL_CHOICES = [
+        ("parent", "Parent"),
+        ("child", "Child"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     document = models.ForeignKey(
         Document,
         on_delete=models.CASCADE,
-        related_name='chunks',
-        verbose_name=_('所属文档')
+        related_name="chunks",
+        verbose_name=_("Document"),
     )
-    chunk_index = models.PositiveIntegerField(_('分块索引'))
-    content = models.TextField(_('分块内容'))
-
-    # 向量存储相关
-    vector_id = models.CharField(_('向量ID'), max_length=100, blank=True, null=True)
-    embedding_hash = models.CharField(_('嵌入哈希'), max_length=64, blank=True, null=True)
-
-    # 元数据
-    start_index = models.PositiveIntegerField(_('起始位置'), null=True, blank=True)
-    end_index = models.PositiveIntegerField(_('结束位置'), null=True, blank=True)
-    page_number = models.PositiveIntegerField(_('页码'), null=True, blank=True)
-
-    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    chunk_index = models.PositiveIntegerField(_("Chunk index"))
+    content = models.TextField(_("Content"))
+    vector_id = models.CharField(_("Vector ID"), max_length=100, blank=True, null=True)
+    embedding_hash = models.CharField(
+        _("Embedding hash"),
+        max_length=64,
+        blank=True,
+        null=True,
+    )
+    start_index = models.PositiveIntegerField(_("Start index"), null=True, blank=True)
+    end_index = models.PositiveIntegerField(_("End index"), null=True, blank=True)
+    page_number = models.PositiveIntegerField(_("Page number"), null=True, blank=True)
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
+    parent_chunk = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="children",
+        verbose_name=_("Parent chunk"),
+    )
+    chunk_level = models.CharField(
+        _("Chunk level"),
+        max_length=10,
+        choices=CHUNK_LEVEL_CHOICES,
+        default="child",
+    )
 
     class Meta:
-        verbose_name = _('文档分块')
-        verbose_name_plural = _('文档分块')
-        ordering = ['document', 'chunk_index']
-        unique_together = ['document', 'chunk_index']
+        verbose_name = _("Document chunk")
+        verbose_name_plural = _("Document chunk")
+        ordering = ["document", "chunk_index"]
+        unique_together = ["document", "chunk_index", "chunk_level"]
 
     def __str__(self):
-        return f"{self.document.title} - 分块 {self.chunk_index}"
+        level_label = self.get_chunk_level_display()
+        return f"{self.document.title} - {level_label} Chunk {self.chunk_index}"
 
 
 class QueryLog(models.Model):
-    """
-    查询日志模型，记录知识库查询历史
-    """
+    """Query history for knowledge retrieval."""
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     knowledge_base = models.ForeignKey(
         KnowledgeBase,
         on_delete=models.CASCADE,
-        related_name='query_logs',
-        verbose_name=_('知识库')
+        related_name="query_logs",
+        verbose_name=_("Knowledge base"),
     )
     user = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
-        related_name='knowledge_queries',
-        verbose_name=_('查询用户')
+        related_name="knowledge_queries",
+        verbose_name=_("User"),
     )
-    query = models.TextField(_('查询内容'))
-    response = models.TextField(_('响应内容'), blank=True, null=True)
-
-    # 检索结果
-    retrieved_chunks = models.JSONField(_('检索到的分块'), default=list, blank=True)
-    similarity_scores = models.JSONField(_('相似度分数'), default=list, blank=True)
-
-    # 性能指标
-    retrieval_time = models.FloatField(_('检索耗时(秒)'), null=True, blank=True)
-    generation_time = models.FloatField(_('生成耗时(秒)'), null=True, blank=True)
-    total_time = models.FloatField(_('总耗时(秒)'), null=True, blank=True)
-
-    created_at = models.DateTimeField(_('查询时间'), auto_now_add=True)
+    query = models.TextField(_("Query"))
+    response = models.TextField(_("Response"), blank=True, null=True)
+    retrieved_chunks = models.JSONField(_("Retrieved chunks"), default=list, blank=True)
+    similarity_scores = models.JSONField(
+        _("Similarity scores"),
+        default=list,
+        blank=True,
+    )
+    metadata_filter = models.JSONField(
+        _("Metadata filter"),
+        default=dict,
+        blank=True,
+    )
+    retrieval_time = models.FloatField(_("Retrieval time"), null=True, blank=True)
+    generation_time = models.FloatField(_("Generation time"), null=True, blank=True)
+    total_time = models.FloatField(_("Total time"), null=True, blank=True)
+    created_at = models.DateTimeField(_("Created at"), auto_now_add=True)
 
     class Meta:
-        verbose_name = _('查询日志')
-        verbose_name_plural = _('查询日志')
-        ordering = ['-created_at']
+        verbose_name = _("Query log")
+        verbose_name_plural = _("Query log")
+        ordering = ["-created_at"]
 
     def __str__(self):
         return f"{self.knowledge_base.name} - {self.query[:50]}..."

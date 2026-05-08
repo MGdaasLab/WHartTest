@@ -1,12 +1,14 @@
-"""
+﻿"""
 知识库服务模块
 提供文档处理、向量化、检索等核心功能
 """
 
 import concurrent.futures
 import hashlib
+from collections import defaultdict
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -27,7 +29,10 @@ from langchain_community.document_loaders import (
 from langchain_core.documents import Document as LangChainDocument
 from langchain_core.embeddings import Embeddings
 from langchain_qdrant import QdrantVectorStore
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import (
+    MarkdownHeaderTextSplitter,
+    RecursiveCharacterTextSplitter,
+)
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -981,6 +986,180 @@ class VectorStoreManager:
         cls._global_config_cache = None
         cls._global_config_cache_time = 0
 
+    def _get_chunk_strategy(self) -> str:
+        """Return the effective chunk strategy for the current indexing run."""
+        strategy = getattr(self.global_config, "chunk_strategy", None) or "recursive_character"
+        if strategy not in {"recursive_character", "heading_aware", "markdown_header"}:
+            return "recursive_character"
+        return strategy
+
+    def _get_effective_chunk_params(self) -> dict:
+        """Resolve parent-child chunk parameters, per-KB overrides take precedence."""
+        gc = self.global_config
+        kb = self.knowledge_base
+        return {
+            "parent_child_enabled": getattr(gc, "parent_child_enabled", False),
+            "parent_chunk_size": getattr(kb, "parent_chunk_size", None)
+            or getattr(gc, "parent_chunk_size", 2000),
+            "parent_chunk_overlap": getattr(kb, "parent_chunk_overlap", None)
+            or getattr(gc, "parent_chunk_overlap", 200),
+            "child_chunk_size": getattr(kb, "child_chunk_size", None)
+            or getattr(gc, "child_chunk_size", 800),
+            "child_chunk_overlap": getattr(kb, "child_chunk_overlap", None)
+            or getattr(gc, "child_chunk_overlap", 200),
+        }
+
+    def _build_recursive_splitter(
+        self, *, separators: Optional[List[str]] = None
+    ) -> RecursiveCharacterTextSplitter:
+        return RecursiveCharacterTextSplitter(
+            chunk_size=self.knowledge_base.chunk_size,
+            chunk_overlap=self.knowledge_base.chunk_overlap,
+            separators=separators,
+        )
+
+    def _split_markdown_documents(
+        self, documents: List[LangChainDocument]
+    ) -> List[LangChainDocument]:
+        header_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=[
+                ("#", "h1"),
+                ("##", "h2"),
+                ("###", "h3"),
+                ("####", "h4"),
+            ],
+            strip_headers=False,
+        )
+        recursive_splitter = self._build_recursive_splitter()
+        chunks: List[LangChainDocument] = []
+
+        for document in documents:
+            text = document.page_content or ""
+            if not re.search(r"^\s*#{1,6}\s+", text, flags=re.MULTILINE):
+                chunks.extend(recursive_splitter.split_documents([document]))
+                continue
+
+            header_docs = header_splitter.split_text(text)
+            for header_doc in header_docs:
+                merged_metadata = dict(document.metadata or {})
+                merged_metadata.update(header_doc.metadata or {})
+                base_doc = LangChainDocument(
+                    page_content=header_doc.page_content,
+                    metadata=merged_metadata,
+                )
+                chunks.extend(recursive_splitter.split_documents([base_doc]))
+
+        return chunks
+
+    def _split_documents(
+        self, documents: List[LangChainDocument], document_obj: Document
+    ) -> List[LangChainDocument]:
+        strategy = self._get_chunk_strategy()
+        document_type = getattr(document_obj, "document_type", "")
+
+        if strategy == "markdown_header" and document_type == "md":
+            return self._split_markdown_documents(documents)
+
+        if strategy == "heading_aware":
+            return self._build_recursive_splitter(
+                separators=[
+                    "\n# ",
+                    "\n## ",
+                    "\n### ",
+                    "\n#### ",
+                    "\n\n",
+                    "\n",
+                    "\u3002",
+                    "\uff01",
+                    "\uff1f",
+                    ". ",
+                    " ",
+                    "",
+                ]
+            ).split_documents(documents)
+
+        return self._build_recursive_splitter().split_documents(documents)
+
+    def _split_documents_parent_child(
+        self,
+        documents: List[LangChainDocument],
+        document_obj: Document,
+        params: dict,
+    ) -> tuple:
+        """Two-pass chunking: parent chunks for context, child chunks for retrieval.
+
+        Returns (parent_chunks, child_chunks) where each child's metadata
+        contains ``parent_index`` linking it to its parent.
+        """
+        strategy = self._get_chunk_strategy()
+        document_type = getattr(document_obj, "document_type", "")
+
+        # --- parent-level splitter ---
+        parent_size = params["parent_chunk_size"]
+        parent_overlap = params["parent_chunk_overlap"]
+
+        if strategy == "markdown_header" and document_type == "md":
+            parent_chunks = []
+            header_splitter = MarkdownHeaderTextSplitter(
+                headers_to_split_on=[
+                    ("#", "h1"),
+                    ("##", "h2"),
+                    ("###", "h3"),
+                    ("####", "h4"),
+                ],
+                strip_headers=False,
+            )
+            parent_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=parent_size,
+                chunk_overlap=parent_overlap,
+            )
+            for doc in documents:
+                text = doc.page_content or ""
+                if re.search(r"^\s*#{1,6}\s+", text, flags=re.MULTILINE):
+                    header_docs = header_splitter.split_text(text)
+                    for hd in header_docs:
+                        merged = dict(doc.metadata or {})
+                        merged.update(hd.metadata or {})
+                        parent_chunks.extend(
+                            parent_splitter.split_documents(
+                                [LangChainDocument(page_content=hd.page_content, metadata=merged)]
+                            )
+                        )
+                else:
+                    parent_chunks.extend(parent_splitter.split_documents([doc]))
+        else:
+            separators = None
+            if strategy == "heading_aware":
+                separators = [
+                    "\n# ", "\n## ", "\n### ", "\n#### ",
+                    "\n\n", "\n",
+                    "。", "！", "？",
+                    ". ", " ", "",
+                ]
+            parent_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=parent_size,
+                chunk_overlap=parent_overlap,
+                separators=separators,
+            )
+            parent_chunks = parent_splitter.split_documents(documents)
+
+        # --- child-level splitter (simple recursive) ---
+        child_size = params["child_chunk_size"]
+        child_overlap = params["child_chunk_overlap"]
+        child_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=child_size,
+            chunk_overlap=child_overlap,
+        )
+
+        child_chunks: List[LangChainDocument] = []
+        for parent_idx, parent in enumerate(parent_chunks):
+            children = child_splitter.split_documents([parent])
+            for child in children:
+                child.metadata["parent_index"] = parent_idx
+            child_chunks.extend(children)
+
+        return parent_chunks, child_chunks
+
     def _get_embeddings_instance(self):
         """获取嵌入模型实例，使用全局配置"""
         config = self.global_config
@@ -1466,16 +1645,21 @@ class VectorStoreManager:
         self, documents: List[LangChainDocument], document_obj: Document
     ) -> List[str]:
         """添加文档到向量存储（稠密+稀疏混合）"""
+        params = self._get_effective_chunk_params()
+        if params["parent_child_enabled"]:
+            return self._add_documents_parent_child(documents, document_obj, params)
+        return self._add_documents_flat(documents, document_obj)
+
+    def _add_documents_flat(
+        self, documents: List[LangChainDocument], document_obj: Document
+    ) -> List[str]:
+        """Original single-level chunking path."""
         try:
             # 确保集合存在（触发 vector_store 属性会创建集合）
             _ = self.vector_store
 
             # 文档分块
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=self.knowledge_base.chunk_size,
-                chunk_overlap=self.knowledge_base.chunk_overlap,
-            )
-            chunks = text_splitter.split_documents(documents)
+            chunks = self._split_documents(documents, document_obj)
 
             # 生成唯一的 vector_ids
             vector_ids = [str(uuid.uuid4()) for _ in chunks]
@@ -1505,6 +1689,15 @@ class VectorStoreManager:
                         "chunk_index": i,
                         "vector_id": vector_id,
                         "knowledge_base_id": str(self.knowledge_base.id),
+                        "document_type": document_obj.document_type,
+                        "title": document_obj.title,
+                        "page": chunk.metadata.get("page"),
+                        "tags": list(document_obj.tags or []),
+                        "module": document_obj.module or "",
+                        "version": document_obj.version or "",
+                        "business_domain": document_obj.business_domain or "",
+                        "document_stage": document_obj.document_stage or "",
+                        "metadata": dict(document_obj.metadata or {}),
                     }
                 )
 
@@ -1561,6 +1754,158 @@ class VectorStoreManager:
             logger.error(f"添加文档到向量存储失败: {e}")
             raise
 
+    def _add_documents_parent_child(
+        self,
+        documents: List[LangChainDocument],
+        document_obj: Document,
+        params: dict,
+    ) -> List[str]:
+        """Parent-child chunking: parent for context, child for retrieval."""
+        try:
+            _ = self.vector_store
+
+            parent_chunks, child_chunks = self._split_documents_parent_child(
+                documents, document_obj, params
+            )
+
+            # --- 1. Save parent chunks to PostgreSQL (no vectorisation) ---
+            parent_db_objects = []
+            for i, parent in enumerate(parent_chunks):
+                parent_db_objects.append(
+                    DocumentChunk(
+                        document=document_obj,
+                        chunk_index=i,
+                        content=parent.page_content,
+                        chunk_level="parent",
+                        start_index=parent.metadata.get("start_index"),
+                        end_index=parent.metadata.get("end_index"),
+                        page_number=parent.metadata.get("page"),
+                    )
+                )
+            DocumentChunk.objects.bulk_create(parent_db_objects)
+
+            # Build parent_index → DB UUID mapping
+            parent_id_map = {
+                i: obj.id for i, obj in enumerate(parent_db_objects)
+            }
+
+            # --- 2. Generate vector_ids for children only ---
+            child_vector_ids = [str(uuid.uuid4()) for _ in child_chunks]
+            child_texts = [c.page_content for c in child_chunks]
+
+            # --- 3. Compute embeddings for children ---
+            sparse_embeddings = None
+            if self.sparse_encoder:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    dense_future = executor.submit(
+                        self.embeddings.embed_documents, child_texts
+                    )
+                    sparse_future = executor.submit(
+                        self.sparse_encoder.encode_documents, child_texts
+                    )
+                    dense_embeddings = dense_future.result()
+                    sparse_embeddings = sparse_future.result()
+            else:
+                dense_embeddings = self.embeddings.embed_documents(child_texts)
+
+            # --- 4. Build Qdrant points for children ---
+            points: List[PointStruct] = []
+            for i, (chunk, vector_id, dense_vector) in enumerate(
+                zip(child_chunks, child_vector_ids, dense_embeddings)
+            ):
+                parent_chunk_id = str(
+                    parent_id_map[chunk.metadata["parent_index"]]
+                )
+                payload = dict(chunk.metadata or {})
+                payload.update(
+                    {
+                        "page_content": chunk.page_content,
+                        "document_id": str(document_obj.id),
+                        "chunk_index": i,
+                        "vector_id": vector_id,
+                        "knowledge_base_id": str(self.knowledge_base.id),
+                        "document_type": document_obj.document_type,
+                        "title": document_obj.title,
+                        "page": chunk.metadata.get("page"),
+                        "tags": list(document_obj.tags or []),
+                        "module": document_obj.module or "",
+                        "version": document_obj.version or "",
+                        "business_domain": document_obj.business_domain or "",
+                        "document_stage": document_obj.document_stage or "",
+                        "metadata": dict(document_obj.metadata or {}),
+                        "parent_chunk_id": parent_chunk_id,
+                    }
+                )
+                # Remove internal-only metadata key
+                payload.pop("parent_index", None)
+
+                vectors = {self.DENSE_VECTOR_NAME: dense_vector}
+                sparse_vectors = None
+                if sparse_embeddings and sparse_embeddings[i]:
+                    sparse_vec = sparse_embeddings[i]
+                    sparse_vectors = {
+                        self.SPARSE_VECTOR_NAME: SparseVector(
+                            indices=sparse_vec.indices.tolist(),
+                            values=sparse_vec.values.tolist(),
+                        )
+                    }
+
+                point = PointStruct(id=vector_id, vector=vectors, payload=payload)
+                if sparse_vectors:
+                    point = PointStruct(
+                        id=vector_id,
+                        vector={
+                            self.DENSE_VECTOR_NAME: dense_vector,
+                            self.SPARSE_VECTOR_NAME: SparseVector(
+                                indices=sparse_embeddings[i].indices.tolist(),
+                                values=sparse_embeddings[i].values.tolist(),
+                            ),
+                        },
+                        payload=payload,
+                    )
+                points.append(point)
+
+            # --- 5. Upsert children to Qdrant ---
+            self.qdrant_client.upsert(
+                collection_name=self._get_collection_name(),
+                points=points,
+            )
+            mode = "稀疏+稠密" if sparse_embeddings else "纯稠密"
+            logger.info(
+                f"✅ Parent-Child: 写入 {len(parent_chunks)} 个 parent 块, "
+                f"{len(points)} 个 child 块到 Qdrant（{mode}）"
+            )
+
+            # --- 6. Save child chunks to PostgreSQL ---
+            child_db_objects = []
+            for i, (chunk, vector_id) in enumerate(
+                zip(child_chunks, child_vector_ids)
+            ):
+                content_hash = hashlib.md5(
+                    chunk.page_content.encode()
+                ).hexdigest()
+                parent_chunk_id = parent_id_map[chunk.metadata["parent_index"]]
+                child_db_objects.append(
+                    DocumentChunk(
+                        document=document_obj,
+                        chunk_index=i,
+                        content=chunk.page_content,
+                        vector_id=vector_id,
+                        embedding_hash=content_hash,
+                        chunk_level="child",
+                        parent_chunk_id=parent_chunk_id,
+                        start_index=chunk.metadata.get("start_index"),
+                        end_index=chunk.metadata.get("end_index"),
+                        page_number=chunk.metadata.get("page"),
+                    )
+                )
+            DocumentChunk.objects.bulk_create(child_db_objects)
+
+            return child_vector_ids
+        except Exception as e:
+            logger.error(f"Parent-Child 文档入库失败: {e}")
+            raise
+
     def _save_chunks_to_db(
         self,
         chunks: List[LangChainDocument],
@@ -1587,9 +1932,92 @@ class VectorStoreManager:
 
         DocumentChunk.objects.bulk_create(chunk_objects)
 
+    @staticmethod
+    def _normalize_metadata_value(value):
+        if isinstance(value, (list, tuple, set)):
+            return [item for item in value if item not in (None, "")]
+        if value in (None, ""):
+            return None
+        return value
+
+    @classmethod
+    def _build_qdrant_filter(cls, metadata_filter: Optional[Dict[str, Any]] = None):
+        if not metadata_filter:
+            return None
+
+        must_conditions = []
+
+        def add_match(field: str, value):
+            normalized = cls._normalize_metadata_value(value)
+            if normalized is None:
+                return
+            if isinstance(normalized, list):
+                must_conditions.append(
+                    models.FieldCondition(
+                        key=field,
+                        match=models.MatchAny(any=normalized),
+                    )
+                )
+            else:
+                must_conditions.append(
+                    models.FieldCondition(
+                        key=field,
+                        match=models.MatchValue(value=normalized),
+                    )
+                )
+
+        add_match("knowledge_base_id", metadata_filter.get("knowledge_base_id"))
+        add_match("document_type", metadata_filter.get("document_type"))
+        add_match("module", metadata_filter.get("module"))
+        add_match("version", metadata_filter.get("version"))
+        add_match("business_domain", metadata_filter.get("business_domain"))
+        add_match("document_stage", metadata_filter.get("document_stage"))
+
+        document_ids = cls._normalize_metadata_value(metadata_filter.get("document_ids"))
+        if document_ids:
+            add_match("document_id", document_ids)
+
+        tags = cls._normalize_metadata_value(metadata_filter.get("tags"))
+        if tags:
+            add_match("tags", tags)
+
+        custom_metadata = (
+            metadata_filter.get("metadata")
+            or metadata_filter.get("custom_metadata")
+            or metadata_filter.get("metadata_filter")
+        )
+        if isinstance(custom_metadata, dict):
+            for key, value in custom_metadata.items():
+                normalized = cls._normalize_metadata_value(value)
+                if normalized is None:
+                    continue
+                payload_key = f"metadata.{key}"
+                if isinstance(normalized, list):
+                    must_conditions.append(
+                        models.FieldCondition(
+                            key=payload_key,
+                            match=models.MatchAny(any=normalized),
+                        )
+                    )
+                else:
+                    must_conditions.append(
+                        models.FieldCondition(
+                            key=payload_key,
+                            match=models.MatchValue(value=normalized),
+                        )
+                    )
+
+        if not must_conditions:
+            return None
+
+        return models.Filter(must=must_conditions)
 
     def similarity_search(
-        self, query: str, k: int = 5, score_threshold: float = 0.1
+        self,
+        query: str,
+        k: int = 5,
+        score_threshold: float = 0.1,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """相似度搜索（支持稠密+稀疏混合检索）"""
         embedding_type = type(self.embeddings).__name__
@@ -1601,18 +2029,23 @@ class VectorStoreManager:
         # 根据是否有稀疏编码器选择检索方式
         if self.sparse_encoder:
             logger.info("   🔀 使用混合检索（BM25 + 稠密向量）")
-            return self._hybrid_similarity_search(query, k, score_threshold)
+            return self._hybrid_similarity_search(query, k, score_threshold, metadata_filter)
         else:
             logger.info("   📊 使用纯稠密向量检索")
-            return self._dense_similarity_search(query, k, score_threshold)
+            return self._dense_similarity_search(query, k, score_threshold, metadata_filter)
 
     def _dense_similarity_search(
-        self, query: str, k: int, score_threshold: float
+        self,
+        query: str,
+        k: int,
+        score_threshold: float,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """纯稠密向量检索"""
         try:
             dense_vector = self.embeddings.embed_query(query)
             collection_name = self._get_collection_name()
+            qdrant_filter = self._build_qdrant_filter(metadata_filter)
 
             results = self.qdrant_client.search(
                 collection_name=collection_name,
@@ -1622,6 +2055,7 @@ class VectorStoreManager:
                 ),
                 limit=k,
                 with_payload=True,
+                query_filter=qdrant_filter,
             )
 
             logger.info(f"🔍 稠密检索结果: {len(results)}")
@@ -1632,11 +2066,16 @@ class VectorStoreManager:
             raise
 
     def _hybrid_similarity_search(
-        self, query: str, k: int, score_threshold: float
+        self,
+        query: str,
+        k: int,
+        score_threshold: float,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """混合检索（RRF 融合稠密+稀疏 + Reranker 精排）"""
         try:
             collection_name = self._get_collection_name()
+            qdrant_filter = self._build_qdrant_filter(metadata_filter)
             # Reranker 需要更多候选，增加召回量
             reranker_enabled = self._get_reranker_url() is not None
             per_source_limit = max(k * 5, 20) if reranker_enabled else max(k * 3, 10)
@@ -1656,6 +2095,7 @@ class VectorStoreManager:
                 ),
                 limit=per_source_limit,
                 with_payload=True,
+                query_filter=qdrant_filter,
             )
 
             # 稀疏向量检索
@@ -1672,6 +2112,7 @@ class VectorStoreManager:
                     ),
                     limit=per_source_limit,
                     with_payload=True,
+                    query_filter=qdrant_filter,
                 )
 
             logger.info(
@@ -1702,7 +2143,7 @@ class VectorStoreManager:
             logger.error(f"混合搜索失败: {e}")
             # 降级为纯稠密检索
             logger.warning("⚠️ 降级为纯稠密检索")
-            return self._dense_similarity_search(query, k, score_threshold)
+            return self._dense_similarity_search(query, k, score_threshold, metadata_filter)
 
     def _rrf_fusion(
         self, dense_results, sparse_results, limit: int
@@ -2098,22 +2539,108 @@ class KnowledgeBaseService:
 
         return results
 
+    def _parent_child_expand(
+        self, results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Replace child chunks with their parent chunks for richer context.
+
+        Multiple children from the same parent are deduplicated into a single
+        result with an accumulated score.  Children without a parent_chunk_id
+        (legacy data) fall back to the existing _expand_context behaviour.
+        """
+        if not results:
+            return results
+
+        # Separate results with parent references from legacy ones
+        pc_results: List[Dict[str, Any]] = []
+        legacy_results: List[Dict[str, Any]] = []
+        for r in results:
+            parent_id = r.get("metadata", {}).get("parent_chunk_id")
+            if parent_id:
+                pc_results.append(r)
+            else:
+                legacy_results.append(r)
+
+        if not pc_results:
+            return self._expand_context(results)
+
+        # Batch-fetch parent chunks from PostgreSQL
+        parent_ids = list(
+            {r["metadata"]["parent_chunk_id"] for r in pc_results}
+        )
+        parent_map = DocumentChunk.objects.filter(
+            id__in=parent_ids, chunk_level="parent"
+        ).in_bulk(field_name="id")
+
+        # Group results by parent_chunk_id
+        groups: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for r in pc_results:
+            groups[r["metadata"]["parent_chunk_id"]].append(r)
+
+        merged: List[Dict[str, Any]] = []
+        for parent_id, group in groups.items():
+            parent_obj = parent_map.get(parent_id)
+            if not parent_obj:
+                # Parent not found, keep children as-is
+                merged.extend(group)
+                continue
+
+            # Score accumulation
+            scores = [r.get("similarity_score", 0) for r in group]
+            max_score = max(scores)
+            bonus = min(0.15 * (len(scores) - 1), 0.3)
+            final_score = min(max_score + bonus, 1.0)
+
+            # Use the highest-scoring child as the template
+            best = max(group, key=lambda x: x.get("similarity_score", 0))
+            child_ids = [
+                r.get("metadata", {}).get("vector_id", "") for r in group
+            ]
+
+            result = {
+                **best,
+                "content": parent_obj.content,
+                "similarity_score": final_score,
+                "metadata": {
+                    **best.get("metadata", {}),
+                    "child_count": len(group),
+                    "child_chunk_ids": child_ids,
+                },
+            }
+            merged.append(result)
+
+        # Sort by score descending
+        merged.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
+
+        # Apply legacy expand_context for results without parent references
+        if legacy_results:
+            legacy_results = self._expand_context(legacy_results)
+
+        return merged + legacy_results
+
     def enhanced_search(
         self,
         query_text: str,
         top_k: int = 5,
         similarity_threshold: float = 0.5,
         enable_rewrite: bool = True,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """统一检索增强入口：原始检索 + Query Rewrite 二次检索 + 多维度去重"""
         results = self.vector_manager.similarity_search(
-            query_text, k=top_k, score_threshold=similarity_threshold
+            query_text,
+            k=top_k,
+            score_threshold=similarity_threshold,
+            metadata_filter=metadata_filter,
         )
         if enable_rewrite:
             rewritten = self._rewrite_query(query_text)
             if rewritten:
                 rewrite_results = self.vector_manager.similarity_search(
-                    rewritten, k=top_k, score_threshold=similarity_threshold
+                    rewritten,
+                    k=top_k,
+                    score_threshold=similarity_threshold,
+                    metadata_filter=metadata_filter,
                 )
                 seen = set()
                 for r in results:
@@ -2125,7 +2652,11 @@ class KnowledgeBaseService:
                         seen.update(keys)
                 results.sort(key=lambda x: x.get("similarity_score", 0), reverse=True)
                 results = results[:top_k]
-        results = self._expand_context(results)
+        params = self.vector_manager._get_effective_chunk_params()
+        if params.get("parent_child_enabled"):
+            results = self._parent_child_expand(results)
+        else:
+            results = self._expand_context(results)
         return results
 
     def query(
@@ -2135,6 +2666,7 @@ class KnowledgeBaseService:
         similarity_threshold: float = 0.5,
         user=None,
         enable_rewrite: bool = True,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """查询知识库"""
         start_time = time.time()
@@ -2153,6 +2685,7 @@ class KnowledgeBaseService:
                 top_k=top_k,
                 similarity_threshold=similarity_threshold,
                 enable_rewrite=enable_rewrite,
+                metadata_filter=metadata_filter,
             )
             retrieval_time = time.time() - retrieval_start
 
@@ -2172,6 +2705,7 @@ class KnowledgeBaseService:
                 generation_time,
                 total_time,
                 user,
+                metadata_filter,
             )
 
             # 记录查询完成信息
@@ -2213,6 +2747,7 @@ class KnowledgeBaseService:
         generation_time: float,
         total_time: float,
         user,
+        metadata_filter: Optional[Dict[str, Any]] = None,
     ):
         """记录查询日志"""
         try:
@@ -2232,6 +2767,7 @@ class KnowledgeBaseService:
                     for source in sources
                 ],
                 similarity_scores=[source["similarity_score"] for source in sources],
+                metadata_filter=metadata_filter or {},
                 retrieval_time=retrieval_time,
                 generation_time=generation_time,
                 total_time=total_time,

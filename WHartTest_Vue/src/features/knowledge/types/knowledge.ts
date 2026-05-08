@@ -8,6 +8,8 @@ export type EmbeddingServiceType = 'openai' | 'azure_openai' | 'ollama' | 'xinfe
  */
 export type RerankerServiceType = 'none' | 'xinference' | 'custom';
 
+export type ChunkStrategyType = 'recursive_character' | 'heading_aware' | 'markdown_header';
+
 /**
  * 嵌入服务选项接口
  */
@@ -32,7 +34,7 @@ export interface EmbeddingServicesResponse {
 }
 
 /**
- * 需要API密钥的服务类型
+ * 需要API密钥的服务类�?
  */
 export const SERVICES_REQUIRING_API_KEY: EmbeddingServiceType[] = [
   'openai',
@@ -67,16 +69,21 @@ export interface KnowledgeGlobalConfig {
   reranker_api_url?: string;
   reranker_api_key?: string;
   reranker_model_name?: string;
-  // 分块配置
+  chunk_strategy: ChunkStrategyType;
   chunk_size: number;
   chunk_overlap: number;
+  parent_child_enabled: boolean;
+  parent_chunk_size: number;
+  parent_chunk_overlap: number;
+  child_chunk_size: number;
+  child_chunk_overlap: number;
   updated_at?: string;
   updated_by?: number;
   updated_by_name?: string;
 }
 
 /**
- * 知识库对象（简化版，嵌入配置统一使用全局配置）
+ * 知识库对象（简化版，嵌入配置统一使用全局配置�?
  */
 export interface KnowledgeBase {
   id: string;
@@ -89,6 +96,10 @@ export interface KnowledgeBase {
   is_active: boolean;
   chunk_size: number;
   chunk_overlap: number;
+  parent_chunk_size?: number;
+  parent_chunk_overlap?: number;
+  child_chunk_size?: number;
+  child_chunk_overlap?: number;
   document_count: number;
   chunk_count: number;
   created_at: string;
@@ -96,7 +107,7 @@ export interface KnowledgeBase {
 }
 
 /**
- * 创建知识库的请求体（简化版）
+ * 创建知识库的请求体（简化版�?
  */
 export interface CreateKnowledgeBaseRequest {
   name: string;
@@ -104,11 +115,15 @@ export interface CreateKnowledgeBaseRequest {
   project: number;
   chunk_size?: number;
   chunk_overlap?: number;
+  parent_chunk_size?: number;
+  parent_chunk_overlap?: number;
+  child_chunk_size?: number;
+  child_chunk_overlap?: number;
   is_active?: boolean;
 }
 
 /**
- * 更新知识库的请求体
+ * 更新知识库的请求�?
  */
 export interface UpdateKnowledgeBaseRequest extends Partial<CreateKnowledgeBaseRequest> {}
 
@@ -118,7 +133,7 @@ export interface UpdateKnowledgeBaseRequest extends Partial<CreateKnowledgeBaseR
 export type DocumentType = 'pdf' | 'docx' | 'doc' | 'xlsx' | 'xls' | 'pptx' | 'txt' | 'md' | 'html' | 'url';
 
 /**
- * 文档处理状态
+ * 文档处理状�?
  */
 export type DocumentStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
@@ -145,6 +160,12 @@ export interface Document {
   file_name?: string;
   file_url?: string;
   error_message?: string;
+  tags?: string[];
+  metadata?: Record<string, any>;
+  module?: string;
+  version?: string;
+  business_domain?: string;
+  document_stage?: string;
 }
 
 /**
@@ -157,6 +178,12 @@ export interface UploadDocumentRequest {
   file?: File;
   content?: string;
   url?: string;
+  tags?: string[];
+  metadata?: Record<string, any>;
+  module?: string;
+  version?: string;
+  business_domain?: string;
+  document_stage?: string;
 }
 
 /**
@@ -173,6 +200,8 @@ export interface DocumentChunk {
   end_index: number;
   page_number?: number;
   created_at: string;
+  parent_chunk?: string;
+  chunk_level: 'parent' | 'child';
 }
 
 /**
@@ -197,6 +226,12 @@ export interface DocumentContentResponse {
   file_name?: string;
   file_url?: string;
   url?: string;
+  tags?: string[];
+  metadata?: Record<string, any>;
+  module?: string;
+  version?: string;
+  business_domain?: string;
+  document_stage?: string;
   chunk_count: number;
   chunks?: {
     total_count: number;
@@ -208,7 +243,7 @@ export interface DocumentContentResponse {
 }
 
 /**
- * 获取文档内容的查询参数
+ * 获取文档内容的查询参�?
  */
 export interface GetDocumentContentParams {
   include_chunks?: boolean;
@@ -225,6 +260,14 @@ export interface QueryRequest {
   top_k?: number;
   similarity_threshold?: number;
   include_metadata?: boolean;
+  document_ids?: string[];
+  document_type?: string;
+  tags?: string[];
+  module?: string;
+  version?: string;
+  business_domain?: string;
+  document_stage?: string;
+  metadata_filter?: Record<string, any>;
 }
 
 /**
@@ -240,6 +283,9 @@ export interface QuerySource {
     document_type: string;
     document_id: string;
     page?: number;
+    parent_chunk_id?: string;
+    child_count?: number;
+    child_chunk_ids?: string[];
     [key: string]: any;
   };
 }
@@ -266,7 +312,7 @@ export interface RagQueryRequest {
 }
 
 /**
- * 知识库统计信息
+ * 知识库统计信�?
  */
 export interface KnowledgeBaseStatistics {
   document_count: number;
@@ -321,7 +367,7 @@ export interface ApiResponse<T> {
 }
 
 /**
- * 系统状态响应
+ * 系统状态响�?
  */
 export interface SystemStatusResponse {
   timestamp: number;
@@ -356,3 +402,4 @@ export interface ErrorResponse {
   detail?: string;
   [key: string]: any;
 }
+

@@ -29,6 +29,48 @@
         />
       </a-form-item>
 
+      <a-row :gutter="12">
+        <a-col :span="12">
+          <a-form-item label="业务模块">
+            <a-input v-model="formData.module" placeholder="如：登录 / 支付" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="12">
+          <a-form-item label="版本">
+            <a-input v-model="formData.version" placeholder="如：v2.3" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+
+      <a-row :gutter="12">
+        <a-col :span="12">
+          <a-form-item label="业务域">
+            <a-input v-model="formData.business_domain" placeholder="如：交易 / 用户中心" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="12">
+          <a-form-item label="文档阶段">
+            <a-input v-model="formData.document_stage" placeholder="如：评审版 / 基线版" />
+          </a-form-item>
+        </a-col>
+      </a-row>
+
+      <a-form-item label="标签">
+        <a-input-tag
+          v-model="formData.tags"
+          placeholder="输入标签后回车"
+          allow-clear
+        />
+      </a-form-item>
+
+      <a-form-item label="自定义元数据 JSON">
+        <a-textarea
+          v-model="formData.metadataText"
+          placeholder='例如：{"priority":"P0","owner":"QA"}'
+          :rows="3"
+        />
+      </a-form-item>
+
       <!-- 文件上传 -->
       <template v-if="formData.uploadType === 'file'">
         <a-form-item label="选择文件" field="file">
@@ -124,6 +166,12 @@ const formData = reactive({
   file: null as File | null,
   content: '',
   url: '',
+  tags: [] as string[],
+  module: '',
+  version: '',
+  business_domain: '',
+  document_stage: '',
+  metadataText: '',
 });
 
 // 表单验证规则
@@ -191,6 +239,12 @@ const resetForm = () => {
     file: null,
     content: '',
     url: '',
+    tags: [],
+    module: '',
+    version: '',
+    business_domain: '',
+    document_stage: '',
+    metadataText: '',
   });
   uploadProgress.value = 0;
   if (fileInputRef.value) {
@@ -302,7 +356,25 @@ const handleSubmit = async () => {
       knowledge_base: props.knowledgeBaseId,
       title: formData.title,
       document_type: getDocumentType(formData.uploadType, formData.file || undefined),
+      tags: formData.tags,
+      module: formData.module.trim(),
+      version: formData.version.trim(),
+      business_domain: formData.business_domain.trim(),
+      document_stage: formData.document_stage.trim(),
     };
+
+    if (formData.metadataText.trim()) {
+      try {
+        uploadData.metadata = JSON.parse(formData.metadataText);
+      } catch {
+        Message.error('自定义元数据必须是合法 JSON 对象');
+        return;
+      }
+      if (!uploadData.metadata || Array.isArray(uploadData.metadata) || typeof uploadData.metadata !== 'object') {
+        Message.error('自定义元数据必须是 JSON 对象');
+        return;
+      }
+    }
 
     if (formData.uploadType === 'file' && formData.file) {
       uploadData.file = formData.file;
