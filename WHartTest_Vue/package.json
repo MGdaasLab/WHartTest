@@ -32,7 +32,7 @@
     "@types/dompurify": "^3.0.5",
     "@types/marked": "^5.0.2",
     "@vueuse/core": "^13.1.0",
-    "axios": "^1.9.0",
+    "axios": "^1.18.1",
     "dompurify": "^3.2.6",
     "jmespath": "^0.16.0",
     "marked": "^15.0.12",
