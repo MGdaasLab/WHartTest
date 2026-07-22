@@ -1,6 +1,6 @@
 ---
 name: ui-automation
-description: WHartTest UI 自动化管理工具。用于创建、编辑、删除 UI 测试模块、页面、元素、页面步骤和测试用例。支持执行记录查询和错误分析。当需要将浏览器技能获取到的页面元素保存到平台、创建 UI 自动化用例、执行测试或分析执行结果时使用。元素采集默认优先 agent-browser-skill，无法覆盖时再用 playwright-skill 兜底。
+description: WHartTest UI 自动化管理工具。用于创建、编辑、删除 UI 测试模块、页面、元素、页面步骤和测试用例。支持执行记录查询和错误分析。当需要将浏览器技能获取到的页面元素保存到平台、创建 UI 自动化用例、执行测试或分析执行结果时使用。元素采集默认优先 browser-use，无法覆盖时再用 playwright-skill 兜底。
 ---
 
 # WHartTest UI 自动化管理
@@ -62,8 +62,8 @@ python ui_automation_tools.py --action <action_name> [--参数名 参数值]
 
 ### 技术路线优先级
 
-1. 默认使用 `agent-browser-skill` 进行页面访问、元素抓取与识别（Snapshot + Ref）。
-2. 仅当 `agent-browser-skill` 无法稳定获取目标元素时，才使用 `playwright-skill` 兜底。
+1. 默认使用 `browser-use` 进行页面访问、元素抓取与识别（CDP / 可访问性树）。
+2. 仅当 `browser-use` 无法稳定获取目标元素时，才使用 `playwright-skill` 兜底。
 3. `ui-automation-skill` 负责将已确认的元素表达式入库并组装步骤/用例。
 
 ### 元素表达式质量标准（必须满足）
@@ -87,12 +87,12 @@ python ui_automation_tools.py --action <action_name> [--参数名 参数值]
 2. 易变 class：构建产物 hash class、运行时动态 class
 3. 易变文本：时间戳、数量、用户名、随机文案
 
-## 与 agent-browser-skill / playwright-skill 协作流程
+## 与 browser-use / playwright-skill 协作流程
 
 ```
-agent-browser-skill            playwright-skill                 ui-automation-skill
+browser-use                    playwright-skill                 ui-automation-skill
        │                             │                                  │
-       │ 1. 默认：snapshot/ref 抓取元素 │                                  │
+       │ 1. 默认：CDP/可访问性树抓取元素 │                                  │
        ├─────────────────────────────┼─────────────────────────────────→│ 2. 保存元素 (create_element)
        │                             │                                  │ 3. 创建步骤 (create_page_step)
        │ 1.1 若无法稳定获取元素       │ 1.2 兜底：获取选择器/结构信息        │ 4. 组装用例 (create_testcase)
@@ -118,7 +118,7 @@ python ui_automation_tools.py --action get_execution_records --status 3 --limit 
 
 # 3. 常见错误及解决方案：
 #    - "Timeout exceeded": 元素定位器失效，需更新 locator_value
-#    - "element not found": 页面结构变化，需重新获取元素（先 agent-browser，再 playwright 兜底）
+#    - "element not found": 页面结构变化，需重新获取元素（先 browser-use，再 playwright 兜底）
 #    - "Target page closed": 前序步骤导致页面关闭
 
 # 4. 更新元素定位器
@@ -297,7 +297,7 @@ python ui_automation_tools.py --action create_ui_page \
   --description "用户登录页面"
 ```
 
-### 创建元素（优先基于 agent-browser-skill，失败时使用 playwright-skill）
+### 创建元素（优先基于 browser-use，失败时使用 playwright-skill）
 
 ```bash
 # 单个元素
@@ -432,7 +432,7 @@ python ui_automation_tools.py --action get_ui_pages --project_id 1 --module_id 1
 python ui_automation_tools.py --action create_ui_page \
   --project_id 1 --module_id 10 --name "登录页面" --url "/login"
 
-# 2.3 批量创建元素（基于元素采集策略：agent-browser 优先，playwright 兜底）
+# 2.3 批量创建元素（基于元素采集策略：browser-use 优先，playwright 兜底）
 python ui_automation_tools.py --action batch_create_elements \
   --page_id 20 \
   --elements '[
@@ -536,7 +536,7 @@ python ui_automation_tools.py --action execute_testcase --testcase_id 40 --wait_
 | 错误信息 | 原因 | 解决方案 |
 |----------|------|----------|
 | `Timeout exceeded` | 元素定位器失效或页面加载慢 | 更新 `locator_value` 或增加 `timeout` |
-| `element not found` | 页面 DOM 结构变化 | 先使用 agent-browser-skill 重新采集，必要时用 playwright-skill 兜底 |
+| `element not found` | 页面 DOM 结构变化 | 先使用 browser-use 重新采集，必要时用 playwright-skill 兜底 |
 | `Target page closed` | 前序步骤导致页面关闭/跳转 | 检查页面导航逻辑 |
 | `Assertion failed` | 实际值与预期不符 | 更新 `ope_value.expected` |
 | `locator resolved to X elements` | 定位器匹配多个元素 | 调整为唯一定位器（匹配数必须为 1） |

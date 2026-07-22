@@ -279,6 +279,11 @@ pytest>=8.0.0
 # https://github.com/microsoft/playwright-python/blob/main/LICENSE
 playwright>=1.40.0
 
+# Browser Use CLI（Agent 浏览器 skill 驱动，替代 agent-browser）
+# https://github.com/browser-use/browser-use
+# 注意：browser-use 依赖版本钉死较多，不放进本文件，避免与 Django 主依赖冲突。
+# Docker 镜像在 Dockerfile 中用独立 venv (/opt/browser-use) 预装，并复用下方 playwright 的 Chromium。
+
 # Pillow图像处理库 - MIT-CMU许可证（用于Word文档图片尺寸解析）
 # https://github.com/python-pillow/Pillow/blob/main/LICENSE
 Pillow>=10.0.0
