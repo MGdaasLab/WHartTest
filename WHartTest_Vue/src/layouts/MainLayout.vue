@@ -1058,7 +1058,11 @@ onMounted(async () => {
   margin: 5px 5px 10px 10px;
   border-radius: 8px;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
-  height: auto; /* 让 flex 自动撑开 */
+  /* 与 content 同高：100vh - header区71px - sider上下margin15px = 100vh - 86px
+     给 sider 明确高度后，子菜单 max-height 的百分比才能正确计算滚动区 */
+  height: calc(100vh - 86px);
+  position: relative;
+  overflow: hidden;
 }
 
 .menu {
@@ -1069,6 +1073,7 @@ onMounted(async () => {
   overflow-y: auto;
   overflow-x: hidden;
   text-align: left;
+  /* 相对 sider 高度扣除底部收起栏（约 50px），小屏下滚动条高度随之适配 */
   max-height: calc(100% - 50px);
 }
 

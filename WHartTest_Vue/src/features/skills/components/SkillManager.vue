@@ -152,6 +152,13 @@
       :installed-skills="skills"
       @skills-changed="fetchSkills"
     />
+
+    <SkillApiKeyConfirmModal
+      :visible="showApiKeyConfirm"
+      :skill-names="pendingApiKeySkillNames"
+      @confirmed="onApiKeyConfirmed"
+      @update:visible="onApiKeyModalVisible"
+    />
   </div>
 </template>
 
@@ -160,8 +167,10 @@ import { ref, onMounted, computed } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { SkillService } from '../services/skillService'
 import SkillStoreModal from './SkillStoreModal.vue'
+import SkillApiKeyConfirmModal from './SkillApiKeyConfirmModal.vue'
 import type { SkillListItem } from '../types'
 import { useAppI18n } from '@/composables/useAppI18n'
+import { zipNameSuggestsInternalSkill } from '../utils/internalSkills'
 
 const props = defineProps<{
   projectId: number
@@ -248,6 +257,9 @@ const showStoreModal = ref(false)
 const gitUrl = ref('')
 const gitBranch = ref('')
 const importing = ref(false)
+const showApiKeyConfirm = ref(false)
+const pendingApiKeySkillNames = ref<string[]>([])
+const pendingApiKeyAction = ref<'upload' | 'git' | null>(null)
 
 const fetchSkills = async () => {
   loading.value = true
@@ -271,7 +283,7 @@ const handleFileChange = (e: Event) => {
   }
 }
 
-const handleUpload = async () => {
+const doUpload = async (apiKey?: string) => {
   if (!selectedFile.value) {
     Message.warning(text.value.selectFile)
     return
@@ -279,7 +291,7 @@ const handleUpload = async () => {
 
   uploading.value = true
   try {
-    const skills = await SkillService.uploadSkill(props.projectId, selectedFile.value)
+    const skills = await SkillService.uploadSkill(props.projectId, selectedFile.value, apiKey)
     const count = skills.length
     const names = skills.map(s => s.name).join(', ')
     Message.success(text.value.uploadSuccess(count, names))
@@ -291,6 +303,21 @@ const handleUpload = async () => {
   } finally {
     uploading.value = false
   }
+}
+
+const handleUpload = async () => {
+  if (!selectedFile.value) {
+    Message.warning(text.value.selectFile)
+    return
+  }
+  // 内部 Skill 包（文件名粗判）安装前必须确认 API Key；后端会按 SKILL.md name 再校验
+  if (zipNameSuggestsInternalSkill(selectedFile.value.name)) {
+    pendingApiKeyAction.value = 'upload'
+    pendingApiKeySkillNames.value = [selectedFile.value.name]
+    showApiKeyConfirm.value = true
+    return
+  }
+  await doUpload()
 }
 
 const handleToggle = async (skill: SkillListItem, isActive: boolean) => {
@@ -326,7 +353,7 @@ const formatDate = (dateStr: string) => {
   return new Date(dateStr).toLocaleDateString(isEnglish.value ? 'en-US' : 'zh-CN')
 }
 
-const handleGitImport = async () => {
+const doGitImport = async (apiKey?: string) => {
   if (!gitUrl.value.trim()) {
     Message.warning(text.value.gitRepoRequired)
     return
@@ -337,7 +364,8 @@ const handleGitImport = async () => {
     const skills = await SkillService.importFromGit(
       props.projectId,
       gitUrl.value.trim(),
-      gitBranch.value.trim() || undefined
+      gitBranch.value.trim() || undefined,
+      apiKey
     )
     const count = skills.length
     const names = skills.map(s => s.name).join(', ')
@@ -350,6 +378,45 @@ const handleGitImport = async () => {
     Message.error(e.message || text.value.importFailed)
   } finally {
     importing.value = false
+  }
+}
+
+const handleGitImport = async () => {
+  if (!gitUrl.value.trim()) {
+    Message.warning(text.value.gitRepoRequired)
+    return
+  }
+  // Git 导入可能包含内部 Skill：统一先确认 Key，后端对非内部包忽略该字段
+  pendingApiKeyAction.value = 'git'
+  pendingApiKeySkillNames.value = isEnglish.value
+    ? ['Git import (may include internal Skills)']
+    : ['Git 导入（可能含内部 Skill）']
+  showApiKeyConfirm.value = true
+}
+
+const onApiKeyConfirmed = async (payload: { apiKey: string; keyId: number; keyName: string }) => {
+  const action = pendingApiKeyAction.value
+  // 先开始执行再清 pending，避免取消清理与确认竞态
+  if (action === 'upload') {
+    pendingApiKeyAction.value = null
+    pendingApiKeySkillNames.value = []
+    await doUpload(payload.apiKey)
+  } else if (action === 'git') {
+    pendingApiKeyAction.value = null
+    pendingApiKeySkillNames.value = []
+    await doGitImport(payload.apiKey)
+  } else {
+    pendingApiKeyAction.value = null
+    pendingApiKeySkillNames.value = []
+  }
+}
+
+const onApiKeyModalVisible = (v: boolean) => {
+  showApiKeyConfirm.value = v
+  // 仅在用户取消/关闭且当前没有进行中的上传/导入时清理挂起状态
+  if (!v && !uploading.value && !importing.value) {
+    pendingApiKeyAction.value = null
+    pendingApiKeySkillNames.value = []
   }
 }
 
