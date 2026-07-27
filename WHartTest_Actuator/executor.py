@@ -246,7 +246,6 @@ class PlaywrightExecutor:
         self._browser = None
         self._playwright = None
         self._page_errors = []
-        self._current_trace_path = None
 
         # Prefer browser.close() which tears down contexts/pages; sequential
         # page->context->browser left orphans when an early close hung.
@@ -291,9 +290,9 @@ class PlaywrightExecutor:
         Returns:
             trace 文件路径（通过 self._current_trace_path 获取）
         """
-        await self.init_browser()
         self._current_trace_path = None
-        
+        await self.init_browser()
+
         try:
             # 启动 Trace
             if self.trace_enabled and self._context:
