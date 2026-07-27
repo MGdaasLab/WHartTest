@@ -6,6 +6,12 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+config.toml
+.env
+.env.*
+test_*.py
+*_test.py
+
 data/
 browsers/
 build/

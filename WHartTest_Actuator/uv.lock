@@ -586,7 +586,7 @@ requires-dist = [
     { name = "customtkinter", specifier = ">=5.2.2" },
     { name = "customtkinter", marker = "extra == 'gui'", specifier = ">=5.2.2" },
     { name = "httpx", specifier = ">=0.25.0" },
-    { name = "playwright", specifier = ">=1.40.0" },
+    { name = "playwright", specifier = "==1.61.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "pyinstaller", specifier = ">=6.18.0" },
     { name = "pyinstaller", marker = "extra == 'build'", specifier = ">=6.0.0" },

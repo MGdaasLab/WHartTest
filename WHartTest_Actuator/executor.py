@@ -291,8 +291,8 @@ class PlaywrightExecutor:
         Returns:
             trace 文件路径（通过 self._current_trace_path 获取）
         """
-        await self.init_browser()
         self._current_trace_path = None
+        await self.init_browser()
         
         try:
             # 启动 Trace

@@ -10,7 +10,7 @@ dependencies = [
     "httpx>=0.25.0",
     "tomli>=2.0",
     "tomli_w>=1.0",
-    "playwright>=1.40.0",
+    "playwright==1.61.0",
     "pymysql>=1.1.0",
     "customtkinter>=5.2.2",
     "pyinstaller>=6.18.0",

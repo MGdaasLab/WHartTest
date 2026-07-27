@@ -38,6 +38,12 @@ from browser_installer import setup_playwright_env, ensure_browser
 
 from websocket_client import WebSocketClient
 from consumer import TaskConsumer
+from runtime_env import (
+    has_display_server,
+    is_running_in_container,
+    parse_bool_env,
+    should_force_headless,
+)
 
 try:
     import tomllib  # Python 3.11+
@@ -123,21 +129,23 @@ class Config:
     """配置类"""
     
     def __init__(self):
+        container_mode = is_running_in_container()
+
         # 默认配置
         self.ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
         self.api_url = "http://127.0.0.1:8000"
         # 打包成 exe 时默认启用 GUI 登录，开发模式默认关闭
-        self.use_gui = getattr(sys, 'frozen', False)
+        self.use_gui = getattr(sys, 'frozen', False) and not container_mode
         self.api_username = "admin"
         self.api_password = "admin123"
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None
         self.actuator_description: str | None = None
-        
+
         # 浏览器配置
         self.browser_type = "chromium"
-        self.headless = False
-        self.persistent = True
+        self.headless = container_mode
+        self.persistent = not container_mode
         self.user_data_dir = "./data/browser"
         self.launch_timeout = 30
         self.action_timeout = 30
@@ -217,6 +225,47 @@ class Config:
         if 'logging' in data:
             self.log_level = data['logging'].get('level', self.log_level)
             self.log_file = data['logging'].get('file')
+
+    def load_from_env(self) -> None:
+        """从环境变量加载配置，优先级高于 TOML。"""
+        if ws_url := os.environ.get('WHARTTEST_ACTUATOR_WS_URL'):
+            self.ws_url = ws_url.strip()
+        if api_url := os.environ.get('WHARTTEST_ACTUATOR_API_URL'):
+            self.api_url = api_url.strip()
+        if actuator_id := os.environ.get('WHARTTEST_ACTUATOR_ID'):
+            self.actuator_id = actuator_id.strip()
+        if actuator_name := os.environ.get('WHARTTEST_ACTUATOR_NAME'):
+            self.actuator_name = actuator_name.strip()
+        if api_username := os.environ.get('WHARTTEST_ACTUATOR_API_USERNAME'):
+            self.api_username = api_username.strip()
+        if api_password := os.environ.pop('WHARTTEST_ACTUATOR_API_PASSWORD', None):
+            self.api_password = api_password.strip()
+        if browser_type := os.environ.get('WHARTTEST_ACTUATOR_BROWSER_TYPE'):
+            self.browser_type = browser_type.strip()
+
+        bool_env_map = {
+            'WHARTTEST_ACTUATOR_USE_GUI': 'use_gui',
+            'WHARTTEST_ACTUATOR_HEADLESS': 'headless',
+            'WHARTTEST_ACTUATOR_PERSISTENT': 'persistent',
+            'WHARTTEST_ACTUATOR_TRACE_ENABLED': 'trace_enabled',
+        }
+        for env_name, attr_name in bool_env_map.items():
+            env_value = parse_bool_env(os.environ.get(env_name))
+            if env_value is not None:
+                setattr(self, attr_name, env_value)
+
+    def normalize_for_runtime(self) -> None:
+        """根据运行环境修正配置，保证容器中可直接使用无头浏览器。"""
+        if not is_running_in_container():
+            return
+
+        if self.use_gui and not has_display_server():
+            logging.info("检测到容器内无显示服务，自动禁用 GUI 登录")
+            self.use_gui = False
+
+        if should_force_headless() and not self.headless:
+            logging.info("检测到容器内无显示服务，自动启用无头模式")
+            self.headless = True
     
     def apply_args(self, args: argparse.Namespace) -> None:
         """应用命令行参数（覆盖配置文件）"""
@@ -320,10 +369,12 @@ async def main():
     # 加载配置
     config = Config()
     config.load_from_toml(str(config_path))
+    config.load_from_env()
     config.apply_args(args)
 
     # 配置日志
     setup_logging(config.log_level, config.log_file)
+    config.normalize_for_runtime()
     ensure_runtime_dirs(config)
     logger = logging.getLogger('actuator')
     
