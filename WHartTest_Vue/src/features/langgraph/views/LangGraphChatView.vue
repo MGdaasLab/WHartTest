@@ -2619,17 +2619,17 @@ export default {
 .diagram-preview-iframe {
   width: 100%;
   height: 72vh;
-  border: 1px solid #e5e6eb;
+  border: 1px solid var(--color-border-2, #e5e6eb);
   border-radius: 8px;
-  background: #fff;
+  background: var(--color-bg-2, #fff);
 }
 
 .html-preview-wrapper {
   position: relative;
   height: min(86vh, calc(100vh - 96px));
   min-height: 320px;
-  background: #fff;
-  border: 1px solid #e5e6eb;
+  background: var(--color-bg-2, #fff);
+  border: 1px solid var(--color-border-2, #e5e6eb);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -2640,7 +2640,7 @@ export default {
   height: 100%;
   border: none;
   border-radius: 0;
-  background: #fff;
+  background: var(--color-bg-2, #fff);
 }
 
 .html-preview-wrapper:fullscreen {

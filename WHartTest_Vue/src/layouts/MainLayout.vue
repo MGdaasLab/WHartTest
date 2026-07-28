@@ -723,11 +723,11 @@ onMounted(async () => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #ffffff;
+  background: var(--color-bg-2, #ffffff);
   padding: 0 20px;
   height: 56px;
   line-height: 56px;
-  color: #333333;
+  color: var(--color-text-1, #333333);
   margin: 10px 10px 5px 10px;
   border-radius: 8px;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
@@ -742,7 +742,7 @@ onMounted(async () => {
 .logo {
   font-size: 1.2em;
   font-weight: bold;
-  color: #333333;
+  color: var(--color-text-1, #333333);
   text-align: left;
   display: flex;
   justify-content: flex-start;
@@ -787,11 +787,11 @@ onMounted(async () => {
 }
 
 :global(.layout-header-select-dropdown.layout-header-select-dropdown .arco-select-dropdown.arco-select-dropdown) {
-  background: #ffffff !important;
-  border: 1px solid #e5e6eb !important;
+  background: var(--color-bg-popup, var(--color-bg-2)) !important;
+  border: 1px solid var(--color-border-2, #e5e6eb) !important;
   border-radius: 6px !important;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12) !important;
-  color: #1d2129 !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25) !important;
+  color: var(--color-text-1, #1d2129) !important;
   padding: 4px !important;
   margin: 4px 0 !important;
 }
@@ -1054,26 +1054,21 @@ onMounted(async () => {
 }
 
 .sider {
-  background: #ffffff;
+  background: var(--color-bg-2, #ffffff);
   margin: 5px 5px 10px 10px;
   border-radius: 8px;
   box-shadow: 0 0 12px rgba(0, 0, 0, 0.25), 0 0 4px rgba(0, 0, 0, 0.15);
-  /* 与 content 同高：100vh - header区71px - sider上下margin15px = 100vh - 86px
-     给 sider 明确高度后，子菜单 max-height 的百分比才能正确计算滚动区 */
-  height: calc(100vh - 86px);
-  position: relative;
-  overflow: hidden;
+  height: auto; /* 让 flex 自动撑开 */
 }
 
 .menu {
-  background: #ffffff;
-  color: #333333;
+  background: var(--color-bg-2, #ffffff);
+  color: var(--color-text-1, #333333);
   border-right: none;
   border-radius: 8px;
   overflow-y: auto;
   overflow-x: hidden;
   text-align: left;
-  /* 相对 sider 高度扣除底部收起栏（约 50px），小屏下滚动条高度随之适配 */
   max-height: calc(100% - 50px);
 }
 

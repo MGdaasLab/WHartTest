@@ -434,17 +434,10 @@ const getCurrentMethodColor = () => {
 :global(.arco-dropdown),
 :global(.arco-dropdown-list),
 :global(.arco-dropdown-list-wrapper) {
-  background: #ffffff !important;
+  background: var(--color-bg-popup, var(--color-bg-2)) !important;
   border-radius: 12px !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12) !important;
-}
-
-:global(body.api-testing-theme .arco-dropdown),
-:global(body.api-testing-theme .arco-dropdown-list),
-:global(body.api-testing-theme .arco-dropdown-list-wrapper) {
-  background: rgb(31, 41, 55) !important;
-  border-color: rgba(75, 85, 99, 0.4) !important;
+  border: 1px solid var(--color-border-2) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2) !important;
 }
 
 /* 模块选择下拉框样式 */
@@ -477,17 +470,12 @@ const getCurrentMethodColor = () => {
 }
 
 :global(.arco-select-dropdown) {
-  background: #ffffff !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
+  background: var(--color-bg-popup, var(--color-bg-2)) !important;
+  border: 1px solid var(--color-border-2) !important;
   border-radius: 12px !important;
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12) !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2) !important;
   padding: 4px !important;
   margin: 4px 0 !important;
-}
-
-:global(body.api-testing-theme .arco-select-dropdown) {
-  background: rgb(31, 41, 55) !important;
-  border-color: rgba(75, 85, 99, 0.4) !important;
 }
 
 :global(.arco-select-dropdown .arco-select-option) {
