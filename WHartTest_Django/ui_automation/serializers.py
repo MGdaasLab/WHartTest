@@ -1,7 +1,10 @@
+import logging
 # -*- coding: utf-8 -*-
 """UI 自动化序列化器"""
 
 from rest_framework import serializers
+
+logger = logging.getLogger(__name__)
 from file_management.services import validate_file_ids, sync_file_references, serialize_file_for_runtime
 from file_management.models import FileReference
 from .models import (
@@ -35,12 +38,20 @@ def _resolve_upload_ope_value(obj, serializer):
         files = validate_file_ids([file_id], project, _ui_request_user(serializer))
         if files:
             runtime_file = serialize_file_for_runtime(files[0])
-            value['value'] = runtime_file.get('path') or value.get('value')
-            value['file_path'] = runtime_file.get('path')
-            value['file_name'] = runtime_file.get('name')
+            # Prefer shared-storage absolute path; actuators may fall back to download_url.
+            resolved_path = runtime_file.get('path') or ''
+            value['value'] = resolved_path or value.get('value')
+            value['file_path'] = resolved_path
+            value['file_name'] = runtime_file.get('name') or value.get('file_name')
             value['mime_type'] = runtime_file.get('mime_type')
-    except Exception:
-        pass
+            value['file_id'] = runtime_file.get('file_id') or file_id
+            value['project_id'] = runtime_file.get('project_id') or (project.id if project else None)
+            value['download_url'] = runtime_file.get('download_url') or ''
+            value['url'] = runtime_file.get('url') or ''
+            value['sha256'] = runtime_file.get('sha256') or ''
+            value['size'] = runtime_file.get('size')
+    except Exception as exc:
+        logger.warning('resolve upload ope_value failed: %s', exc, exc_info=True)
     return value
 
 

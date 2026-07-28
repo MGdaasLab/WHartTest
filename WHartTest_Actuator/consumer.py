@@ -3,8 +3,14 @@ UI自动化执行器 - 任务消费者
 """
 
 import asyncio
+import hashlib
+import gc
 import logging
+import os
+import re
 import time
+import uuid
+from pathlib import Path
 from typing import Optional, Any
 import httpx
 
@@ -63,12 +69,15 @@ class TaskConsumer:
 
         # 启动时清理过期文件（超过7天）
         self._cleanup_expired_files(
-            getattr(config, 'screenshot_dir', './data/screenshots') if config else './data/screenshots',
-            getattr(config, 'trace_dir', './data/traces') if config else './data/traces',
+            [
+                getattr(config, 'screenshot_dir', './data/screenshots') if config else './data/screenshots',
+                getattr(config, 'trace_dir', './data/traces') if config else './data/traces',
+                getattr(config, 'upload_cache_dir', './data/runtime_uploads') if config else './data/runtime_uploads',
+            ],
             max_age_days=7
         )
 
-    def _cleanup_expired_files(self, screenshot_dir: str, trace_dir: str, max_age_days: int = 7):
+    def _cleanup_expired_files(self, directories, max_age_days: int = 7):
         """清理超过指定天数的本地临时文件"""
         import os
         from pathlib import Path
@@ -77,7 +86,7 @@ class TaskConsumer:
         max_age_seconds = max_age_days * 24 * 60 * 60
         cleaned_count = 0
 
-        for directory in [screenshot_dir, trace_dir]:
+        for directory in directories:
             dir_path = Path(directory)
             if not dir_path.exists():
                 continue
@@ -241,6 +250,46 @@ class TaskConsumer:
             logger.error(f"Trace 上传异常: {e}")
             return None
 
+
+    def _release_result_payloads(self, result=None, steps=None) -> None:
+        """发送结果后释放内存中的截图 base64（支持 CaseResult 或步骤列表）。"""
+        if steps is None:
+            steps = getattr(result, 'steps', None) or []
+        for step in steps:
+            screenshot = getattr(step, 'screenshot', None)
+            if isinstance(screenshot, str) and screenshot.startswith('data:image'):
+                step.screenshot = None
+
+    def _release_memory_after_task_sync(self) -> None:
+        """Blocking memory reclaim; call from a worker thread when on async path."""
+        try:
+            if hasattr(self.executor, '_release_memory'):
+                self.executor._release_memory()
+                return
+        except Exception as e:
+            logger.debug(f'executor._release_memory failed, fallback local reclaim: {e}')
+        try:
+            gc.collect()
+        except Exception as e:
+            logger.debug(f'gc.collect failed: {e}')
+        try:
+            import platform
+            import ctypes
+            if platform.system() != 'Linux':
+                return
+            libc = ctypes.CDLL('libc.so.6')
+            libc.malloc_trim(0)
+        except Exception:
+            # Non-Linux or libc unavailable.
+            pass
+
+    async def _release_memory_after_task(self) -> None:
+        """任务结束后尽量回收内存，避免在事件循环线程上阻塞。"""
+        try:
+            await asyncio.to_thread(self._release_memory_after_task_sync)
+        except Exception as e:
+            logger.debug(f'_release_memory_after_task failed: {e}')
+
     async def handle_message(self, socket_data: SocketDataModel):
         """处理接收到的消息"""
         if socket_data.code != ResponseCode.SUCCESS:
@@ -334,56 +383,84 @@ class TaskConsumer:
         # 执行（使用同一浏览器会话）
         logger.info(f"开始执行页面步骤: {config.page_name}")
         
-        start_time = time.time()
-        step_results = await self.executor.execute_page_step(config)
-        
-        # 统计结果
-        passed_steps = sum(1 for r in step_results if r.status == 'success')
-        failed_steps = len(step_results) - passed_steps
-        
-        # 处理截图为 Base64 并发送步骤结果
-        import os
-        for result in step_results:
-            if result.screenshot:
-                local_path = result.screenshot
-                base64_url = await self._encode_screenshot_base64(local_path)
-                if base64_url:
-                    result.screenshot = base64_url
-                    # 清理本地截图文件
-                    try:
-                        abs_path = os.path.abspath(local_path) if local_path.startswith('./') else local_path
-                        if os.path.exists(abs_path):
-                            os.remove(abs_path)
-                            logger.debug(f"已清理本地截图: {abs_path}")
-                    except Exception as e:
-                        logger.warning(f"清理截图失败: {e}")
+        step_results = None
+        summary_result = None
+        try:
+            start_time = time.time()
+            try:
+                await self._materialize_page_step_uploads(config, project_id)
+            except Exception as e:
+                logger.error(f'准备上传文件失败: {e}', exc_info=True)
+                summary_result = {
+                    'page_step_id': page_step_id,
+                    'status': 'failed',
+                    'message': f'准备上传文件失败: {e}',
+                    'total_steps': len(config.steps),
+                    'passed_steps': 0,
+                    'failed_steps': len(config.steps),
+                    'duration': time.time() - start_time,
+                    'steps': [],
+                }
+                await self.ws_client.send_result(
+                    'u_page_step_result',
+                    summary_result,
+                    self._current_user,
+                )
+                return
+            step_results = await self.executor.execute_page_step(config)
+            
+            # 统计结果
+            passed_steps = sum(1 for r in step_results if r.status == 'success')
+            failed_steps = len(step_results) - passed_steps
+            
+            # 处理截图为 Base64 并发送步骤结果
+            import os
+            for result in step_results:
+                if result.screenshot:
+                    local_path = result.screenshot
+                    base64_url = await self._encode_screenshot_base64(local_path)
+                    if base64_url:
+                        result.screenshot = base64_url
+                        # 清理本地截图文件
+                        try:
+                            abs_path = os.path.abspath(local_path) if local_path.startswith('./') else local_path
+                            if os.path.exists(abs_path):
+                                os.remove(abs_path)
+                                logger.debug(f"已清理本地截图: {abs_path}")
+                        except Exception as e:
+                            logger.warning(f"清理截图失败: {e}")
 
-            # 发送步骤结果
+                # 发送步骤结果
+                await self.ws_client.send_result(
+                    UiSocketEnum.STEP_RESULT,
+                    result.model_dump(),
+                    self._current_user
+                )
+            
+            # 发送页面步骤执行汇总结果
+            summary_result = {
+                'page_step_id': page_step_id,
+                'status': 'success' if failed_steps == 0 else 'failed',
+                'message': '执行成功' if failed_steps == 0 else '执行失败',
+                'total_steps': len(config.steps),
+                'passed_steps': passed_steps,
+                'failed_steps': failed_steps,
+                'duration': time.time() - start_time,
+                'steps': [r.model_dump() for r in step_results],
+            }
+            
             await self.ws_client.send_result(
-                UiSocketEnum.STEP_RESULT,
-                result.model_dump(),
+                'u_page_step_result',  # 新增的结果类型
+                summary_result,
                 self._current_user
             )
-        
-        # 发送页面步骤执行汇总结果
-        summary_result = {
-            'page_step_id': page_step_id,
-            'status': 'success' if failed_steps == 0 else 'failed',
-            'message': '执行成功' if failed_steps == 0 else '执行失败',
-            'total_steps': len(config.steps),
-            'passed_steps': passed_steps,
-            'failed_steps': failed_steps,
-            'duration': time.time() - start_time,
-            'steps': [r.model_dump() for r in step_results],
-        }
-        
-        await self.ws_client.send_result(
-            'u_page_step_result',  # 新增的结果类型
-            summary_result,
-            self._current_user
-        )
-        
-        logger.info("页面步骤执行完成")
+            logger.info("页面步骤执行完成")
+        finally:
+            # 异常路径也必须释放 base64 / 主动回收，避免 worker RSS 居高不下
+            if step_results is not None:
+                self._release_result_payloads(steps=step_results)
+            summary_result = None
+            await self._release_memory_after_task()
     
     async def execute_test_case(self, args: dict):
         """执行测试用例"""
@@ -426,36 +503,62 @@ class TaskConsumer:
 
         # 执行
         logger.info(f"开始执行用例: {config.case_name}")
-        result = await self.executor.execute_test_case(config)
+        result = None
+        result_data = None
+        try:
+            try:
+                await self._materialize_test_case_uploads(config, project_id)
+            except Exception as e:
+                logger.error(f'准备上传文件失败: {e}', exc_info=True)
+                await self.ws_client.send_result(
+                    UiSocketEnum.CASE_RESULT,
+                    {
+                        'case_id': case_id,
+                        'status': 'failed',
+                        'message': f'准备上传文件失败: {e}',
+                        'batch_id': batch_id,
+                        'executor_id': executor_id,
+                        'executor_name': executor_name,
+                    },
+                    self._current_user,
+                )
+                return
+            result = await self.executor.execute_test_case(config)
 
-        # 上传截图并替换路径
-        result = await self._process_result_screenshots(result)
+            # 上传截图并替换路径
+            result = await self._process_result_screenshots(result)
 
-        # 上传 Trace 文件并替换路径
-        if result.trace_path:
-            server_trace_path = await self._upload_trace_file(result.trace_path)
-            if server_trace_path:
-                result.trace_path = server_trace_path
-            else:
-                result.trace_path = None  # 上传失败则清空
+            # 上传 Trace 文件并替换路径
+            if result.trace_path:
+                server_trace_path = await self._upload_trace_file(result.trace_path)
+                if server_trace_path:
+                    result.trace_path = server_trace_path
+                else:
+                    result.trace_path = None  # 上传失败则清空
 
-        # 发送用例结果（包含 batch_id 和执行人信息）
-        result_data = result.model_dump()
-        if batch_id:
-            result_data['batch_id'] = batch_id
-        # 添加执行人信息
-        if executor_id:
-            result_data['executor_id'] = executor_id
-        if executor_name:
-            result_data['executor_name'] = executor_name
-            
-        await self.ws_client.send_result(
-            UiSocketEnum.CASE_RESULT,
-            result_data,
-            self._current_user
-        )
+            # 发送用例结果（包含 batch_id 和执行人信息）
+            result_data = result.model_dump()
+            if batch_id:
+                result_data['batch_id'] = batch_id
+            # 添加执行人信息
+            if executor_id:
+                result_data['executor_id'] = executor_id
+            if executor_name:
+                result_data['executor_name'] = executor_name
+                
+            await self.ws_client.send_result(
+                UiSocketEnum.CASE_RESULT,
+                result_data,
+                self._current_user
+            )
 
-        logger.info(f"用例执行完成: {result.status}")
+            logger.info(f"用例执行完成: {result.status}")
+        finally:
+            # 结果已发送（或中途失败）：释放截图 base64 等大对象并回收内存
+            if result is not None:
+                self._release_result_payloads(result)
+            result_data = None
+            await self._release_memory_after_task()
     
     async def execute_batch(self, args: dict):
         """批量执行用例（支持并发）"""
@@ -499,6 +602,23 @@ class TaskConsumer:
 
             # 构建配置
             config = self._build_test_case_config(case_data, env_config, data_processor)
+            try:
+                await self._materialize_test_case_uploads(config, project_id)
+            except Exception as e:
+                logger.error(f'batch prepare upload failed case_id={case_id}: {e}', exc_info=True)
+                await self.ws_client.send_result(
+                    UiSocketEnum.CASE_RESULT,
+                    {
+                        'case_id': case_id,
+                        'status': 'failed',
+                        'message': f'prepare upload file failed: {e}',
+                        'batch_id': batch_id,
+                        'executor_id': executor_id,
+                        'executor_name': executor_name,
+                    },
+                    self._current_user,
+                )
+                continue
             configs.append(config)
             config_batch_map[config.case_id] = batch_id
 
@@ -508,38 +628,43 @@ class TaskConsumer:
 
         # 定义结果回调 - 每个用例完成后立即发送结果
         async def on_result(result):
-            # 上传截图
-            result = await self._process_result_screenshots(result)
+            try:
+                # 上传截图
+                result = await self._process_result_screenshots(result)
 
-            # 上传 Trace
-            if result.trace_path:
-                server_trace_path = await self._upload_trace_file(result.trace_path)
-                result.trace_path = server_trace_path if server_trace_path else None
+                # 上传 Trace
+                if result.trace_path:
+                    server_trace_path = await self._upload_trace_file(result.trace_path)
+                    result.trace_path = server_trace_path if server_trace_path else None
 
-            # 发送结果
-            result_data = result.model_dump()
-            if batch_id:
-                result_data['batch_id'] = batch_id
-            # 添加执行人信息
-            if executor_id:
-                result_data['executor_id'] = executor_id
-            if executor_name:
-                result_data['executor_name'] = executor_name
-            await self.ws_client.send_result(
-                UiSocketEnum.CASE_RESULT,
-                result_data,
-                self._current_user
-            )
-            logger.info(f"用例 {result.case_id} 执行完成: {result.status}")
+                # 发送结果
+                result_data = result.model_dump()
+                if batch_id:
+                    result_data['batch_id'] = batch_id
+                # 添加执行人信息
+                if executor_id:
+                    result_data['executor_id'] = executor_id
+                if executor_name:
+                    result_data['executor_name'] = executor_name
+                await self.ws_client.send_result(
+                    UiSocketEnum.CASE_RESULT,
+                    result_data,
+                    self._current_user
+                )
+                logger.info(f"用例 {result.case_id} 执行完成: {result.status}")
+            finally:
+                self._release_result_payloads(result)
 
         # 并发执行
-        await self.executor.execute_batch_concurrent(
-            configs,
-            max_concurrent=max_concurrent,
-            on_result=on_result
-        )
-
-        logger.info("批量执行完成")
+        try:
+            await self.executor.execute_batch_concurrent(
+                configs,
+                max_concurrent=max_concurrent,
+                on_result=on_result
+            )
+            logger.info("批量执行完成")
+        finally:
+            await self._release_memory_after_task()
     
     async def stop_execution(self, args: dict):
         """停止执行"""
@@ -553,6 +678,357 @@ class TaskConsumer:
             except asyncio.QueueEmpty:
                 break
     
+
+    def _upload_cache_dir(self) -> Path:
+        raw = getattr(self.config, 'upload_cache_dir', './data/runtime_uploads') if self.config else './data/runtime_uploads'
+        path = Path(raw)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def _parse_file_id(value: Any) -> Optional[int]:
+        if value is None or value == '':
+            return None
+        if isinstance(value, int):
+            return value
+        text = str(value).strip()
+        if text.startswith('file_id:'):
+            text = text.split(':', 1)[1].strip()
+        try:
+            return int(text)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_filename(name: Optional[str], file_id: Optional[int] = None) -> str:
+        base = Path(name or '').name.strip() if name else ''
+        if not base:
+            base = f'file_{file_id}' if file_id is not None else 'upload.bin'
+        # Keep the original extension; scrub path separators / control chars only.
+        base = re.sub(r'[\\/\x00-\x1f]', '_', base)
+        return base or 'upload.bin'
+
+
+    # Upload runtime cache: invalidate by sha256 / size / TTL (seconds).
+    UPLOAD_CACHE_TTL_SECONDS = int(os.environ.get('WHART_UPLOAD_CACHE_TTL', str(7 * 24 * 3600)))
+
+    def _upload_cache_path(self, file_id: int, file_name: Optional[str], sha256: Optional[str] = None) -> Path:
+        safe_name = self._safe_filename(file_name, file_id)
+        sha_part = (sha256 or 'na')[:16]
+        return self._upload_cache_dir() / f'{file_id}_{sha_part}_{safe_name}'
+
+    def _upload_cache_meta_path(self, local_path: Path) -> Path:
+        return local_path.with_suffix(local_path.suffix + '.meta.json')
+
+    def _is_upload_cache_valid(
+        self,
+        local_path: Path,
+        *,
+        expected_sha: Optional[str] = None,
+        expected_size: Optional[int] = None,
+    ) -> bool:
+        if not local_path.exists() or not local_path.is_file():
+            return False
+        try:
+            st = local_path.stat()
+        except OSError:
+            return False
+        if st.st_size <= 0:
+            return False
+        if expected_size is not None and int(expected_size) > 0 and st.st_size != int(expected_size):
+            logger.info('upload cache size mismatch path=%s local=%s expected=%s', local_path, st.st_size, expected_size)
+            return False
+        age = time.time() - st.st_mtime
+        if age > self.UPLOAD_CACHE_TTL_SECONDS:
+            logger.info('upload cache expired path=%s age=%ss', local_path, int(age))
+            return False
+        meta_path = self._upload_cache_meta_path(local_path)
+        meta_sha = None
+        if meta_path.exists():
+            try:
+                import json as _json
+                meta = _json.loads(meta_path.read_text(encoding='utf-8'))
+                meta_sha = meta.get('sha256') or None
+            except Exception:
+                meta_sha = None
+        if expected_sha:
+            if meta_sha and meta_sha.lower() != str(expected_sha).lower():
+                logger.info('upload cache sha mismatch path=%s', local_path)
+                return False
+            # If no meta, compute sha of cached file when expected_sha present.
+            if not meta_sha:
+                try:
+                    h = hashlib.sha256()
+                    with open(local_path, 'rb') as fh:
+                        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                            h.update(chunk)
+                    if h.hexdigest().lower() != str(expected_sha).lower():
+                        return False
+                except Exception:
+                    return False
+        return True
+
+    def _write_upload_cache_meta(self, local_path: Path, *, file_id: int, sha256: Optional[str], size: int) -> None:
+        try:
+            import json as _json
+            meta = {
+                'file_id': file_id,
+                'sha256': sha256 or '',
+                'size': size,
+                'saved_at': time.time(),
+            }
+            self._upload_cache_meta_path(local_path).write_text(
+                _json.dumps(meta, ensure_ascii=False),
+                encoding='utf-8',
+            )
+        except Exception as e:
+            logger.debug('write upload cache meta failed: %s', e)
+
+    def _prune_upload_cache(self) -> None:
+        """Remove expired runtime upload cache files (lazy, best-effort)."""
+        try:
+            cache_dir = self._upload_cache_dir()
+            now = time.time()
+            ttl = self.UPLOAD_CACHE_TTL_SECONDS
+            for p in cache_dir.iterdir():
+                try:
+                    if not p.is_file():
+                        continue
+                    if now - p.stat().st_mtime > ttl:
+                        p.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug('prune upload cache failed: %s', e)
+
+    async def _download_managed_file(
+        self,
+        *,
+        file_id: Optional[int],
+        project_id: Optional[int],
+        download_url: Optional[str] = None,
+        file_name: Optional[str] = None,
+        file_sha: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> str:
+        """Download a managed file to local cache and return the local path.
+
+        Security: never follow client-supplied absolute URLs. Always build a
+        same-origin relative path from file_id + project_id so case_data cannot
+        redirect the actuator JWT to arbitrary hosts (SSRF / token leak).
+        download_url is accepted only when it matches that expected path.
+        """
+        if not file_id or not project_id:
+            raise ValueError(
+                f'upload step missing file_id/project_id for remote download: '
+                f'file_id={file_id}, project_id={project_id}'
+            )
+
+        expected_path = f'/api/projects/{int(project_id)}/files/{int(file_id)}/download/'
+        if download_url:
+            candidate = str(download_url).strip()
+            api_base = self.api_base_url.rstrip('/')
+            allowed = {
+                expected_path,
+                f'{api_base}{expected_path}',
+            }
+            if candidate not in allowed and not (
+                candidate.startswith(api_base + '/') and candidate.rstrip('/').endswith(expected_path.rstrip('/'))
+            ):
+                logger.warning(
+                    'Ignoring untrusted download_url=%r; using %s',
+                    candidate,
+                    expected_path,
+                )
+        url_path = expected_path
+        url = f'{self.api_base_url.rstrip("/")}{url_path}'
+
+        self._prune_upload_cache()
+        local_path = self._upload_cache_path(int(file_id), file_name, file_sha)
+        if self._is_upload_cache_valid(local_path, expected_sha=file_sha, expected_size=file_size):
+            logger.info(f'using cached upload file: {local_path}')
+            return str(local_path)
+        # Drop stale cache for this file_id (any sha/name variant)
+        try:
+            for stale in self._upload_cache_dir().glob(f'{int(file_id)}_*'):
+                if stale == local_path:
+                    continue
+                try:
+                    if stale.is_file():
+                        stale.unlink(missing_ok=True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        token = await self._get_api_token()
+        if not token:
+            raise RuntimeError('failed to get API token for managed file download')
+
+        tmp_path = local_path.with_name(f'{local_path.name}.{uuid.uuid4().hex}.part')
+        headers = {'Authorization': f'Bearer {token}'}
+        logger.info(f'downloading managed file: {url} -> {local_path}')
+        response_sha = None
+
+        try:
+            # Do not follow redirects: a 3xx could send the JWT off-origin.
+            async with httpx.AsyncClient(timeout=120.0, follow_redirects=False) as client:
+                async with client.stream('GET', url, headers=headers) as response:
+                    response_sha = (
+                        response.headers.get('X-File-Sha256')
+                        or response.headers.get('x-file-sha256')
+                        or ''
+                    ).strip().strip('"') or None
+                    etag = (response.headers.get('ETag') or response.headers.get('etag') or '').strip().strip('"')
+                    if not response_sha and etag and len(etag) == 64:
+                        response_sha = etag
+                    if response.status_code == 401:
+                        self._api_token = None
+                        token = await self._get_api_token()
+                        if not token:
+                            raise RuntimeError('Token 刷新失败，无法下载上传文件')
+                        headers = {'Authorization': f'Bearer {token}'}
+                        async with client.stream('GET', url, headers=headers) as retry_response:
+                            if retry_response.status_code != 200:
+                                body = (await retry_response.aread())[:300]
+                                raise RuntimeError(
+                                    f'下载上传文件失败: HTTP {retry_response.status_code}, body={body!r}'
+                                )
+                            with open(tmp_path, 'wb') as fh:
+                                async for chunk in retry_response.aiter_bytes():
+                                    fh.write(chunk)
+                    elif response.status_code != 200:
+                        body = (await response.aread())[:300]
+                        raise RuntimeError(
+                            f'下载上传文件失败: HTTP {response.status_code}, body={body!r}'
+                        )
+                    else:
+                        with open(tmp_path, 'wb') as fh:
+                            async for chunk in response.aiter_bytes():
+                                fh.write(chunk)
+            if not tmp_path.exists() or tmp_path.stat().st_size <= 0:
+                raise RuntimeError(f'下载上传文件为空: {url}')
+            if local_path.exists() and local_path.is_file() and local_path.stat().st_size > 0:
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+                return str(local_path)
+            tmp_path.replace(local_path)
+            size_on_disk = local_path.stat().st_size
+            # Prefer server-declared sha; else compute when expected.
+            actual_sha = response_sha or file_sha
+            if file_sha or not actual_sha:
+                try:
+                    h = hashlib.sha256()
+                    with open(local_path, 'rb') as fh:
+                        for chunk in iter(lambda: fh.read(1024 * 1024), b''):
+                            h.update(chunk)
+                    dig = h.hexdigest()
+                    if file_sha and dig.lower() != str(file_sha).lower():
+                        try:
+                            local_path.unlink(missing_ok=True)
+                        except Exception:
+                            pass
+                        raise RuntimeError(
+                            f'upload file sha256 mismatch: expected={file_sha}, actual={dig}'
+                        )
+                    actual_sha = dig
+                except RuntimeError:
+                    raise
+                except Exception as e:
+                    logger.debug('sha verify skipped: %s', e)
+            self._write_upload_cache_meta(
+                local_path,
+                file_id=int(file_id),
+                sha256=actual_sha,
+                size=size_on_disk,
+            )
+            return str(local_path)
+        except Exception:
+            try:
+                if tmp_path.exists():
+                    tmp_path.unlink()
+            except Exception:
+                pass
+            raise
+
+    async def _ensure_local_upload_file(
+        self,
+        *,
+        file_path: str,
+        file_id: Optional[int] = None,
+        file_name: Optional[str] = None,
+        download_url: Optional[str] = None,
+        project_id: Optional[int] = None,
+        file_sha: Optional[str] = None,
+        file_size: Optional[int] = None,
+    ) -> str:
+        """Resolve a local path for Playwright upload, downloading when needed."""
+        candidates = []
+        if file_path:
+            mapped = resolve_runtime_file_path(str(file_path))
+            candidates.append(mapped)
+            if mapped != file_path:
+                candidates.append(str(file_path))
+
+        for candidate in candidates:
+            if candidate and os.path.isfile(candidate):
+                return candidate
+
+        # Backend may still return file_id:N when path resolve failed.
+        parsed_id = self._parse_file_id(file_path)
+        if parsed_id is not None:
+            file_id = file_id or parsed_id
+
+        if file_id and project_id:
+            return await self._download_managed_file(
+                file_id=file_id,
+                project_id=project_id,
+                download_url=download_url,
+                file_name=file_name,
+                file_sha=file_sha,
+                file_size=file_size,
+            )
+
+        if file_id and not project_id:
+            raise FileNotFoundError(
+                f'local upload file missing and project_id absent; refuse unsafe download file_id={file_id}'
+            )
+
+
+        tried = ', '.join(candidates) if candidates else '(empty)'
+        raise FileNotFoundError(
+            f'上传文件本地不存在且缺少 file_id/download_url，无法远程拉取。已尝试路径: {tried}'
+        )
+
+    async def _materialize_upload_files(self, steps: list[StepConfig], default_project_id: Optional[int] = None) -> None:
+        """Ensure every upload step points to a local file path Playwright can read."""
+        for step in steps:
+            if (step.operation_type or '').lower() != 'upload':
+                continue
+            project_id = step.upload_project_id or default_project_id
+            original = step.input_value
+            local_path = await self._ensure_local_upload_file(
+                file_path=step.input_value or '',
+                file_id=step.upload_file_id,
+                file_name=step.upload_file_name,
+                download_url=step.upload_download_url,
+                project_id=project_id,
+                file_sha=getattr(step, 'upload_file_sha', None),
+                file_size=getattr(step, 'upload_file_size', None),
+            )
+            if original != local_path:
+                logger.info(f'上传文件已就绪: step={step.step_id}, {original!r} -> {local_path!r}')
+            step.input_value = local_path
+
+    async def _materialize_page_step_uploads(self, config: PageStepConfig, project_id: Optional[int] = None) -> None:
+        await self._materialize_upload_files(config.steps, project_id)
+
+    async def _materialize_test_case_uploads(self, config: TestCaseConfig, project_id: Optional[int] = None) -> None:
+        for page_step in config.page_steps:
+            await self._materialize_upload_files(page_step.steps, project_id)
+
     async def _fetch_page_step(self, page_step_id: int) -> Optional[dict]:
         """从API获取页面步骤详情（含元素定位信息，用于执行）"""
         return await self._api_get(f"/api/ui-automation/page-steps/{page_step_id}/execute-data/")
@@ -737,13 +1213,7 @@ class TaskConsumer:
                     locator_value_3 = str(locator_value_3)
             else:
                 logger.warning(f"data_processor 为 None，跳过变量替换")
-
-            if operation_type.lower() == 'upload':
-                original_input = input_value
-                input_value = resolve_runtime_file_path(input_value)
-                if original_input != input_value:
-                    logger.info(f"上传文件路径映射: '{original_input}' -> '{input_value}'")
-
+            
             # iframe 定位器也可能包含变量
             is_iframe = detail.get('is_iframe', False)
             iframe_locator = detail.get('iframe_locator', '') or ''
@@ -762,7 +1232,29 @@ class TaskConsumer:
                     return int(value)
                 except (TypeError, ValueError):
                     return None
-            
+
+
+            upload_file_id = None
+            upload_file_name = None
+            upload_download_url = None
+            upload_project_id = None
+            if operation_type.lower() == 'upload' and isinstance(ope_value, dict):
+                upload_file_id = self._parse_file_id(ope_value.get('file_id') or ope_value.get('value'))
+                upload_file_name = ope_value.get('file_name') or ope_value.get('name') or ope_value.get('filename')
+                upload_download_url = ope_value.get('download_url') or ''
+                upload_project_id = self._parse_file_id(ope_value.get('project_id')) or (
+                    self._parse_file_id(data.get('project')) if isinstance(data, dict) else None
+                )
+                # sha/size used for remote cache invalidation (handled in StepConfig below)
+                # Prefer explicit file_path from backend runtime resolve when value is still file_id:N
+                preferred_path = ope_value.get('file_path') or ''
+                if preferred_path and (not input_value or str(input_value).startswith('file_id:')):
+                    input_value = preferred_path
+                original_input = input_value
+                input_value = resolve_runtime_file_path(input_value)
+                if original_input != input_value:
+                    logger.info(f"上传文件路径映射: '{original_input}' -> '{input_value}'")
+
             steps.append(StepConfig(
                 step_id=detail.get('id', 0),
                 operation_type=operation_type,  # 操作类型如 click, type
@@ -782,6 +1274,12 @@ class TaskConsumer:
                 locator_value_3=locator_value_3 or None,
                 locator_index_3=_parse_index(detail.get('locator_index_3')),
                 sql_execute=sql_execute,
+                upload_file_id=upload_file_id,
+                upload_file_name=upload_file_name,
+                upload_download_url=upload_download_url,
+                upload_project_id=upload_project_id,
+                upload_file_sha=(ope_value.get('sha256') or ope_value.get('file_sha') or None) if isinstance(ope_value, dict) else None,
+                upload_file_size=self._parse_file_id(ope_value.get('size')) if isinstance(ope_value, dict) else None,
             ))
         
         # 页面URL处理：支持相对路径与 base_url 拼接
@@ -843,7 +1341,19 @@ class TaskConsumer:
     def stop(self):
         """停止消费者"""
         self._stop_event.set()
-    
+        try:
+            self.executor.stop()
+        except Exception as e:
+            logger.warning(f'executor.stop failed: {e}')
+
+    async def close_executor(self) -> None:
+        """关闭浏览器与 Playwright 驱动。"""
+        try:
+            await self.executor.close()
+        except Exception as e:
+            logger.warning(f'关闭执行器失败: {e}')
+
+
     async def run(self):
         """运行消费者"""
         self.ws_client.set_message_handler(self.handle_message)

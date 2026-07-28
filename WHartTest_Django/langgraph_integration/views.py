@@ -13,7 +13,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from .models import LLMConfig, ChatSession, ChatMessage, TokenUsageRecord
 from .serializers import LLMConfigSerializer
 import logging
-from asgiref.sync import sync_to_async
+from asgiref.sync import async_to_sync, sync_to_async
 
 logger = logging.getLogger(__name__)
 _background_title_tasks = set()
@@ -1771,6 +1771,280 @@ class ChatAPIView(APIView):
             )
 
 
+def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
+    """
+    自愈同步：从 LangGraph Checkpointer 增量同步消息到 Django 的 ChatMessage 数据库表中。
+    """
+    from django.utils import timezone
+    from datetime import datetime
+    from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+    from langgraph_integration.models import ChatMessage
+    from wharttest_django.checkpointer import get_sync_checkpointer
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    try:
+        # 1. 尝试仅获取最新的 checkpoint（极其高效的 O(1) 单行查询，避免 list() 带来数秒的序列化/网络开销）
+        with get_sync_checkpointer() as memory:
+            latest_checkpoint_tuple = memory.get_tuple(
+                config={"configurable": {"thread_id": thread_id}}
+            )
+
+            if not latest_checkpoint_tuple:
+                logger.info(f"sync_chat_messages_from_checkpointer: No checkpoints found for thread_id: {thread_id}")
+                return
+
+            checkpoint_data = latest_checkpoint_tuple.checkpoint
+            if not (isinstance(checkpoint_data, dict) and "channel_values" in checkpoint_data):
+                return
+
+            channel_values = checkpoint_data["channel_values"]
+            if "messages" not in channel_values:
+                return
+
+            messages = channel_values["messages"]
+            checkpoint_msg_count = len(messages)
+
+            # 2. 获取数据库中已有的消息记录条数
+            db_count = ChatMessage.objects.filter(session=chat_session, user=user).count()
+
+            # 如果数据库里的消息条数和 checkpoint 里的完全一致，就不用做任何同步，达到真正的 O(1) 毫秒级性能！
+            if db_count == checkpoint_msg_count:
+                logger.debug(f"sync_chat_messages_from_checkpointer: Database count matches checkpoint count ({db_count}). Skipping sync.")
+                return
+
+            logger.info(f"sync_chat_messages_from_checkpointer: Sync required. DB count: {db_count}, Checkpoint count: {checkpoint_msg_count}")
+
+            # 3. 得到所有已存在消息的 message_id 集合，避免重复插入
+            existing_ids = set(
+                ChatMessage.objects.filter(session=chat_session, user=user).values_list("message_id", flat=True)
+            )
+
+            # 4. 只有在真正需要同步时，才通过 memory.list() 获取所有 checkpoint 来构建消息的时间戳
+            checkpoint_generator = memory.list(
+                config={"configurable": {"thread_id": thread_id}}
+            )
+            checkpoint_tuples_list = list(checkpoint_generator)
+
+            message_timestamps = {}
+            processed_message_count = 0
+            for checkpoint_tuple in reversed(checkpoint_tuples_list):
+                if checkpoint_tuple and hasattr(checkpoint_tuple, "checkpoint"):
+                    cp_data = checkpoint_tuple.checkpoint
+                    if cp_data and "channel_values" in cp_data and "messages" in cp_data["channel_values"]:
+                        cp_messages = cp_data["channel_values"]["messages"]
+                        cur_count = len(cp_messages)
+                        if cur_count > processed_message_count:
+                            checkpoint_timestamp = cp_data.get("ts")
+                            if checkpoint_timestamp:
+                                for idx in range(processed_message_count, cur_count):
+                                    message_timestamps[idx] = checkpoint_timestamp
+                            processed_message_count = cur_count
+
+            # 5. 遍历最新 checkpoint 中的消息，增量序列化并存储
+            tool_calls_by_id = {}
+            messages_to_create = []
+
+            # 首先提取所有 AI 消息里的 tool_calls 方便后面工具消息关联 tool_input 和 tool_name
+            for msg in messages:
+                if isinstance(msg, AIMessage):
+                    tool_calls = getattr(msg, "tool_calls", None) or []
+                    for tool_call in tool_calls:
+                        if isinstance(tool_call, dict):
+                            c_id = tool_call.get("id")
+                            c_args = tool_call.get("args", tool_call.get("arguments", {}))
+                            c_name = tool_call.get("name", "unknown")
+                        else:
+                            c_id = getattr(tool_call, "id", None)
+                            c_args = getattr(tool_call, "args", getattr(tool_call, "arguments", {}))
+                            c_name = getattr(tool_call, "name", "unknown")
+                        if c_id is not None:
+                            tool_calls_by_id[str(c_id)] = {
+                                "tool_input": c_args,
+                                "tool_name": c_name,
+                            }
+
+            for idx, msg in enumerate(messages):
+                msg_id = getattr(msg, "id", f"msg_{idx}")
+                if not msg_id:
+                    msg_id = f"msg_{idx}"
+
+                # 增量插入：如果该消息已经在数据库，则跳过
+                if str(msg_id) in existing_ids:
+                    continue
+
+                role = "unknown"
+                content = ""
+                images = []
+                image = None
+                metadata = {}
+
+                if isinstance(msg, SystemMessage):
+                    role = "system"
+                    content = msg.content if hasattr(msg, "content") else str(msg)
+                elif isinstance(msg, HumanMessage):
+                    role = "human"
+                    raw_content = msg.content if hasattr(msg, "content") else str(msg)
+                    if isinstance(raw_content, list):
+                        text_parts = []
+                        image_urls = []
+                        for item in raw_content:
+                            if isinstance(item, dict):
+                                if item.get("type") == "text":
+                                    text_parts.append(item.get("text", ""))
+                                elif item.get("type") == "image_url":
+                                    image_url = item.get("image_url", {})
+                                    if isinstance(image_url, dict):
+                                        url = image_url.get("url", "")
+                                        if url and url.startswith("data:image/"):
+                                            image_urls.append(url)
+                        content = "".join(text_parts) if text_parts else "[包含图片的消息]"
+                        
+                        has_requirement_doc_images = isinstance(content, str) and (
+                            "docimg://" in content or "/api/requirements/documents/" in content
+                        )
+                        if image_urls and not has_requirement_doc_images:
+                            images = image_urls
+                            if len(image_urls) == 1:
+                                image = image_urls[0]
+                    else:
+                        content = raw_content
+                elif isinstance(msg, AIMessage):
+                    role = "ai"
+                    raw_content = msg.content if hasattr(msg, "content") else str(msg)
+                    if isinstance(raw_content, list):
+                        text_parts = [
+                            item.get("text", "")
+                            for item in raw_content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        ]
+                        content = " ".join(text_parts) if text_parts else ""
+                    else:
+                        content = raw_content
+
+
+
+                    # 提取元数据
+                    if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+                        agent_info = msg.additional_kwargs.get("agent")
+                        agent_type = msg.additional_kwargs.get("agent_type")
+                        
+                        # 新版格式存储在 metadata 字典中
+                        meta = msg.additional_kwargs.get("metadata", {})
+                        if meta:
+                            agent_info = agent_info or meta.get("agent")
+                            agent_type = agent_type or meta.get("agent_type")
+                            step = meta.get("step")
+                            max_steps = meta.get("max_steps")
+                            sse_event_type = meta.get("sse_event_type")
+                            
+                            if step is not None:
+                                metadata["step"] = step
+                            if max_steps is not None:
+                                metadata["max_steps"] = max_steps
+                            if sse_event_type is not None:
+                                metadata["sse_event_type"] = sse_event_type
+                            if meta.get("is_thinking_process"):
+                                metadata["is_thinking_process"] = True
+
+                        if agent_info:
+                            metadata["agent"] = agent_info
+                        if agent_type:
+                            metadata["agent_type"] = agent_type
+
+                        # 还可以同步使用量信息 usage_metadata
+                        if hasattr(msg, "usage_metadata") and msg.usage_metadata:
+                            metadata["usage_metadata"] = msg.usage_metadata
+                elif isinstance(msg, ToolMessage):
+                    role = "tool"
+                    content = msg.content if hasattr(msg, "content") else str(msg)
+                    tool_call_id = getattr(msg, "tool_call_id", None)
+                    tool_name = getattr(msg, "name", None) or getattr(msg, "tool_name", None)
+
+                    if tool_call_id is not None:
+                        metadata["tool_call_id"] = tool_call_id
+                        tool_call_meta = tool_calls_by_id.get(str(tool_call_id), {})
+                        tool_input = tool_call_meta.get("tool_input")
+                        tool_name = tool_name or tool_call_meta.get("tool_name")
+                        if tool_input is not None:
+                            metadata["tool_input"] = tool_input
+
+                    if tool_name is not None:
+                        metadata["tool_name"] = tool_name
+
+                    if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+                        meta = msg.additional_kwargs.get("metadata", {})
+                        if meta:
+                            step = meta.get("step")
+                            sse_event_type = meta.get("sse_event_type")
+                            if step is not None:
+                                metadata["step"] = step
+                            if sse_event_type is not None:
+                                metadata["sse_event_type"] = sse_event_type
+                else:
+                    content = msg.content if hasattr(msg, "content") else str(msg)
+                    if content.strip().startswith("[") or content.strip().startswith("{"):
+                        role = "tool"
+                    else:
+                        role = "unknown"
+
+                # 时间戳解析
+                msg_time = timezone.now()
+                checkpoint_ts = message_timestamps.get(idx)
+                if checkpoint_ts:
+                    try:
+                        msg_time = datetime.fromisoformat(checkpoint_ts.replace("Z", "+00:00"))
+                    except Exception as e:
+                        logger.warning(f"sync_chat_messages_from_checkpointer: Failed to parse timestamp {checkpoint_ts}: {e}")
+
+                # 创建模型对象并加入批量列表
+                messages_to_create.append(
+                    ChatMessage(
+                        session=chat_session,
+                        user=user,
+                        message_id=str(msg_id),
+                        role=role,
+                        content=content,
+                        images=images,
+                        image=image,
+                        metadata=metadata,
+                        created_at=msg_time
+                    )
+                )
+
+            if messages_to_create:
+                ChatMessage.objects.bulk_create(messages_to_create)
+                logger.info(f"sync_chat_messages_from_checkpointer: Successfully bulk-created {len(messages_to_create)} ChatMessage records.")
+
+    except Exception as e:
+        logger.error(f"sync_chat_messages_from_checkpointer: Error syncing chat messages: {e}", exc_info=True)
+
+
+
+def _cleanup_mcp_session_for_chat(user_id, project_id, session_id):
+    """Best-effort close of session-scoped MCP/browser resources for a chat session."""
+    try:
+        from mcp_tools.persistent_client import mcp_session_manager
+
+        async_to_sync(mcp_session_manager.cleanup_user_session)(
+            user_id=str(user_id),
+            project_id=str(project_id),
+            session_id=str(session_id),
+        )
+        logger.info(
+            "Released MCP session resources for chat session_id=%s project_id=%s",
+            session_id,
+            project_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "MCP session cleanup failed for chat session_id=%s project_id=%s: %s",
+            session_id,
+            project_id,
+            e,
+        )
+
 class ChatHistoryAPIView(APIView):
     """
     根据 session_id 获取聊天历史的 API 端点。
@@ -2322,6 +2596,9 @@ class ChatHistoryAPIView(APIView):
         thread_id_parts = [str(request.user.id), str(project_id), str(session_id)]
         thread_id = "_".join(thread_id_parts)
 
+        # Always release browser/MCP resources even if history storage is empty.
+        _cleanup_mcp_session_for_chat(request.user.id, project_id, session_id)
+
         if not check_history_exists():
             return Response(
                 {
@@ -2563,6 +2840,10 @@ class ChatBatchDeleteAPIView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+
+        # Release MCP/browser resources for each chat session first.
+        for session_id in session_ids:
+            _cleanup_mcp_session_for_chat(request.user.id, project_id, session_id)
 
         if not check_history_exists():
             return Response(

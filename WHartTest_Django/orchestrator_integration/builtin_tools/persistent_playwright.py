@@ -378,10 +378,12 @@ class _PlaywrightNodeProcess:
 
     def terminate(self, graceful: bool = True) -> None:
         if self._proc is None:
+            self._join_io_threads()
             return
 
         if self._proc.poll() is not None:
             self._proc = None
+            self._join_io_threads()
             return
 
         if graceful:
@@ -408,7 +410,24 @@ class _PlaywrightNodeProcess:
                 pass
 
         self._proc = None
-        logger.info(f"[persistent_playwright] Node.js 进程已终止: {self.skill_dir}")
+        self._join_io_threads()
+        # Drop pending responses so large payloads can be GC'ed promptly.
+        with self._pending_lock:
+            self._pending.clear()
+        self._stderr_tail.clear()
+        logger.info(f"[persistent_playwright] Node.js process terminated: {self.skill_dir}")
+
+    def _join_io_threads(self) -> None:
+        for th in (self._stdout_thread, self._stderr_thread):
+            if th is None:
+                continue
+            try:
+                if th.is_alive():
+                    th.join(timeout=2)
+            except Exception:
+                pass
+        self._stdout_thread = None
+        self._stderr_thread = None
 
     def _format_response_error(self, resp: Dict[str, Any]) -> str:
         pieces: List[str] = []

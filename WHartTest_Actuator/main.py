@@ -435,6 +435,8 @@ async def main():
     except Exception as e:
         logger.error(f"执行器异常: {e}", exc_info=True)
     finally:
+        # close_executor already logs failures internally
+        await consumer.close_executor()
         await ws_client.disconnect()
         logger.info("执行器已停止")
 

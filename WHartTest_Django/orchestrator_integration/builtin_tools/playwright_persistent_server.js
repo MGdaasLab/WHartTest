@@ -95,11 +95,55 @@ function createCapturedConsole() {
   };
 }
 
-async function safeClose(target) {
-  if (!target) return;
+async function safeClose(target, timeoutMs = 5000) {
+  /**
+   * Close a Playwright handle with a hard timeout.
+   * Returns true if close finished within timeout, false on timeout/error/null.
+   * Attach .catch immediately so a late close() rejection cannot become an
+   * unhandledRejection after Promise.race already settled on timeout.
+   */
+  if (!target) return true;
+  let timer;
+  let timedOut = false;
+  const closePromise = Promise.resolve()
+    .then(() => target.close())
+    .catch(() => undefined);
   try {
-    await target.close();
-  } catch (_) {}
+    await Promise.race([
+      closePromise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          reject(new Error('close timeout'));
+        }, timeoutMs);
+      }),
+    ]);
+    return !timedOut;
+  } catch (_) {
+    return false;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function forceKillBrowserProcess(browser) {
+  // Last resort when browser.close() hangs: kill the Chromium child process.
+  try {
+    const proc = typeof browser?.process === 'function' ? browser.process() : null;
+    if (!proc || proc.killed) return false;
+    serverLog('[forceKillBrowserProcess] killing pid=', proc.pid);
+    try {
+      proc.kill('SIGKILL');
+    } catch (_) {
+      try {
+        proc.kill();
+      } catch (__) {}
+    }
+    return true;
+  } catch (e) {
+    serverLog('[forceKillBrowserProcess]', e?.message || String(e));
+    return false;
+  }
 }
 
 async function main() {
@@ -170,14 +214,78 @@ async function main() {
     };
   }
 
+  async function resetBrowserState() {
+    // Drop refs first so concurrent ensureBrowserContextPage cannot reuse them.
+    // Close browser first (covers pages/contexts). Sequential page->context->browser
+    // left orphans when page.close() hung past timeout and browser never closed.
+    const page = state.page;
+    const context = state.context;
+    const browser = state.browser;
+    state.page = null;
+    state.context = null;
+    state.browser = null;
+
+    serverLog('[resetBrowserState] closing browser (then context/page fallback)');
+    if (browser) {
+      const ok = await safeClose(browser, 8000);
+      if (!ok) {
+        serverLog('[resetBrowserState] browser.close timed out; force-killing process');
+        forceKillBrowserProcess(browser);
+      }
+    } else {
+      // No browser handle (e.g. only context from launchPersistentContext path).
+      await Promise.all([safeClose(page, 3000), safeClose(context, 5000)]);
+    }
+    serverLog('[resetBrowserState] done');
+  }
+
+  async function pruneUntrackedResources() {
+    // User code may open extra pages/contexts that are not assigned back to state.
+    try {
+      if (!state.browser || (typeof state.browser.isConnected === 'function' && !state.browser.isConnected())) {
+        return;
+      }
+      const contexts =
+        typeof state.browser.contexts === 'function' ? state.browser.contexts() : [];
+      const contextTasks = (contexts || []).map(async (ctx) => {
+        try {
+          if (state.context && ctx === state.context) {
+            const pages = typeof ctx.pages === 'function' ? ctx.pages() : [];
+            const pageTasks = [];
+            for (const p of pages || []) {
+              if (state.page && p === state.page) {
+                continue;
+              }
+              pageTasks.push(safeClose(p));
+            }
+            await Promise.all(pageTasks);
+            return;
+          }
+          await safeClose(ctx);
+        } catch (e) {
+          serverLog('[pruneUntrackedResources]', e?.stack || e?.message || String(e));
+        }
+      });
+      await Promise.all(contextTasks);
+    } catch (e) {
+      serverLog('[pruneUntrackedResources]', e?.stack || e?.message || String(e));
+    }
+  }
+
   async function ensureBrowserContextPage() {
     await loadDeps();
 
-    if (!state.browser || (typeof state.browser.isConnected === 'function' && !state.browser.isConnected())) {
+    const browserMissing = !state.browser;
+    const browserDisconnected =
+      !!state.browser &&
+      typeof state.browser.isConnected === 'function' &&
+      !state.browser.isConnected();
+
+    if (browserMissing || browserDisconnected) {
+      // Close old handles before launching again to avoid orphan Chromium processes.
+      await resetBrowserState();
       const browserType = (process.env.PW_BROWSER_TYPE || 'chromium').toLowerCase();
       state.browser = await helpers.launchBrowser(browserType);
-      state.context = null;
-      state.page = null;
     }
 
     if (!state.context) {
@@ -306,12 +414,7 @@ state.page = page;
         }
 
         if (method === 'close') {
-          await safeClose(state.page);
-          state.page = null;
-          await safeClose(state.context);
-          state.context = null;
-          await safeClose(state.browser);
-          state.browser = null;
+          await resetBrowserState();
           send({ id, ok: true });
           setTimeout(() => process.exit(0), 10);
           return;
@@ -332,6 +435,7 @@ state.page = page;
           }
 
           const result = await runUserCode(code);
+          await pruneUntrackedResources();
           const pageUrl = state.page && typeof state.page.url === 'function' ? state.page.url() : null;
           send({
             id,

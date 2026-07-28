@@ -202,6 +202,7 @@ class Skill(models.Model):
         zip_file,
         project: Project,
         creator: User,
+        api_key: str | None = None,
     ) -> list['Skill']:
         """
         从上传的 zip 文件创建一个或多个 Skill
@@ -210,6 +211,7 @@ class Skill(models.Model):
             zip_file: 上传的 zip 文件对象
             project: 所属项目
             creator: 创建者
+            api_key: 内部平台 Skill 安装时用户确认的 API Key
 
         Returns:
             成功导入的 Skill 列表
@@ -233,7 +235,9 @@ class Skill(models.Model):
 
             for skill_dir in skill_dirs:
                 try:
-                    skill = cls._create_skill_from_dir(skill_dir, project, creator)
+                    skill = cls._create_skill_from_dir(
+                        skill_dir, project, creator, api_key=api_key
+                    )
                     created_skills.append(skill)
                 except ValidationError as e:
                     msg = e.messages[0] if hasattr(e, 'messages') and e.messages else str(e)
@@ -304,9 +308,11 @@ class Skill(models.Model):
         skill_root: str,
         project: Project,
         creator: User,
+        api_key: str | None = None,
     ) -> 'Skill':
         """从包含 SKILL.md 的目录创建单个 Skill 实例（含文件落盘）"""
         from django.conf import settings
+        from .platform_skills import inject_api_key_into_skill_dir, is_internal_platform_skill
 
         skill_md_path = os.path.join(skill_root, 'SKILL.md')
         try:
@@ -319,6 +325,21 @@ class Skill(models.Model):
 
         if cls.objects.filter(project=project, name=parsed['name']).exists():
             raise ValidationError(f"项目中已存在名为 '{parsed['name']}' 的 Skill")
+
+        # 内部平台 Skill 必须使用用户确认的 API Key 再落盘
+        if is_internal_platform_skill(parsed['name']):
+            if not (api_key or '').strip():
+                raise ValidationError(
+                    f"安装内部 Skill '{parsed['name']}' 需要确认 API Key，请选择或创建后重试"
+                )
+            try:
+                inject_api_key_into_skill_dir(
+                    skill_dir=skill_root,
+                    skill_name=parsed['name'],
+                    api_key=api_key.strip(),
+                )
+            except ValueError as e:
+                raise ValidationError(str(e)) from e
 
         full_storage_path = None
         try:
@@ -409,6 +430,7 @@ class Skill(models.Model):
         project: Project,
         creator: User,
         expected_sha256: str | None = None,
+        api_key: str | None = None,
     ) -> list['Skill']:
         """
         从远程 HTTPS URL 下载 zip 包并导入 Skills（用于 Skill 商店）
@@ -418,6 +440,7 @@ class Skill(models.Model):
             project: 所属项目
             creator: 创建者
             expected_sha256: 可选 SHA256 校验和（小写 16 进制 64 位字符）
+            api_key: 内部平台 Skill 安装时用户确认的 API Key
 
         Returns:
             成功导入的 Skill 列表
@@ -481,7 +504,7 @@ class Skill(models.Model):
 
             buf.seek(0)
             # 复用现有 create_from_zip 解压与建表逻辑，避免逻辑重复。
-            return cls.create_from_zip(buf, project, creator)
+            return cls.create_from_zip(buf, project, creator, api_key=api_key)
         finally:
             buf.close()
 
@@ -491,7 +514,8 @@ class Skill(models.Model):
         git_url: str,
         project: Project,
         creator: User,
-        branch: str = 'main'
+        branch: str = 'main',
+        api_key: str | None = None,
     ) -> list['Skill']:
         """
         从公开 Git 仓库导入 Skills（支持仓库包含多个 Skill）
@@ -514,7 +538,9 @@ class Skill(models.Model):
 
             for skill_dir in skill_dirs:
                 try:
-                    skill = cls._create_skill_from_dir(skill_dir, project, creator)
+                    skill = cls._create_skill_from_dir(
+                        skill_dir, project, creator, api_key=api_key
+                    )
                     created_skills.append(skill)
                 except ValidationError as e:
                     msg = e.messages[0] if hasattr(e, 'messages') and e.messages else str(e)

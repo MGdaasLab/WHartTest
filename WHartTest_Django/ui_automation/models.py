@@ -471,10 +471,9 @@ class UiEnvironmentConfig(models.Model):
     timeout = models.IntegerField(_('默认超时（毫秒）'), default=30000)
     db_c_status = models.BooleanField(_('数据库新增状态'), default=False)
     db_rud_status = models.BooleanField(_('数据库查改删状态'), default=False)
-    DB_TYPE_CHOICES = [('mysql', 'MySQL'), ('db2', 'DB2')]
+    DB_TYPE_CHOICES = [('mysql', 'MySQL')]
     db_type = models.CharField(_('数据库类型'), max_length=20, choices=DB_TYPE_CHOICES, default='mysql')
     mysql_config = models.JSONField(_('MySQL配置'), null=True, blank=True)
-    db2_config = models.JSONField(_('DB2配置'), null=True, blank=True)
     extra_config = models.JSONField(_('额外配置'), null=True, blank=True)
     is_default = models.BooleanField(_('是否默认'), default=False)
     creator = models.ForeignKey(

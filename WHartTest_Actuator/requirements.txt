@@ -6,7 +6,6 @@ tomli>=2.0  # TOML配置文件解析 (Python < 3.11)
 tomli_w>=1.0  # TOML配置文件写入
 playwright>=1.40.0  # Python原生Playwright
 pymysql>=1.1.0  # UI SQL步骤执行 MySQL
-ibm_db>=3.2.0  # UI SQL步骤执行 DB2
 
 # GUI 模式依赖 (设置 use_gui = true 时需要)
 customtkinter>=5.2.2

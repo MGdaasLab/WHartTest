@@ -358,9 +358,8 @@ export interface UiEnvironmentConfig extends TimeStampFields {
   timeout: number
   db_c_status: boolean
   db_rud_status: boolean
-  db_type: 'mysql' | 'db2'
+  db_type: 'mysql'
   mysql_config?: Record<string, unknown>
-  db2_config?: Record<string, unknown>
   extra_config?: Record<string, unknown>
   is_default: boolean
   creator: number | null

@@ -24,21 +24,38 @@ try:
 except ImportError:
     pass
 
-# 配置
-BASE_URL = "http://127.0.0.1:8000"
-API_KEY = "wharttest-default-mcp-key-2025"
-HEADERS = {
-    "accept": "application/json",
-    "Content-Type": "application/json",
-    "X-API-Key": API_KEY
-}
+# 配置（运行时读取环境变量，避免 import 时固化）
+_DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+_DEFAULT_API_KEY = "wharttest-default-mcp-key-2025"
+
+
+def _base_url() -> str:
+    return (os.environ.get("WHARTTEST_BACKEND_URL") or _DEFAULT_BASE_URL).rstrip("/")
+
+
+def _api_key() -> str:
+    return (os.environ.get("WHARTTEST_API_KEY") or _DEFAULT_API_KEY).strip()
+
+
+def _headers() -> dict:
+    return {
+        "accept": "application/json",
+        "Content-Type": "application/json",
+        "X-API-Key": _api_key(),
+    }
+
+
+# 兼容旧引用
+BASE_URL = _base_url()
+API_KEY = _api_key()
+HEADERS = _headers()
 
 
 def _request(method: str, endpoint: str, data: dict = None, params: dict = None):
     """统一请求封装"""
-    url = f"{BASE_URL}/api/ui-automation/{endpoint}"
+    url = f"{_base_url()}/api/ui-automation/{endpoint}"
     try:
-        resp = requests.request(method, url, headers=HEADERS, json=data, params=params)
+        resp = requests.request(method, url, headers=_headers(), json=data, params=params)
         resp.raise_for_status()
         return resp.json()
     except requests.exceptions.HTTPError as e:
@@ -54,8 +71,8 @@ def _request(method: str, endpoint: str, data: dict = None, params: dict = None)
 def get_current_user():
     """获取当前API Key对应的用户信息"""
     try:
-        url = f"{BASE_URL}/api/accounts/me/"
-        resp = requests.get(url, headers=HEADERS)
+        url = f"{_base_url()}/api/accounts/me/"
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         data = resp.json()
         print(f"获取当前用户信息成功，原始数据: {data}")
@@ -91,8 +108,8 @@ def get_user_by_api_key():
     """通过API Key获取用户信息"""
     try:
         # 尝试获取API Key列表，第一个应该属于当前用户
-        url = f"{BASE_URL}/api/api-keys/"
-        resp = requests.get(url, headers=HEADERS)
+        url = f"{_base_url()}/api/api-keys/"
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         data = resp.json()
         
@@ -679,7 +696,7 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
     import time
     
     # WebSocket 地址
-    ws_url = BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
+    ws_url = _base_url().replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
     
     result = {"status": "pending", "message": "任务已发送"}
     execution_done = threading.Event()
@@ -798,7 +815,7 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
     
     import time
     
-    ws_url = BASE_URL.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
+    ws_url = _base_url().replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
     result = {"status": "sent", "message": "执行命令已发送"}
     
     def on_open(ws):

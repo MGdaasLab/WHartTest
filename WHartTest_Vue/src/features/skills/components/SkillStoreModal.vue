@@ -198,6 +198,13 @@
       @sources-updated="onSourcesUpdated"
     />
   </a-modal>
+
+  <SkillApiKeyConfirmModal
+    :visible="showApiKeyConfirm"
+    :skill-names="pendingInternalSkillNames"
+    @confirmed="onApiKeyConfirmedForInstall"
+    @update:visible="onApiKeyModalVisible"
+  />
 </template>
 
 <script setup lang="ts">
@@ -206,6 +213,7 @@ import { Message, Modal } from '@arco-design/web-vue'
 import { SkillService } from '../services/skillService'
 import { SkillStoreService, SKILL_STORE_DEFAULT_SOURCE_ID } from '../services/skillStoreService'
 import SkillStoreSourceManager from './SkillStoreSourceManager.vue'
+import SkillApiKeyConfirmModal from './SkillApiKeyConfirmModal.vue'
 import type {
   SkillListItem,
   SkillStoreConfig,
@@ -215,6 +223,7 @@ import type {
   StoreItemState,
 } from '../types'
 import { useAppI18n } from '@/composables/useAppI18n'
+import { isInternalPlatformSkill } from '../utils/internalSkills'
 
 const props = defineProps<{
   visible: boolean
@@ -488,11 +497,11 @@ async function openReadme(item: ManifestSkill) {
   }
 }
 
-async function handleBatchInstall() {
-  if (batchRunning.value) return
-  const targets = manifestStates.value.filter(s => s.selected && !s.installed)
-  if (targets.length === 0) return
+const showApiKeyConfirm = ref(false)
+const pendingInternalSkillNames = ref<string[]>([])
+const pendingInstallTargets = ref<StoreItemState[]>([])
 
+async function runBatchInstall(targets: StoreItemState[], apiKey?: string) {
   batchRunning.value = true
   batchTotal.value = targets.length
   batchProcessed.value = 0
@@ -505,7 +514,13 @@ async function handleBatchInstall() {
     try {
       const baseUrl = activeSource.value!.baseUrl
       const zipUrl = SkillStoreService.resolveZipUrl(baseUrl, state.item.zip_path)
-      const skills = await SkillService.importFromZipUrl(props.projectId, zipUrl, state.item.sha256)
+      const needKey = isInternalPlatformSkill(state.item.name)
+      const skills = await SkillService.importFromZipUrl(
+        props.projectId,
+        zipUrl,
+        state.item.sha256,
+        needKey ? apiKey : undefined
+      )
       state.status = 'ok'
       state.installed = true
       state.installedId = skills[0]?.id ?? null
@@ -522,6 +537,39 @@ async function handleBatchInstall() {
   const okCount = batchTotal.value - batchFailed.value
   Message.info(text.value.batchInstallDone(okCount, batchFailed.value))
   emit('skills-changed')
+}
+
+async function handleBatchInstall() {
+  if (batchRunning.value) return
+  const targets = manifestStates.value.filter(s => s.selected && !s.installed)
+  if (targets.length === 0) return
+
+  const internal = targets.filter(s => isInternalPlatformSkill(s.item.name))
+  if (internal.length > 0) {
+    pendingInstallTargets.value = targets
+    pendingInternalSkillNames.value = internal.map(s => s.item.name)
+    showApiKeyConfirm.value = true
+    return
+  }
+
+  await runBatchInstall(targets)
+}
+
+async function onApiKeyConfirmedForInstall(payload: { apiKey: string; keyId: number; keyName: string }) {
+  const targets = pendingInstallTargets.value
+  pendingInstallTargets.value = []
+  pendingInternalSkillNames.value = []
+  if (targets.length === 0) return
+  await runBatchInstall(targets, payload.apiKey)
+}
+
+function onApiKeyModalVisible(v: boolean) {
+  showApiKeyConfirm.value = v
+  if (!v && !batchRunning.value) {
+    // 用户取消确认时清理挂起安装目标，避免残留状态
+    pendingInstallTargets.value = []
+    pendingInternalSkillNames.value = []
+  }
 }
 
 async function handleBatchUninstall() {

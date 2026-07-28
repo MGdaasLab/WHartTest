@@ -16,6 +16,7 @@ from rest_framework_simplejwt.views import (
 )
 from .serializers import (
     UserSerializer,
+    UserRegistrationSerializer,
     UserDetailSerializer,
     UserUpdateSerializer,
     GroupSerializer,
@@ -38,7 +39,7 @@ class UserCreateAPIView(generics.CreateAPIView):
     """
 
     queryset = User.objects.all()
-    serializer_class = UserSerializer
+    serializer_class = UserRegistrationSerializer
     permission_classes = [AllowAny]
 
     def create(self, request, *args, **kwargs):

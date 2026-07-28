@@ -140,7 +140,6 @@
           <a-form-item field="db_type" label="数据库类型">
             <a-select v-model="formData.db_type" placeholder="请选择数据库类型">
               <a-option value="mysql">MySQL</a-option>
-              <a-option value="db2">DB2</a-option>
             </a-select>
           </a-form-item>
 
@@ -173,46 +172,6 @@
             <a-form-item label="数据库">
               <a-input v-model="mysqlConfig.database" placeholder="要连接的数据库名称" />
             </a-form-item>
-          </div>
-
-          <!-- DB2 配置 -->
-          <div v-if="formData.db_type === 'db2'" class="mysql-config-form">
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item label="主机地址">
-                  <a-input v-model="db2Config.host" placeholder="localhost 或 127.0.0.1" />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item label="端口">
-                  <a-input-number v-model="db2Config.port" :min="1" :max="65535" placeholder="50000" style="width: 100%" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item label="用户名">
-                  <a-input v-model="db2Config.user" placeholder="数据库用户名" />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item label="密码">
-                  <a-input-password v-model="db2Config.password" placeholder="数据库密码" />
-                </a-form-item>
-              </a-col>
-            </a-row>
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item label="数据库">
-                  <a-input v-model="db2Config.database" placeholder="DB2 数据库名称" />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item label="模式/Schema">
-                  <a-input v-model="db2Config.schema" placeholder="DB2 数据库模式 (如 NULLID)" />
-                </a-form-item>
-              </a-col>
-            </a-row>
           </div>
         </div>
       </a-form>
@@ -249,15 +208,6 @@ const mysqlConfig = reactive({
   database: '',
 })
 
-// DB2 配置表单
-const db2Config = reactive({
-  host: '',
-  port: 50000,
-  user: '',
-  password: '',
-  database: '',
-  schema: '',
-})
 
 const filters = reactive({ browser: undefined as string | undefined, search: '' })
 const pagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
@@ -275,7 +225,6 @@ const formData = reactive<UiEnvironmentConfigForm>({
   db_rud_status: false,
   db_type: 'mysql',
   mysql_config: {},
-  db2_config: {},
   extra_config: {},
   is_default: false,
 })
@@ -346,12 +295,10 @@ const resetForm = () => {
     db_rud_status: false,
     db_type: 'mysql',
     mysql_config: {},
-    db2_config: {},
     extra_config: {},
     is_default: false,
   })
   Object.assign(mysqlConfig, { host: '', port: 3306, user: '', password: '', database: '' })
-  Object.assign(db2Config, { host: '', port: 50000, user: '', password: '', database: '', schema: '' })
   formRef.value?.clearValidate()
 }
 
@@ -377,7 +324,6 @@ const editConfig = (record: UiEnvironmentConfig) => {
     db_rud_status: record.db_rud_status,
     db_type: record.db_type || 'mysql',
     mysql_config: record.mysql_config || {},
-    db2_config: record.db2_config || {},
     extra_config: record.extra_config || {},
     is_default: record.is_default,
   })
@@ -389,19 +335,9 @@ const editConfig = (record: UiEnvironmentConfig) => {
     password: cfg.password || '',
     database: cfg.database || '',
   })
-  const db2Cfg = record.db2_config || {}
-  Object.assign(db2Config, {
-    host: db2Cfg.host || '',
-    port: db2Cfg.port || 50000,
-    user: db2Cfg.user || '',
-    password: db2Cfg.password || '',
-    database: db2Cfg.database || '',
-    schema: db2Cfg.schema || '',
-  })
   modalVisible.value = true
 }
 
-/** 构建 MySQL 配置对象 */
 const buildMysqlConfig = () => {
   if (!formData.db_c_status && !formData.db_rud_status) return {}
   if (formData.db_type !== 'mysql') return {}
@@ -411,20 +347,6 @@ const buildMysqlConfig = () => {
   if (mysqlConfig.user) cfg.user = mysqlConfig.user
   if (mysqlConfig.password) cfg.password = mysqlConfig.password
   if (mysqlConfig.database) cfg.database = mysqlConfig.database
-  return cfg
-}
-
-/** 构建 DB2 配置对象 */
-const buildDb2Config = () => {
-  if (!formData.db_c_status && !formData.db_rud_status) return {}
-  if (formData.db_type !== 'db2') return {}
-  const cfg: Record<string, unknown> = {}
-  if (db2Config.host) cfg.host = db2Config.host
-  if (db2Config.port) cfg.port = db2Config.port
-  if (db2Config.user) cfg.user = db2Config.user
-  if (db2Config.password) cfg.password = db2Config.password
-  if (db2Config.database) cfg.database = db2Config.database
-  if (db2Config.schema) cfg.schema = db2Config.schema
   return cfg
 }
 
@@ -441,7 +363,6 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
     const data = {
       ...formData,
       mysql_config: buildMysqlConfig(),
-      db2_config: buildDb2Config()
     }
     if (isEdit.value && currentConfig.value) {
       await envConfigApi.update(currentConfig.value.id, data)

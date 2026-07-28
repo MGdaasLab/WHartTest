@@ -3,6 +3,7 @@
 解决LangChain MCP适配器每次工具调用都创建新会话的问题
 """
 import asyncio
+import time
 from typing import Dict, Any, Optional, List
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -17,6 +18,23 @@ except ImportError:
     _CONNECTION_ERRORS = (ConnectionError, OSError)
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, *, minimum: int | None = None) -> int:
+    """Parse positive int env vars safely; fall back to default on bad values."""
+    import os
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        value = default
+    else:
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            logger.warning("Invalid %s=%r, using default %s", name, raw, default)
+            value = default
+    if minimum is not None:
+        value = max(minimum, value)
+    return value
 
 
 def _is_connection_error(exc: BaseException) -> bool:
@@ -328,10 +346,21 @@ class GlobalMCPSessionManager:
 
     def __init__(self):
         if not self._initialized:
-            self.clients = {}  # config_hash -> PersistentMCPClient (旧的共享模式)
-            self.session_clients = {}  # session_key -> PersistentMCPClient (独立客户端)
+            self.clients = {}  # config_hash -> PersistentMCPClient (legacy shared mode)
+            self.session_clients = {}  # session_key -> PersistentMCPClient
             self.session_contexts = {}  # session_key -> session_context
-            self.tools_cache = {}  # session_key -> tools (按session_id缓存工具)
+            self.tools_cache = {}  # session_key -> tools
+            # Bound cache growth to reduce long-running memory pressure.
+            self.max_session_clients = _env_int(
+                "MCP_MAX_SESSION_CLIENTS", 50, minimum=1
+            )
+            self.session_idle_timeout_seconds = _env_int(
+                "MCP_SESSION_IDLE_TIMEOUT_SECONDS", 1800, minimum=60
+            )
+            # Cap close work per prune call; raise under burst to drain faster.
+            self.prune_max_close_per_call = _env_int(
+                "MCP_PRUNE_MAX_CLOSE_PER_CALL", 10, minimum=1
+            )
             self._initialized = True
 
     async def get_persistent_client(self, server_configs: Dict[str, Any]) -> PersistentMCPClient:
@@ -345,6 +374,108 @@ class GlobalMCPSessionManager:
                 self.clients[config_hash] = client
 
             return self.clients[config_hash]
+
+    def _touch_session(self, session_key: str) -> None:
+        ctx = self.session_contexts.get(session_key)
+        if not isinstance(ctx, dict):
+            return
+        ctx['last_used'] = time.monotonic()
+
+    async def _prune_idle_and_overflow_sessions(self) -> None:
+        """Close idle/overflow session-scoped MCP clients to avoid unbounded growth.
+
+        Snapshot/pop under lock, close outside lock, and cap work per call so
+        get_tools_for_session is not blocked closing many browsers at once.
+        """
+        max_close_per_call = getattr(self, "prune_max_close_per_call", 10)
+        to_close = []  # list[(session_key, client)]
+
+        async with self._lock:
+            now = time.monotonic()
+            idle_keys = []
+            for key, ctx in list(self.session_contexts.items()):
+                if not isinstance(ctx, dict):
+                    continue
+                last_used = ctx.get("last_used")
+                try:
+                    last_used_f = float(last_used) if last_used is not None else 0.0
+                except (TypeError, ValueError):
+                    last_used_f = 0.0
+                # Compat: older code stored event-loop time; treat huge future values as now.
+                if last_used_f > now + 3600:
+                    last_used_f = now
+                    ctx["last_used"] = now
+                if (now - last_used_f) > self.session_idle_timeout_seconds:
+                    idle_keys.append(key)
+
+            for key in idle_keys:
+                if len(to_close) >= max_close_per_call:
+                    break
+                self.tools_cache.pop(key, None)
+                self.session_contexts.pop(key, None)
+                client = self.session_clients.pop(key, None)
+                if client is not None:
+                    to_close.append((key, client))
+
+            overflow = len(self.session_clients) - self.max_session_clients
+            if overflow > 0 and len(to_close) < max_close_per_call:
+                ranked = []
+                for key in list(self.session_clients.keys()):
+                    ctx = self.session_contexts.get(key) or {}
+                    last_used = 0.0
+                    if isinstance(ctx, dict):
+                        try:
+                            last_used = float(ctx.get("last_used") or 0.0)
+                        except (TypeError, ValueError):
+                            last_used = 0.0
+                    ranked.append((last_used, key))
+                ranked.sort(key=lambda item: item[0])
+                remaining = min(overflow, max_close_per_call - len(to_close))
+                for _, key in ranked[:remaining]:
+                    self.tools_cache.pop(key, None)
+                    self.session_contexts.pop(key, None)
+                    client = self.session_clients.pop(key, None)
+                    if client is not None:
+                        to_close.append((key, client))
+
+        for session_key, client in to_close:
+            try:
+                await client.close_sessions()
+                logger.info(
+                    "Closed MCP session client: %s; remaining=%s",
+                    session_key,
+                    len(self.session_clients),
+                )
+            except Exception as exc:
+                logger.error(
+                    "Error closing MCP session client %s: %s",
+                    session_key,
+                    exc,
+                    exc_info=True,
+                )
+
+    async def cleanup_user_session_by_key(self, session_key: str) -> None:
+        """Close one session client by exact session_key."""
+        async with self._lock:
+            self.tools_cache.pop(session_key, None)
+            self.session_contexts.pop(session_key, None)
+            client = self.session_clients.pop(session_key, None)
+        if not client:
+            return
+        try:
+            await client.close_sessions()
+            logger.info(
+                "Closed MCP session client: %s; remaining=%s",
+                session_key,
+                len(self.session_clients),
+            )
+        except Exception as exc:
+            logger.error(
+                "Error closing MCP session client %s: %s",
+                session_key,
+                exc,
+                exc_info=True,
+            )
 
     async def get_tools_for_session(
         self,
@@ -373,8 +504,11 @@ class GlobalMCPSessionManager:
             session_key = f"{user_id}_{project_id}"
         
         # 检查是否已有缓存的工具
+        await self._prune_idle_and_overflow_sessions()
+
         if session_key in self.tools_cache:
             logger.info(f"Reusing cached tools for session: {session_key}")
+            self._touch_session(session_key)
             return self.tools_cache[session_key]
         
         # 为每个session_key创建独立的MCP客户端
@@ -399,7 +533,7 @@ class GlobalMCPSessionManager:
         # 记录会话上下文
         self.session_contexts[session_key] = {
             'client': client,
-            'last_used': asyncio.get_event_loop().time(),
+            'last_used': time.monotonic(),
             'user_id': user_id,
             'project_id': project_id,
             'session_id': session_id
@@ -465,65 +599,38 @@ class GlobalMCPSessionManager:
 
     async def cleanup_user_session(self, user_id: str, project_id: str, session_id: str = None):
         """
-        清理特定用户项目的会话，包括关闭独立的MCP客户端
-        
-        Args:
-            user_id: 用户ID
-            project_id: 项目ID
-            session_id: 对话会话ID（可选）
+        Close a specific user/project MCP session (and independent client).
+
+        Always attempts to close session_clients even if session_contexts is missing,
+        to avoid leaked browser-backed MCP clients.
         """
         if session_id:
             session_key = f"{user_id}_{project_id}_{session_id}"
         else:
             session_key = f"{user_id}_{project_id}"
-        
-        # 清理工具缓存
-        self.tools_cache.pop(session_key, None)
-        
-        context = self.session_contexts.get(session_key)
-        if not context:
-            logger.info(f"No session context found for: {session_key}")
-            return
 
-        try:
-            # 获取并关闭独立的会话客户端
-            client = self.session_clients.pop(session_key, None)
-            if client:
-                await client.close_sessions()
-                logger.info(f"Closed and cleaned up independent client for session: {session_key}")
-                logger.info(f"Remaining session clients: {len(self.session_clients)}")
-            else:
-                logger.info(f"No independent client found for session: {session_key}")
-        except Exception as exc:
-            logger.error(f"Error cleaning up session for {session_key}: {exc}", exc_info=True)
-        finally:
-            self.session_contexts.pop(session_key, None)
-    
+        await self.cleanup_user_session_by_key(session_key)
+
     async def cleanup_all_user_sessions(self, user_id: str, project_id: str):
         """清理用户在某个项目下的所有会话，包括关闭所有独立客户端"""
         prefix = f"{user_id}_{project_id}_"
-        
-        # 找到所有匹配的会话键
-        matching_keys = [key for key in self.session_contexts.keys() if key.startswith(prefix)]
-        
-        logger.info(f"Cleaning up {len(matching_keys)} sessions for user {user_id}, project {project_id}")
-        
+
+        # Union of both maps so orphan clients without context are also closed.
+        matching_keys = sorted(
+            {
+                key
+                for key in list(self.session_contexts.keys()) + list(self.session_clients.keys())
+                if key.startswith(prefix) or key == f"{user_id}_{project_id}"
+            }
+        )
+
+        logger.info(
+            f"Cleaning up {len(matching_keys)} sessions for user {user_id}, project {project_id}"
+        )
+
         for session_key in matching_keys:
-            # 清理工具缓存
-            self.tools_cache.pop(session_key, None)
-            
-            # 关闭并移除独立客户端
-            client = self.session_clients.pop(session_key, None)
-            if client:
-                try:
-                    await client.close_sessions()
-                    logger.info(f"Closed client for session: {session_key}")
-                except Exception as exc:
-                    logger.error(f"Error closing client for {session_key}: {exc}", exc_info=True)
-            
-            # 清理会话上下文
-            self.session_contexts.pop(session_key, None)
-        
+            await self.cleanup_user_session_by_key(session_key)
+
         logger.info(f"Cleaned up all sessions for user {user_id}, project {project_id}")
 
 

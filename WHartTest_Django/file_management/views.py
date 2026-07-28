@@ -126,6 +126,12 @@ class FileAssetViewSet(viewsets.ModelViewSet):
         response = FileResponse(asset.file.open('rb'), as_attachment=True, filename=filename)
         response['Content-Type'] = asset.mime_type or mimetypes.guess_type(filename)[0] or 'application/octet-stream'
         response['Content-Security-Policy'] = "default-src 'none';"
+        # Help remote actuators invalidate local upload cache / verify integrity.
+        if asset.sha256:
+            response['ETag'] = f'"{asset.sha256}"'
+            response['X-File-Sha256'] = asset.sha256
+        if asset.size is not None:
+            response['X-File-Size'] = str(asset.size)
         return response
 
     @method_decorator(xframe_options_exempt)

@@ -4,10 +4,10 @@ UI自动化执行器 - Python Playwright执行引擎
 """
 
 import asyncio
+import gc
 import importlib
 import json
 import logging
-import re
 import time
 import traceback
 from pathlib import Path
@@ -43,8 +43,15 @@ class StepConfig:
     locator_value_3: Optional[str] = None
     locator_index_3: Optional[int] = None
     sql_execute: Any = None
+    # Remote upload metadata used when shared storage path is unavailable
+    upload_file_id: Optional[int] = None
+    upload_file_name: Optional[str] = None
+    upload_download_url: Optional[str] = None
+    upload_project_id: Optional[int] = None
+    upload_file_sha: Optional[str] = None
+    upload_file_size: Optional[int] = None
     
-    # 步骤详情(公共步骤)
+    # step details (shared steps)
     details: list['StepConfig'] = field(default_factory=list)
 
 
@@ -115,6 +122,10 @@ class PlaywrightExecutor:
     
     async def init_browser(self) -> None:
         """初始化浏览器"""
+        # 若上次未正常关闭，先释放，避免叠加启动多个 Chromium
+        if self._context is not None or self._browser is not None:
+            await self.close()
+
         if self._playwright is None:
             self._playwright = await async_playwright().start()
         
@@ -139,20 +150,125 @@ class PlaywrightExecutor:
         self._page.set_default_timeout(self.action_timeout)
         logger.info(f"浏览器已初始化: {self.browser_type}, headless={self.headless}")
     
+    def _release_memory(self) -> None:
+        """主动回收 Python 对象，并尽量将内存归还操作系统。"""
+        try:
+            gc.collect()
+        except Exception:
+            pass
+
+        # Linux glibc: 将已释放堆归还 OS，避免 RSS 长时间居高不下
+        libc = getattr(self, "_libc", None)
+        if libc is False:
+            return
+        try:
+            if libc is None:
+                import platform
+                import ctypes
+                if platform.system() != "Linux":
+                    self._libc = False
+                    return
+                libc = ctypes.CDLL("libc.so.6")
+                self._libc = libc
+            libc.malloc_trim(0)
+        except Exception:
+            self._libc = False
+
+
+    async def _close_all_pages(self, context: Optional[BrowserContext] = None) -> None:
+        """关闭上下文中的全部页面，减少 Chromium 残留占用。"""
+        ctx = context or self._context
+        if not ctx:
+            return
+        try:
+            pages = list(ctx.pages)
+        except Exception:
+            return
+        for page in pages:
+            try:
+                await page.close()
+            except Exception:
+                pass
+
+    def _force_kill_browser(self, browser) -> None:
+        """Best-effort kill of Playwright-launched browser process after close timeout."""
+        if browser is None:
+            return
+        try:
+            import signal
+            proc = None
+            if hasattr(browser, 'process') and callable(getattr(browser, 'process')):
+                proc = browser.process()
+            if proc is None:
+                impl = getattr(browser, '_impl_obj', None)
+                if impl is not None:
+                    proc = getattr(impl, '_process', None) or getattr(impl, 'process', None)
+                    if callable(proc):
+                        proc = proc()
+            if proc is None:
+                return
+            pid = getattr(proc, 'pid', None)
+            if not pid:
+                return
+            logger.warning(f'force-killing browser process pid={pid}')
+            try:
+                if hasattr(proc, 'kill'):
+                    proc.kill()
+                else:
+                    os.kill(int(pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except Exception as e:
+                logger.debug(f'force kill failed: {e}')
+        except Exception as e:
+            logger.debug(f'_force_kill_browser error: {e}')
+
+    async def _await_close(self, coro, label: str, timeout: float = 10.0) -> bool:
+        """Await a close coroutine with timeout. Returns True if finished cleanly."""
+        try:
+            await asyncio.wait_for(coro, timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f'{label} timed out after {timeout}s')
+            return False
+        except Exception as e:
+            logger.warning(f'{label} failed: {e}')
+            return False
+
     async def close(self) -> None:
-        """关闭浏览器"""
-        if self._context:
-            await self._context.close()
-            self._context = None
-            self._page = None
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-        logger.info("浏览器已关闭")
-    
+        """Close browser + Playwright driver with timeouts to avoid orphan Chromium."""
+        browser = self._browser
+        context = self._context
+        playwright = self._playwright
+        # Drop refs first so concurrent init cannot reuse half-closed handles.
+        self._page = None
+        self._context = None
+        self._browser = None
+        self._playwright = None
+        self._page_errors = []
+        self._current_trace_path = None
+
+        # Prefer browser.close() which tears down contexts/pages; sequential
+        # page->context->browser left orphans when an early close hung.
+        if browser is not None:
+            ok = await self._await_close(browser.close(), 'browser.close', timeout=10.0)
+            if not ok:
+                self._force_kill_browser(browser)
+        elif context is not None:
+            # persistent context has no separate browser handle
+            try:
+                await self._await_close(self._close_all_pages(context), 'close pages', timeout=5.0)
+            except Exception:
+                pass
+            await self._await_close(context.close(), 'context.close', timeout=10.0)
+
+        if playwright is not None:
+            await self._await_close(playwright.stop(), 'playwright.stop', timeout=10.0)
+
+        self._release_memory()
+        logger.info('browser closed')
+
+
     @asynccontextmanager
     async def browser_session(self):
         """浏览器会话上下文管理器"""
@@ -226,6 +342,8 @@ class PlaywrightExecutor:
             if not hasattr(self, '_page_errors'):
                 self._page_errors = []
             self._page_errors.append(str(exception))
+            if len(self._page_errors) > 50:
+                self._page_errors = self._page_errors[-50:]
 
         page.on("dialog", handle_dialog)
         page.on("pageerror", handle_pageerror)
@@ -328,7 +446,7 @@ class PlaywrightExecutor:
             raise ValueError("执行SQL步骤需要选择包含数据库配置的执行环境")
 
         db_type = str(sql_config.get('db_type') or env_config.get('db_type') or 'mysql').lower()
-        if db_type not in {'mysql', 'db2'}:
+        if db_type != 'mysql':
             raise ValueError(f"不支持的UI自动化数据库类型: {db_type}")
 
         direct_config = sql_config.get('connection') or sql_config.get('db_config')
@@ -430,22 +548,6 @@ class PlaywrightExecutor:
             cursorclass=pymysql.cursors.DictCursor,
         )
 
-    def _connect_db2(self, config: dict[str, Any]):
-        try:
-            ibm_db_dbi = importlib.import_module('ibm_db_dbi')
-        except ImportError as exc:
-            raise RuntimeError("执行DB2 SQL步骤需要安装依赖 ibm_db") from exc
-
-        dsn = (
-            f"DATABASE={config['database']};"
-            f"HOSTNAME={config['host']};"
-            f"PORT={int(config['port'])};"
-            "PROTOCOL=TCPIP;"
-            f"UID={config['user']};"
-            f"PWD={config['password']};"
-        )
-        return ibm_db_dbi.connect(dsn, '', '')
-
     def _execute_sql_step(
         self,
         step: StepConfig,
@@ -455,19 +557,13 @@ class PlaywrightExecutor:
         if env_config is None:
             raise ValueError("执行SQL步骤需要执行环境")
         self._validate_sql_permission(sql_config, env_config)
-        db_type, db_config = self._resolve_sql_connection_config(sql_config, env_config)
+        _, db_config = self._resolve_sql_connection_config(sql_config, env_config)
 
         conn = None
         cursor = None
         try:
-            conn = self._connect_db2(db_config) if db_type == 'db2' else self._connect_mysql(db_config)
+            conn = self._connect_mysql(db_config)
             cursor = conn.cursor()
-
-            if db_type == 'db2' and db_config.get('schema'):
-                schema = str(db_config['schema'])
-                if not re.match(r'^[A-Za-z_][A-Za-z0-9_@$#]*$', schema):
-                    raise ValueError("DB2 schema 只能包含字母、数字、下划线、@、$、#，且不能以数字开头")
-                cursor.execute(f"SET CURRENT SCHEMA {schema}")
 
             self._execute_cursor(cursor, sql_config['sql'], sql_config['params'])
 
@@ -1046,6 +1142,7 @@ class PlaywrightExecutor:
         failed_steps = 0
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
         trace_path = None
+        page = None
 
         try:
             # 启动 Trace
@@ -1190,13 +1287,17 @@ class PlaywrightExecutor:
             error_msg = str(e)
             logger.error(f"[并发] 用例执行异常: {error_msg}")
 
-            # 尝试保存 Trace
             if trace_enabled:
                 try:
                     trace_path = f"{self.trace_dir}/case_{config.case_id}_{int(time.time())}.zip"
                     await context.tracing.stop(path=trace_path)
-                except:
+                except Exception:
                     pass
+            try:
+                if page is not None:
+                    await page.close()
+            except Exception:
+                pass
 
             return CaseResultModel(
                 case_id=config.case_id,
@@ -1287,4 +1388,16 @@ class PlaywrightExecutor:
             return final_results
 
         finally:
-            await browser.close()
+            try:
+                await asyncio.wait_for(browser.close(), timeout=10.0)
+            except Exception as e:
+                logger.warning(f'[batch] browser.close failed: {e}')
+                self._force_kill_browser(browser)
+            # 只释放本批次 browser/页面状态，保留实例级 Playwright 驱动，
+            # 便于 consumer 复用 executor，避免后续单测/单用例冷启动驱动。
+            # 完整释放驱动请走 close()。
+            self._browser = None
+            self._context = None
+            self._page = None
+            self._page_errors = []
+            self._release_memory()

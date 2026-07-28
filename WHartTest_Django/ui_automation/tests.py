@@ -114,6 +114,11 @@ class UiPageStepsExecuteDataTests(TestCase):
         self.assertEqual(upload_detail['ope_value']['file_name'], 'avatar.png')
         self.assertIn('file_management/projects/', upload_detail['ope_value']['file_path'])
         self.assertEqual(upload_detail['ope_value']['value'], upload_detail['ope_value']['file_path'])
+        self.assertEqual(
+            upload_detail['ope_value']['download_url'],
+            f'/api/projects/{self.project.id}/files/{asset.id}/download/',
+        )
+        self.assertEqual(upload_detail['ope_value']['project_id'], self.project.id)
 
     def test_delete_upload_step_keeps_file_when_auto_delete_disabled(self):
         asset = FileAsset.objects.create(

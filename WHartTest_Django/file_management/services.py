@@ -2,11 +2,14 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 from typing import Iterable, List
 from django.conf import settings
 from rest_framework.exceptions import ValidationError, PermissionDenied
 from .models import FileAsset, FileReference, FileManagementSetting
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MAX_FILE_SIZE = int(os.getenv('FILE_MANAGEMENT_MAX_FILE_SIZE', str(100 * 1024 * 1024)))
 DEFAULT_MAX_BIND_COUNT = int(os.getenv('FILE_MANAGEMENT_MAX_BIND_COUNT', '5'))
@@ -89,16 +92,42 @@ def sync_file_references(file_ids, project, ref_type, ref_id, user=None):
 
 
 def serialize_file_for_runtime(asset: FileAsset) -> dict:
+    """Serialize a managed file for runtime consumers (API tests / UI actuator).
+
+    Includes local filesystem path for shared-storage deployments and a stable
+    download_url so remote actuators can fetch the file over HTTP when the
+    backend path is not mounted locally.
+    """
+    file_path = ''
+    file_url = ''
+    if asset.file:
+        try:
+            file_path = asset.file.path or ''
+        except (NotImplementedError, ValueError, AttributeError, OSError) as exc:
+            logger.debug('Failed to resolve local path for file_id=%s: %s', asset.id, exc)
+            file_path = ''
+        try:
+            file_url = asset.file.url or ''
+        except (NotImplementedError, ValueError, AttributeError) as exc:
+            logger.debug('Failed to resolve url for file_id=%s: %s', asset.id, exc)
+            file_url = ''
+
+    project_id = asset.project_id
+    file_id = asset.id
+    download_url = f'/api/projects/{project_id}/files/{file_id}/download/' if project_id and file_id else ''
     return {
-        'id': asset.id,
-        'file_id': asset.id,
+        'id': file_id,
+        'file_id': file_id,
+        'project_id': project_id,
         'name': asset.original_name,
         'filename': asset.original_name,
         'size': asset.size,
+        'sha256': asset.sha256 or '',
         'mime_type': asset.mime_type,
         'extension': asset.extension,
-        'path': asset.file.path if asset.file else '',
-        'url': asset.file.url if asset.file else '',
+        'path': file_path,
+        'url': file_url,
+        'download_url': download_url,
     }
 
 

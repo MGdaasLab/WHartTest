@@ -3,13 +3,13 @@
   "updated_at": "2026-07-07T05:43:48Z",
   "skills": [
     {
-      "id": "agent-browser-skill",
-      "name": "agent-browser-skill",
-      "description": "基于 agent-browser CLI 的浏览器自动化工具。提供快照获取、元素交互、截图等功能。推荐用于需要页面快照分析、通过 ref 引用交互元素的场景。",
+      "id": "browser-use",
+      "name": "browser-use",
+      "description": "基于 browser-use CLI 的浏览器自动化工具。通过 CDP 直接控制浏览器，支持页面导航、元素交互、截图、抓取与站点操作。推荐用于需要稳定、快速浏览器控制的场景。",
       "version": "1.0.0",
-      "author": "mgdaas-lab",
-      "tags": ["browser", "automation"],
-      "zip_path": "agent-browser-skill.zip"
+      "author": "browser-use",
+      "tags": ["browser", "automation", "cdp"],
+      "zip_path": "browser-use.zip"
     },
     {
       "id": "api-automation",
@@ -60,7 +60,7 @@
     {
       "id": "ui-automation",
       "name": "ui-automation",
-      "description": "WHartTest UI 自动化管理工具。用于创建、编辑、删除 UI 测试模块、页面、元素、页面步骤和测试用例。支持执行记录查询和错误分析。当需要将浏览器技能获取到的页面元素保存到平台、创建 UI 自动化用例、执行测试或分析执行结果时使用。元素采集默认优先 agent-browser-skill，无法覆盖时再用 playwright-skill 兜底。",
+      "description": "WHartTest UI 自动化管理工具。用于创建、编辑、删除 UI 测试模块、页面、元素、页面步骤和测试用例。支持执行记录查询和错误分析。当需要将浏览器技能获取到的页面元素保存到平台、创建 UI 自动化用例、执行测试或分析执行结果时使用。元素采集默认优先 browser-use，无法覆盖时再用 playwright-skill 兜底。",
       "version": "1.0.0",
       "author": "mgdaas-lab",
       "tags": ["ui", "automation", "wharttest"],

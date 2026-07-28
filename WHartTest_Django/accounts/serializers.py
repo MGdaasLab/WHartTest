@@ -276,6 +276,37 @@ class UserSerializer(serializers.ModelSerializer):
         return user
 
 
+class UserRegistrationSerializer(serializers.ModelSerializer):
+    """Public registration serializer with server-controlled account privileges."""
+
+    password = serializers.CharField(
+        write_only=True, required=True, style={"input_type": "password"}
+    )
+    email = serializers.EmailField(required=True)
+
+    class Meta:
+        model = User
+        fields = (
+            "id",
+            "username",
+            "email",
+            "password",
+            "is_staff",
+            "is_active",
+        )
+        read_only_fields = ("id", "is_staff", "is_active")
+
+    def create(self, validated_data):
+        return User.objects.create_user(
+            username=validated_data["username"],
+            email=validated_data["email"],
+            password=validated_data["password"],
+            is_staff=False,
+            is_superuser=False,
+            is_active=True,
+        )
+
+
 class UserDetailSerializer(serializers.ModelSerializer):
     """
     用于展示用户详情（只读，不包含密码）。

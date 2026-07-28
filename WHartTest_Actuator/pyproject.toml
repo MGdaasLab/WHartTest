@@ -12,7 +12,6 @@ dependencies = [
     "tomli_w>=1.0",
     "playwright>=1.40.0",
     "pymysql>=1.1.0",
-    "ibm_db>=3.2.0",
     "customtkinter>=5.2.2",
     "pyinstaller>=6.18.0",
     "websocket-client>=1.9.0",
