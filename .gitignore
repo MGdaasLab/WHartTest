@@ -79,4 +79,5 @@ issue.md
 WHartTest_Actuator/release/browsers/
 WHartTest_Actuator/release/data/
 WHartTest_Actuator/release/WHartTest_Actuator.exe
+!.claude/
 
