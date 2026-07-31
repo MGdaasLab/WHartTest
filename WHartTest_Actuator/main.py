@@ -158,6 +158,16 @@ class Config:
         # 日志配置
         self.log_level = "INFO"
         self.log_file: str | None = None
+
+        # AI 模型配置（step_type=10「AI操作」）
+        self.model_api_url = "http://192.168.2.180:3000/v1"
+        self.model_api_key = ""
+        self.model_name = "qwen3-coder"
+        self.model_provider = "openai_compatible"
+        self.model_supports_vision = False
+        self.model_context_limit = 100000
+        self.model_max_steps = 25
+        self.model_temperature = 0.0
     
     def load_from_toml(self, filepath: str) -> None:
         """从TOML文件加载配置"""
@@ -217,6 +227,19 @@ class Config:
         if 'logging' in data:
             self.log_level = data['logging'].get('level', self.log_level)
             self.log_file = data['logging'].get('file')
+
+        # AI 模型配置
+        if 'model' in data:
+            model = data['model']
+            self.model_api_url = model.get('api_url', self.model_api_url)
+            # api_key 优先取环境变量 WHART_MODEL_API_KEY，其次配置文件
+            self.model_api_key = os.environ.get('WHART_MODEL_API_KEY') or model.get('api_key', self.model_api_key)
+            self.model_name = model.get('model', self.model_name)
+            self.model_provider = model.get('provider', self.model_provider)
+            self.model_supports_vision = bool(model.get('supports_vision', self.model_supports_vision))
+            self.model_context_limit = int(model.get('context_limit', self.model_context_limit))
+            self.model_max_steps = int(model.get('max_steps', self.model_max_steps))
+            self.model_temperature = float(model.get('temperature', self.model_temperature))
     
     def apply_args(self, args: argparse.Namespace) -> None:
         """应用命令行参数（覆盖配置文件）"""

@@ -66,3 +66,21 @@ level = "INFO"
 [gui]
 # GUI 语言: zh, en
 language = "zh"
+
+[model]
+# AI 模型配置（用于 step_type=10「AI操作」步骤，AI Agent 自主驱动 Playwright）
+# OpenAI 兼容端点（vllm / ollama / OpenAI / Azure 等均兼容）
+api_url = "http://192.168.2.180:3000/v1"
+api_key = "sk-Cra0HlWnPgKnL8VP03Df097eA3B24dBcB1904d32C3812783"
+# 模型名称
+model = "qwen3-coder"
+# 提供者类型（当前仅支持 openai_compatible，预留扩展）
+provider = "openai_compatible"
+# 是否为视觉模型(VLM)：true 时通过截图理解页面；false 时用可访问性树/innerText 文本快照
+supports_vision = false
+# 模型上下文上限(估算 token)，超过阈值会触发历史压缩
+context_limit = 100000
+# AI 单步骤最大工具调用轮数（安全阈值，避免死循环）
+max_steps = 25
+# 采样温度，0 表示尽量确定性
+temperature = 0.0

@@ -68,7 +68,7 @@ export interface UiElement extends TimeStampFields {
 export type ExecutionStatus = 0 | 1 | 2 | 3  // 未执行 | 执行中 | 成功 | 失败
 
 /** 步骤类型 */
-export type StepType = 0 | 1 | 2 | 3 | 4  // 元素操作 | 断言 | SQL | 自定义变量 | 条件判断
+export type StepType = 0 | 1 | 2 | 3 | 4 | 5 | 10  // 元素操作 | 断言 | SQL | 自定义变量 | 条件判断 | Python代码 | AI操作
 
 export const STEP_TYPE_LABELS: Record<StepType, string> = {
   0: '元素操作',
@@ -76,6 +76,8 @@ export const STEP_TYPE_LABELS: Record<StepType, string> = {
   2: 'SQL操作',
   3: '自定义变量',
   4: '条件判断',
+  5: 'Python代码',
+  10: 'AI操作',
 }
 
 export const STATUS_LABELS: Record<ExecutionStatus, string> = {

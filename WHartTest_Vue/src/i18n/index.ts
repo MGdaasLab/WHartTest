@@ -1403,6 +1403,8 @@ const LEGACY_REGEX_EN_MAP: Array<[RegExp, (...groups: string[]) => string]> = [
   [/^SQL操作\s+(.+)\s+执行成功$/, (action) => `SQL action ${action} executed successfully`],
   [/^自定义变量\s+(.+)\s+执行成功$/, (action) => `Custom variable action ${action} executed successfully`],
   [/^条件判断\s+(.+)\s+执行成功$/, (action) => `Condition action ${action} executed successfully`],
+  [/^AI操作\s+(.+)\s+执行成功$/, (action) => `AI action ${action} executed successfully`],
+  [/^AI操作\s+执行成功$/, () => `AI action executed successfully`],
   [/^成功删除\s+(\d+)\s+个用例$/, (count) => `Deleted ${count} case(s) successfully`],
   [/^开始执行用例:\s+(.+)$/, (name) => `Starting case execution: ${name}`],
   [/^元素管理\s*-\s*(.*)$/, (name) => `Element Management - ${name}`.trim()],

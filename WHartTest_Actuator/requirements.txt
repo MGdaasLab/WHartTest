@@ -9,3 +9,9 @@ pymysql>=1.1.0  # UI SQL步骤执行 MySQL
 
 # GUI 模式依赖 (设置 use_gui = true 时需要)
 customtkinter>=5.2.2
+
+# AI Agent (step_type=10「AI操作」)：LangChain 接入 + 上下文管理
+langchain>=1.0.0
+langchain-openai>=1.0.0
+langgraph>=0.6.0
+tiktoken>=0.7.0
