@@ -109,6 +109,12 @@ psycopg[binary]==3.3.1
 # https://github.com/langchain-ai/langchain-mcp-adapters/blob/main/LICENSE
 langchain-mcp-adapters==0.2.1
 
+# MCP SDK - MIT许可证
+# 注意：langchain-mcp-adapters（含最新 0.3.1）尚未适配 mcp 2.x；其约束 mcp>=1.9.2 无上限，
+# 全新环境安装会解析到 mcp 2.0.0，运行时 ImportError（mcp.shared.context.RequestContext 已移除）。
+# 钉 <2.0.0 与 fastmcp 3.x 的 mcp<2.0,>=1.24.0 约束对齐；上游适配 mcp 2.x 后可放开上限。
+mcp>=1.9.2,<2.0.0
+
 # Excel文件处理 - MIT许可证 (当前版本: 3.1.5)
 # https://github.com/theorchard/openpyxl/blob/master/LICENCE.rst
 openpyxl==3.1.5
