@@ -300,7 +300,11 @@ tiktoken>=0.5.0
 
 # NLTK自然语言处理库 - Apache 2.0许可证 (用于文本分割)
 # https://github.com/nltk/nltk/blob/develop/LICENSE.txt
-nltk>=3.8.0
+# 注意：nltk 3.10.x 起新增 inisec.py 导入安全防护（CWE-427 防 cwd 劫持），
+# 若项目目录存在 regex.py/regex/ 等残留文件，nltk 导入 regex 会被阻断，
+# 导致 manage.py 启动失败（ImportError: Blocked import of regex from current working directory）。
+# 钉 <3.10.0 规避该误触发；若后续接受该防护，需确保项目根目录无同名残留文件后再放开上限。
+nltk>=3.9.4,<3.10.0
 
 # WebSocket客户端 - LGPL许可证 (用于WebSocket连接)
 # https://github.com/websocket-client/websocket-client/blob/master/LICENSE
