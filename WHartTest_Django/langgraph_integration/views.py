@@ -16,6 +16,7 @@ import logging
 from asgiref.sync import async_to_sync, sync_to_async
 
 logger = logging.getLogger(__name__)
+_background_title_tasks = set()
 
 # 项目相关导入
 from projects.models import Project, ProjectMember
@@ -98,6 +99,7 @@ from asgiref.sync import sync_to_async  # For async operations in sync context
 async def auto_summarize_session_title(llm, chat_session, user_message):
     """
     使用 LLM 自动根据用户的第一条消息总结会话标题，并在后台同步更新数据库中的会话标题。
+    并精准统计本次会话总结消耗的 Token 数量，写入数据库。
     """
     try:
         # 对超长文本进行截断，避免超出 LLM 上下文限制、请求超时或消耗过多 Token
@@ -124,26 +126,129 @@ async def auto_summarize_session_title(llm, chat_session, user_message):
             if len(new_title) > 100:
                 new_title = new_title[:97] + "..."
             
-            # 更新 Django 数据库
+            # 提取大模型返回的真实 Token 使用数据
+            input_tokens = 0
+            output_tokens = 0
+            cache_read_tokens = 0
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                usage = response.usage_metadata
+                input_tokens = int(usage.get("input_tokens", 0) or 0)
+                output_tokens = int(usage.get("output_tokens", 0) or 0)
+
+                input_token_details = usage.get("input_token_details") or {}
+                if isinstance(input_token_details, dict):
+                    for key in ("cache_read", "cached_tokens", "cache_read_tokens"):
+                        candidate = input_token_details.get(key)
+                        if isinstance(candidate, (int, float)):
+                            cache_read_tokens = int(candidate)
+                            break
+                    if cache_read_tokens == 0:
+                        for key, value in input_token_details.items():
+                            if "cache_read" in str(key) and isinstance(value, (int, float)):
+                                cache_read_tokens = int(value)
+                                break
+            else:
+                # 兜底估算
+                input_tokens = len(summary_prompt) * 2
+                output_tokens = len(new_title) * 2
+
+            # 更新 Django 数据库并记录 Token 消耗
             @sync_to_async
-            def update_title():
+            def update_title_and_tokens():
                 try:
-                    sess = ChatSession.objects.get(id=chat_session.id)
-                    sess.title = new_title
-                    sess.save()
-                    logger.info(f"auto_summarize_session_title: Successfully updated title for session {chat_session.session_id} to '{new_title}'")
-                    return new_title
+                    from django.db.models import F
+                    from django.utils import timezone
+
+                    # 1. 先记录本次标题总结调用的 Token 消耗。
+                    ChatSession.objects.filter(id=chat_session.id).update(
+                        total_input_tokens=F("total_input_tokens") + input_tokens,
+                        total_output_tokens=F("total_output_tokens") + output_tokens,
+                        total_tokens=F("total_tokens") + input_tokens + output_tokens,
+                        total_cache_read_tokens=F("total_cache_read_tokens") + cache_read_tokens,
+                        request_count=F("request_count") + 1,
+                        updated_at=timezone.now(),
+                    )
+
+                    # 2. 只覆盖仍处于自动标题状态的会话，避免后台任务晚返回后覆盖用户手动改名。
+                    title_updated = ChatSession.objects.filter(
+                        id=chat_session.id,
+                        title__startswith="新对话",
+                    ).update(
+                        title=new_title,
+                        updated_at=timezone.now(),
+                    )
+
+                    # 3. 写入 TokenUsageRecord
+                    TokenUsageRecord.objects.create(
+                        user_id=chat_session.user_id,
+                        project_id=chat_session.project_id,
+                        session_id=chat_session.session_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        total_tokens=input_tokens + output_tokens,
+                        cache_read_tokens=cache_read_tokens,
+                    )
+
+                    if title_updated:
+                        logger.info(
+                            f"auto_summarize_session_title: Successfully updated title to '{new_title}' "
+                            f"and recorded token usage: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}"
+                        )
+                        return new_title
+
+                    logger.info(
+                        "auto_summarize_session_title: Skipped title update because session title was already changed; "
+                        f"recorded token usage: input={input_tokens}, output={output_tokens}, cache_read={cache_read_tokens}"
+                    )
+                    return None
                 except Exception as db_err:
-                    logger.error(f"auto_summarize_session_title: Database update error: {db_err}")
+                    logger.error(f"auto_summarize_session_title: Database update and token recording error: {db_err}")
                     return None
             
-            updated = await update_title()
+            updated = await update_title_and_tokens()
             if updated:
                 chat_session.title = updated
                 return updated
     except Exception as e:
         logger.error(f"auto_summarize_session_title: Failed to auto summarize session title: {e}", exc_info=True)
     return None
+
+
+def schedule_auto_summarize_session_title(llm, chat_session, user_message):
+    """
+    后台调度标题总结，不阻塞聊天响应或 SSE complete/[DONE]。
+    """
+    if not getattr(chat_session, "title", "").startswith("新对话"):
+        return False
+
+    coro = auto_summarize_session_title(llm, chat_session, user_message)
+    try:
+        task = asyncio.create_task(coro)
+    except RuntimeError as exc:
+        coro.close()
+        logger.warning(
+            "schedule_auto_summarize_session_title: Failed to schedule background title task: %s",
+            exc,
+        )
+        return False
+
+    _background_title_tasks.add(task)
+
+    def _consume_title_task_result(done_task):
+        _background_title_tasks.discard(done_task)
+        try:
+            done_task.result()
+        except asyncio.CancelledError:
+            logger.info("schedule_auto_summarize_session_title: Background title task was cancelled.")
+        except Exception:
+            logger.exception("schedule_auto_summarize_session_title: Background title task failed.")
+
+    task.add_done_callback(_consume_title_task_result)
+    logger.info(
+        "schedule_auto_summarize_session_title: Scheduled background title summarization for session %s",
+        chat_session.session_id,
+    )
+    return True
 
 
 
@@ -1603,13 +1708,10 @@ class ChatAPIView(APIView):
                 # AI 自动总结会话标题
                 if chat_session.title.startswith("新对话"):
                     try:
-                        import asyncio
-                        asyncio.create_task(
-                            auto_summarize_session_title(
-                                llm,
-                                chat_session,
-                                user_message_content,
-                            )
+                        schedule_auto_summarize_session_title(
+                            llm,
+                            chat_session,
+                            user_message_content,
                         )
                     except Exception as summarize_err:
                         logger.error(f"ChatAPIView: Failed to auto-summarize title: {summarize_err}")
