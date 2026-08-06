@@ -605,6 +605,7 @@ const pageText = computed(() => (
         mergeSuccess: (count: number) => `Merged ${count} modules`,
         mergeFailed: 'Failed to merge modules',
         selectModulesToDelete: 'Select modules to delete',
+        keepAtLeastOneModule: 'At least one module must remain.',
         deleteModulesTitle: 'Confirm deletion',
         deleteModulesContent: (count: number) => `Delete ${count} selected modules? This action cannot be undone.`,
         deleteModulesConfirm: 'Delete',
@@ -712,6 +713,7 @@ const pageText = computed(() => (
         mergeSuccess: (count: number) => `已合并 ${count} 个模块`,
         mergeFailed: '合并模块失败',
         selectModulesToDelete: '请选择要删除的模块',
+        keepAtLeastOneModule: '至少需要保留一个模块',
         deleteModulesTitle: '确认删除',
         deleteModulesContent: (count: number) => `确定要删除选中的 ${count} 个模块吗？此操作不可恢复。`,
         deleteModulesConfirm: '确认删除',
@@ -1537,6 +1539,11 @@ const deleteSelectedModules = async () => {
     return;
   }
   if (!document.value) return;
+
+  if (selectedModules.value.length >= document.value.modules.length) {
+    Message.warning(pageText.value.keepAtLeastOneModule);
+    return;
+  }
 
   Modal.warning({
     title: pageText.value.deleteModulesTitle,
