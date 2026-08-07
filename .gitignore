@@ -33,7 +33,7 @@ data
 temp/
 tmp/
 docker-images
-PandaWiki-skill/
+
 # Cache directories
 .cache/
 .npm/
@@ -44,6 +44,7 @@ build/
 dist/
 out/
 PandaWiki-skill/
+WHartTest_Client/
 # Dependencies (handled by subdirectories, but backup)
 node_modules/
 nltk_data/
@@ -60,6 +61,8 @@ __pycache__/
 *.db
 
 # Documentation build
+docs/_build/
+docs/.vitepress/cache/
 # Playwright截图目录
 playwright-screenshots/
 WHartTest_Django/chat_history.sqlite-shm
@@ -69,7 +72,10 @@ WHartTest_Actuator/browsers/
 .github/copilot-instructions.md
 WHartTest_Django/celerybeat-schedule
 AGENTS.md
-WHartTest_IDEA_Plugin/
-WHartTest_VSCode_Extension/
-docx-editor/
+architecture/
+.roo/mcp.json
+docs/superpowers/
+docs/competitive-analysis/
 
+# zcode
+.zcode
