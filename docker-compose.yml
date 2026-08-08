@@ -110,7 +110,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')" ]
+      test: [ "CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 5).close()" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -142,7 +142,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3001/health" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -164,7 +164,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/" ]
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1/" ]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -199,7 +199,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/')" ]
+      test: [ "CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8006), timeout=3).close()" ]
       interval: 30s
       timeout: 10s
       retries: 3
