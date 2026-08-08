@@ -1947,7 +1947,9 @@ class KnowledgeBaseService:
                 model=config.name,
                 api_key=config.api_key,
                 base_url=config.api_url,
-                temperature=0.3,
+                temperature=1
+                if (config.name or "").lower().startswith("kimi-k3")
+                else 0.3,
                 max_tokens=100,
                 timeout=15,
             )

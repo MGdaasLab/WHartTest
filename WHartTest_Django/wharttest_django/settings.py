@@ -707,6 +707,18 @@ CELERY_TASK_TRACK_STARTED = True  # 追踪任务开始状态。
 CELERY_TASK_TIME_LIMIT = 30 * 60  # 任务硬超时（秒，30 分钟）。
 CELERY_TASK_SOFT_TIME_LIMIT = 25 * 60  # 任务软超时（秒，25 分钟）。
 
+# Requirement reviews make several long-running LLM calls. Keep their larger
+# limit task-specific so unrelated background work still fails promptly.
+REQUIREMENT_REVIEW_TASK_TIME_LIMIT = int(
+    os.environ.get("REQUIREMENT_REVIEW_TASK_TIME_LIMIT", str(3 * 60 * 60))
+)
+REQUIREMENT_REVIEW_TASK_SOFT_TIME_LIMIT = int(
+    os.environ.get(
+        "REQUIREMENT_REVIEW_TASK_SOFT_TIME_LIMIT",
+        str(REQUIREMENT_REVIEW_TASK_TIME_LIMIT - 5 * 60),
+    )
+)
+
 # Celery Worker配置
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1  # Worker 预取任务数量。
 CELERY_WORKER_MAX_TASKS_PER_CHILD = 1000  # Worker 子进程处理任务上限后重启。

@@ -192,6 +192,8 @@ def create_llm_instance(active_config, temperature=0.7):
     - max_retries: 最大重试次数，处理临时网络问题
     """
     model_identifier = active_config.name or "gpt-3.5-turbo"
+    if model_identifier.lower().startswith("kimi-k3"):
+        temperature = 1
     provider = (getattr(active_config, "provider", None) or "openai_compatible").strip()
 
     # 从配置获取超时设置，默认120秒（LLM响应可能较慢）
