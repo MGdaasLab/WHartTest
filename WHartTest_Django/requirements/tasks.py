@@ -3,12 +3,18 @@
 """
 import logging
 from celery import shared_task
+from django.conf import settings
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
 
-@shared_task(bind=True, name='requirements.execute_requirement_review')
+@shared_task(
+    bind=True,
+    name='requirements.execute_requirement_review',
+    time_limit=settings.REQUIREMENT_REVIEW_TASK_TIME_LIMIT,
+    soft_time_limit=settings.REQUIREMENT_REVIEW_TASK_SOFT_TIME_LIMIT,
+)
 def execute_requirement_review(self, document_id, analysis_options=None, review_type='comprehensive', user_id=None):
     """
     异步执行需求评审任务

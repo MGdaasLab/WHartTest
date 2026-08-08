@@ -1,5 +1,6 @@
 import logging
 import json
+import math
 import re
 from string import Template
 from typing import List, Dict, Any, Optional
@@ -14,20 +15,41 @@ from prompts.models import UserPrompt
 logger = logging.getLogger(__name__)
 
 
+def normalize_score(value, default=70):
+    """Convert an LLM-provided score to a database-safe integer in 0..100."""
+    try:
+        if value is None or isinstance(value, bool):
+            raise ValueError
+        score = float(value)
+        if not math.isfinite(score):
+            raise ValueError
+    except (TypeError, ValueError):
+        score = float(default)
+
+    return max(0, min(100, int(round(score))))
+
+
 def create_llm_instance(active_config, temperature=0.1):
     """
     根据配置创建LLM实例
     统一使用OpenAI兼容格式，支持所有兼容的服务商
     """
     model_identifier = active_config.name or "gpt-3.5-turbo"
+    if model_identifier.lower().startswith("kimi-k3"):
+        temperature = 1
+
+    configured_retries = getattr(active_config, "max_retries", None)
+    max_retries = 3 if configured_retries is None else max(0, int(configured_retries))
+    configured_timeout = getattr(active_config, "request_timeout", None)
+    request_timeout = 300 if configured_timeout is None else max(1, int(configured_timeout))
 
     llm_kwargs = {
         "model": model_identifier,
         "temperature": temperature,
         "api_key": active_config.api_key,
         "base_url": active_config.api_url,
-        "max_retries": 3,
-        "timeout": 120,
+        "max_retries": max_retries,
+        "timeout": request_timeout,
     }
     llm = ChatOpenAI(**llm_kwargs)
     logger.info(
@@ -86,12 +108,10 @@ def safe_llm_invoke(llm, messages, max_retries=3, retry_delay=2):
                     time.sleep(retry_delay * (attempt + 1))
                 continue
             raise
-        except Exception as e:
-            last_error = e
-            logger.warning(f"LLM 调用失败: {e}，尝试重试 ({attempt + 1}/{max_retries})")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (attempt + 1))
-            continue
+        except Exception:
+            # ChatOpenAI already applies the configured network retries. Retrying
+            # again here multiplies a 300-second timeout into hour-long stalls.
+            raise
 
     # 所有重试都失败
     raise last_error or Exception("LLM 调用失败，所有重试都未成功")
@@ -3120,6 +3140,9 @@ class RequirementReviewEngine:
                     analysis_name, display_name = future_to_analysis[future]
                     try:
                         result = future.result()
+                        result["overall_score"] = normalize_score(
+                            result.get("overall_score"), 70
+                        )
                         results[analysis_name] = result
                         # 收集图片警告（如果有）
                         if result.get("image_warning") and not image_warning:
@@ -3221,7 +3244,8 @@ class RequirementReviewEngine:
                 clarity,
                 logic,
             ]:
-                score = analysis.get("overall_score", 70)
+                score = normalize_score(analysis.get("overall_score"), 70)
+                analysis["overall_score"] = score
                 scores.append(score)
 
             overall_score = int(sum(scores) / len(scores)) if scores else 70
@@ -3880,8 +3904,9 @@ class RequirementReviewService:
 
             # 更新失败状态
             if "review_report" in locals():
-                review_report.status = "failed"
-                review_report.save()
+                # Avoid saving other dirty fields (for example an LLM-provided
+                # None score) while recording the failure state.
+                ReviewReport.objects.filter(pk=review_report.pk).update(status="failed")
 
             document.status = "failed"
             document.save()
@@ -3893,7 +3918,9 @@ class RequirementReviewService:
     ):
         """更新评审报告基本信息和专项分析详情"""
         review_report.overall_rating = analysis_result.get("overall_rating", "average")
-        review_report.completion_score = analysis_result.get("overall_score", 0)
+        review_report.completion_score = normalize_score(
+            analysis_result.get("overall_score"), 70
+        )
         review_report.total_issues = analysis_result.get("total_issues", 0)
         review_report.high_priority_issues = analysis_result.get(
             "high_priority_issues", 0
@@ -3911,6 +3938,20 @@ class RequirementReviewService:
 
         # 保存专项分析详情（包含issues, strengths, recommendations等完整数据）
         specialized_analyses = analysis_result.get("specialized_analyses", {})
+        analysis_keys = (
+            "completeness_analysis",
+            "consistency_analysis",
+            "clarity_analysis",
+            "testability_analysis",
+            "feasibility_analysis",
+            "logic_analysis",
+        )
+        for key in analysis_keys:
+            detail = specialized_analyses.get(key)
+            if not isinstance(detail, dict):
+                detail = {}
+                specialized_analyses[key] = detail
+            detail["overall_score"] = normalize_score(detail.get("overall_score"), 70)
         review_report.specialized_analyses = specialized_analyses
 
         # 同时保存各专项分析的分数到独立字段
