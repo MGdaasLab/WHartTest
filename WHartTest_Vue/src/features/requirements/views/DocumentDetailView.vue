@@ -828,6 +828,22 @@ const reviewProgress = ref<{
 
 // 轮询控制标志
 let isPollingActive = false;
+let reviewPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+const stopReviewPolling = () => {
+  isPollingActive = false;
+  if (reviewPollTimer !== null) {
+    clearTimeout(reviewPollTimer);
+    reviewPollTimer = null;
+  }
+};
+
+const scheduleReviewPoll = (callback: () => void, delay: number) => {
+  if (reviewPollTimer !== null) {
+    clearTimeout(reviewPollTimer);
+  }
+  reviewPollTimer = setTimeout(callback, delay);
+};
 
 // 计算属性
 const sortedModules = computed(() => {
@@ -946,10 +962,17 @@ const getCurrentStep = (status: DocumentStatus) => {
   return stepMap[status] || 0;
 };
 // 加载文档详情
-const loadDocument = async () => {
-  const documentId = route.params.id as string;
+const loadDocument = async (
+  documentIdOverride?: string,
+  autoStartPolling = true
+) => {
+  const routeDocumentId = route.params.id;
+  const documentId = documentIdOverride
+    || (typeof routeDocumentId === 'string' ? routeDocumentId : undefined);
   if (!documentId) {
-    Message.error(pageText.value.missingDocumentId);
+    if (autoStartPolling) {
+      Message.error(pageText.value.missingDocumentId);
+    }
     return;
   }
 
@@ -961,7 +984,7 @@ const loadDocument = async () => {
       document.value = response.data;
 
       // 如果文档正在评审中且没有正在进行的轮询，自动开始轮询进度
-      if (document.value?.status === 'reviewing' && !isPollingActive) {
+      if (autoStartPolling && document.value?.status === 'reviewing' && !isPollingActive) {
         reviewLoading.value = true;
         pollDocumentStatus();
       }
@@ -978,6 +1001,7 @@ const loadDocument = async () => {
 
 // 返回列表
 const goBack = () => {
+  stopReviewPolling();
   router.push('/requirements');
 };
 
@@ -1146,8 +1170,15 @@ const confirmReview = async () => {
 
 // 轮询文档状态
 const pollDocumentStatus = async () => {
-  const maxAttempts = 60; // 最多轮询60次（5分钟）
-  let attempts = 0;
+  if (isPollingActive) return;
+
+  const documentId = document.value?.id
+    || (typeof route.params.id === 'string' ? route.params.id : undefined);
+  if (!documentId) return;
+
+  const pollingDeadline = Date.now() + 3 * 60 * 60 * 1000;
+  const maxConsecutiveErrors = 10;
+  let consecutiveErrors = 0;
   isPollingActive = true;
 
   const poll = async () => {
@@ -1156,10 +1187,9 @@ const pollDocumentStatus = async () => {
       return;
     }
 
-    attempts++;
-
     try {
-      await loadDocument();
+      await loadDocument(documentId, false);
+      consecutiveErrors = 0;
 
       // 更新进度信息（从最新的评审报告获取）
       if (document.value?.status === 'reviewing' && document.value?.latest_review) {
@@ -1173,21 +1203,21 @@ const pollDocumentStatus = async () => {
 
       if (document.value?.status === 'review_completed') {
         // 评审完成
-        isPollingActive = false;
+        stopReviewPolling();
         reviewLoading.value = false;
         reviewProgress.value = null;
         Message.success(pageText.value.reviewCompletedMessage);
         return;
       } else if (document.value?.status === 'failed') {
         // 评审失败
-        isPollingActive = false;
+        stopReviewPolling();
         reviewLoading.value = false;
         reviewProgress.value = null;
         Message.error(pageText.value.reviewFailedMessage);
         return;
-      } else if (attempts >= maxAttempts) {
+      } else if (Date.now() >= pollingDeadline) {
         // 超时
-        isPollingActive = false;
+        stopReviewPolling();
         reviewLoading.value = false;
         reviewProgress.value = null;
         Message.warning(pageText.value.reviewTimeout);
@@ -1196,15 +1226,15 @@ const pollDocumentStatus = async () => {
 
       // 继续轮询，每3秒一次（更频繁地更新进度）
       if (isPollingActive) {
-        setTimeout(poll, 3000);
+        scheduleReviewPoll(poll, 3000);
       }
     } catch (error) {
       console.error('轮询文档状态失败:', error);
-      attempts++;
-      if (attempts < maxAttempts && isPollingActive) {
-        setTimeout(poll, 3000);
+      consecutiveErrors++;
+      if (consecutiveErrors < maxConsecutiveErrors && isPollingActive) {
+        scheduleReviewPoll(poll, 3000);
       } else {
-        isPollingActive = false;
+        stopReviewPolling();
         reviewLoading.value = false;
         reviewProgress.value = null;
         Message.error(pageText.value.fetchReviewStatusFailed);
@@ -1213,7 +1243,7 @@ const pollDocumentStatus = async () => {
   };
 
   // 首次轮询延迟2秒
-  setTimeout(poll, 2000);
+  scheduleReviewPoll(poll, 2000);
 };
 
 // 模块展开/收起
@@ -1607,7 +1637,7 @@ watch(
 
 // 组件卸载时停止轮询
 onBeforeUnmount(() => {
-  isPollingActive = false;
+  stopReviewPolling();
 });
 </script>
 
