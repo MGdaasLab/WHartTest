@@ -284,6 +284,16 @@ const applyCalculatedWidths = () => {
         valueEl.style.maxWidth = `${sizes.expectedValueWidth}px`
         valueEl.style.minWidth = `0px`
       }
+      
+      // 类型标签自适应：按标签内容实际宽度撑开类型列，保证完整包裹数据库类型文字
+      const card = configCardRef.value[index]
+      const tag = card?.querySelector('.type-tag')
+      const typeCol = card?.querySelector('.col-type')
+      if (tag && typeCol) {
+        // offsetWidth 含 padding；scrollWidth 为内容宽度，取较大者保证完整包裹类型文字
+        const tagWidth = Math.max(tag.offsetWidth, tag.scrollWidth + 12) // 12px = 标签左右 padding
+        typeCol.style.minWidth = `${tagWidth + 8}px` // 8px = 列右侧间距
+      }
     })
   })
 }
@@ -721,7 +731,7 @@ defineExpose({
                   </div>
                   
                   <!-- 第二列：类型 (减小宽度) -->
-                  <div class="overflow-hidden whitespace-nowrap col-type">
+                  <div class="overflow-visible whitespace-nowrap col-type">
                     <span class="type-tag">{{ config.type }}</span>
                   </div>
                   
@@ -1067,21 +1077,37 @@ defineExpose({
   
   /* 调整列宽度比例和间距 */
   .custom-grid {
-    grid-template-columns: 120px 70px 1fr 1fr 1fr !important;
+    /* 名称/类型列 auto 自适应（类型列宽度由 JS 按标签内容动态撑开） */
+    grid-template-columns: auto auto minmax(140px, 1fr) minmax(0, 1fr) minmax(0, 1fr) !important;
     column-gap: 0 !important;
+  }
+  
+  /* 数据库/用户名列允许收缩（配合省略号截断），避免挤压名称与类型列 */
+  .custom-grid > div:nth-child(4),
+  .custom-grid > div:nth-child(5) {
+    min-width: 0 !important;
   }
   
   .col-name {
     min-width: 0 !important;
-    max-width: 120px !important;
+    max-width: none !important;
     padding-right: 0 !important;
     margin-right: 0 !important;
+    /* 名称过长时截断为省略号，避免溢出覆盖类型标签 */
+    overflow: hidden !important;
+  }
+  
+  .col-name .config-name {
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* 不设置 max-width: 100%（会干扰 grid 轨道 max-content 计算） */
   }
   
   .col-type {
-    width: 70px !important;
-    min-width: 70px !important;
-    max-width: 70px !important;
+    width: auto !important;
+    max-width: none !important;
     padding-left: 0 !important;
     padding-right: 8px !important;
     margin-left: 0 !important;
@@ -1098,8 +1124,8 @@ defineExpose({
     align-items: center;
     width: 100%;
     
-    /* 图标容器固定宽度 */
-    > :first-child {
+    /* 图标容器固定宽度（用精确类名，避免误匹配其他 first-child 元素） */
+    .config-icon-shell {
       flex: 0 0 auto;
       width: 32px; /* 确保图标容器有固定宽度 */
     }
@@ -1121,7 +1147,7 @@ defineExpose({
       /* 五列不等宽网格布局 */
       .grid.grid-cols-5 {
         display: grid;
-        grid-template-columns: 120px 70px 1fr 1fr 1fr;
+        grid-template-columns: auto auto minmax(140px, 1fr) minmax(0, 1fr) minmax(0, 1fr);
         gap: 0.5rem;
         width: 100%;
         
@@ -1182,8 +1208,8 @@ defineExpose({
       }
     }
     
-    /* 按钮组固定宽度 */
-    > :last-child {
+    /* 按钮组固定宽度（用精确类名，避免误匹配其他 last-child 元素） */
+    .button-group {
       flex: 0 0 auto;
       white-space: nowrap;
     }
@@ -1355,6 +1381,9 @@ defineExpose({
   justify-content: center;
   letter-spacing: 0.05em;
   height: 18px;
+  /* 强制标签按内容宽度展开，完整包裹数据库类型文字 */
+  width: max-content;
+  flex-shrink: 0;
 }
 
 /* 图标大小和对齐方式调整 */
