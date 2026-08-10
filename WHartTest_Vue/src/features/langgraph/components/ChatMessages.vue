@@ -41,7 +41,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue';
 import MessageItem from './MessageItem.vue';
-import { useSystemConfigStore } from '@/store/systemConfigStore';
+import { brandLogoUrl } from '@/utils/assetUrl';
 import type { TodoDisplayPayload, ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
 import type { FileAsset } from '@/features/file-management/types';
 import { useAppI18n } from '@/composables/useAppI18n';
@@ -86,10 +86,6 @@ const props = withDefaults(defineProps<Props>(), {
   isLoadingMore: false,
 });
 const { isEnglish } = useAppI18n();
-// 自定义 Logo：跟随系统配置（与平台左上角、登录页保持一致）
-// 系统配置模块上传 Logo 后会即时替换此处空状态 Logo
-const systemConfigStore = useSystemConfigStore();
-const brandLogoUrl = computed(() => systemConfigStore.getLogo);
 const text = computed(() => (
   isEnglish.value
     ? { 
