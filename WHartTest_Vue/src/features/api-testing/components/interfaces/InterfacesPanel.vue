@@ -3,11 +3,12 @@ import { ref, onMounted, watch, computed, nextTick, provide } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
 import type { FormInstance } from '@arco-design/web-vue'
 import { useProjectStore } from '@/store/projectStore'
-import { IconPlus, IconSearch, IconFolder, IconEdit, IconDelete, IconList, IconApps, IconInfoCircle, IconSend, IconCopy } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconSearch, IconFolder, IconEdit, IconDelete, IconList, IconSend, IconCopy, IconUpload, IconDownload, IconClose } from '@arco-design/web-vue/es/icon'
 import type { ApiModule, PaginatedData, ApiInterface } from '../../services/interfaceService'
-import { getInterfaces, getInterfaceById, deleteInterface, duplicateInterface } from '../../services/interfaceService'
+import type { InterfaceStatus } from '../../types/interface'
+import { getInterfaces, getInterfaceById, deleteInterface, batchDeleteInterfaces, duplicateInterface, importApiDocument, importApiDocumentText, exportApiDocument } from '../../services/interfaceService'
+import type { ApiDocumentExportFormat, ApiDocumentImportType } from '../../services/interfaceService'
 import { getModules, createModule, updateModule, deleteModule, moveModule } from '../../services/moduleService'
-import { toArray } from '../../services/responseHelpers'
 import ApiDetail from './ApiDetail.vue'
 import ApiTabs from './ApiTabs.vue'
 import ModuleTree from './ModuleTree.vue'
@@ -31,6 +32,19 @@ const selectedApi = ref<ApiModule | undefined>()
 const selectedInterface = ref<ApiInterface | undefined>(undefined)
 const expandedIds = ref<number[]>([])
 const detailKey = ref(0)
+const openApiFileInput = ref<HTMLInputElement | null>(null)
+const importingOpenApi = ref(false)
+const exportingOpenApi = ref(false)
+const selectedImportType = ref<ApiDocumentImportType>('swagger')
+const importTextDialogVisible = ref(false)
+const importTextDialogType = ref<'swagger' | 'curl'>('swagger')
+const importTextValue = ref('')
+// 导入文件弹窗相关状态
+const importFileDialogVisible = ref(false)
+const importFileDialogType = ref<ApiDocumentImportType>('swagger')
+const importFileSelected = ref<File | null>(null)
+const stripBaseUrl = ref(true)
+const createEnvironments = ref(false)
 // 无模块接口相关状态
 const noModuleInterfaces = ref<ApiInterface[]>([])
 const hasNoModuleInterfaces = ref(false)
@@ -78,9 +92,6 @@ const moduleText = computed(() => isEnglish.value
 )
 
 // 视图模式控制
-// 模块树显示模式: 'list' - 列表模式（不显示接口）, 'detail' - 详情模式（显示接口）
-const treeDisplayMode = ref<'list' | 'detail'>('detail')
-// 视图模式应该根据treeDisplayMode来决定默认值
 const viewMode = ref<'list' | 'detail'>('detail')
 // 分页相关状态
 const pagination = ref({
@@ -88,16 +99,199 @@ const pagination = ref({
   pageSize: 20,
   total: 0
 })
+
+// 列表筛选 / 排序（服务端）
+// undefined=跟随左侧树；null=列表显式“不限模块”；number=指定模块
+const listFilterModuleId = ref<number | null | undefined>(undefined)
+const listFilterStatus = ref<InterfaceStatus | ''>('')
+const listSortField = ref<'created_at' | 'updated_at' | ''>('created_at')
+const listSortOrder = ref<'ascend' | 'descend' | ''>('descend')
+const listSearchKeyword = ref('')
+
 // 全部接口列表（用于列表模式）
 const allInterfaces = ref<ApiInterface[]>([])
 // 当前模块名称
+const findModuleNameById = (modules: ApiModule[], id: number): string | undefined => {
+  for (const module of modules || []) {
+    if (module.id === id) return module.name
+    if (module.children?.length) {
+      const child = findModuleNameById(module.children, id)
+      if (child) return child
+    }
+  }
+  return undefined
+}
+
 const currentModuleName = computed(() => {
+  if (listFilterModuleId.value === null) return '全部接口'
+  if (typeof listFilterModuleId.value === 'number') {
+    return findModuleNameById(apis.value || [], listFilterModuleId.value) || '全部接口'
+  }
   if (!selectedApi.value) return '全部接口'
   return selectedApi.value.name
 })
 
-const toInterfaceList = (results: unknown): ApiInterface[] => {
-  return toArray<ApiInterface>(results)
+const fileImportTypes: ApiDocumentImportType[] = [
+  'swagger', 'postman', 'markdown', 'har', 'insomnia', 'apidoc',
+  'apifox', 'apipost', 'yapi', 'apizza', 'eolink'
+]
+
+const refreshAfterImport = async () => {
+  await Promise.all([
+    fetchApiModules(),
+    fetchInterfaceListForDisplay()
+  ])
+
+  if (selectedApi.value?.id) {
+    await fetchInterfaces(selectedApi.value.id)
+  }
+}
+
+const showImportResult = (result: any) => {
+  const envCount = Array.isArray(result?.created_environments) ? result.created_environments.length : 0
+  const envText = envCount > 0 ? `，创建环境 ${envCount} 个` : ''
+  Message.success(
+    `导入完成：新增 ${result?.created_count ?? 0} 个，更新 ${result?.updated_count ?? 0} 个，跳过 ${result?.skipped_count ?? 0} 个${envText}`
+  )
+}
+
+// 导入格式下拉选项（与按钮下拉一致，用于弹窗内二次选择）
+const importFormatOptions: Array<{ label: string; value: ApiDocumentImportType }> = [
+  { label: 'Swagger 文件', value: 'swagger' },
+  { label: 'Postman', value: 'postman' },
+  { label: 'Markdown', value: 'markdown' },
+  { label: 'HAR', value: 'har' },
+  { label: 'Insomnia', value: 'insomnia' },
+  { label: 'ApiDoc', value: 'apidoc' },
+  { label: 'Apifox', value: 'apifox' },
+  { label: 'Apipost', value: 'apipost' },
+  { label: 'YApi', value: 'yapi' },
+  { label: 'Apizza', value: 'apizza' },
+  { label: 'Eolink', value: 'eolink' },
+]
+
+const handleImportTypeSelect = (value: unknown) => {
+  if (!projectStore.currentProjectId) {
+    Message.warning('请先选择项目')
+    return
+  }
+
+  const importType = String(value) as ApiDocumentImportType | 'swagger-url'
+  if (importType === 'swagger-url' || importType === 'curl') {
+    importTextDialogType.value = importType === 'swagger-url' ? 'swagger' : 'curl'
+    importTextValue.value = ''
+    importTextDialogVisible.value = true
+    return
+  }
+  if (!fileImportTypes.includes(importType as ApiDocumentImportType)) return
+  // 文件类型：不再直接进入文件选择，改为打开导入弹窗（默认显示用户刚才选择的格式）
+  selectedImportType.value = importType as ApiDocumentImportType
+  importFileDialogType.value = importType as ApiDocumentImportType
+  importFileSelected.value = null
+  stripBaseUrl.value = true
+  createEnvironments.value = false
+  importFileDialogVisible.value = true
+}
+
+// 弹窗内点击文件区域，唤出 Windows 文件选择
+const handlePickImportFile = () => {
+  if (importingOpenApi.value) return
+  if (openApiFileInput.value) {
+    openApiFileInput.value.value = ''
+    openApiFileInput.value.click()
+  }
+}
+
+// 文件选择回调：仅记录已选文件，不立即导入
+const handleOpenApiFileChange = (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (file) {
+    importFileSelected.value = file
+  }
+  target.value = ''
+}
+
+const resetImportFileDialog = () => {
+  importFileSelected.value = null
+  stripBaseUrl.value = true
+  createEnvironments.value = false
+}
+
+// 弹窗「开始导入」按钮
+const handleImportFileConfirm = async () => {
+  if (!importFileSelected.value) {
+    Message.warning('请先选择要导入的文件')
+    return
+  }
+
+  try {
+    importingOpenApi.value = true
+    const response = await importApiDocument(importFileSelected.value, importFileDialogType.value, {
+      strip_base_url: stripBaseUrl.value,
+      create_environments: createEnvironments.value,
+    })
+    showImportResult(response.data)
+    await refreshAfterImport()
+    importFileDialogVisible.value = false
+    resetImportFileDialog()
+  } catch (error: any) {
+    Message.error(error.message || '导入接口文档失败')
+  } finally {
+    importingOpenApi.value = false
+  }
+}
+
+const handleImportTextConfirm = async () => {
+  const value = importTextValue.value.trim()
+  if (!value) {
+    Message.warning(importTextDialogType.value === 'swagger' ? '请输入 Swagger URL' : '请输入 cURL 命令')
+    return false
+  }
+
+  try {
+    importingOpenApi.value = true
+    const response = await importApiDocumentText(importTextDialogType.value, value)
+    showImportResult(response.data)
+    await refreshAfterImport()
+    importTextDialogVisible.value = false
+    return true
+  } catch (error: any) {
+    Message.error(error.message || '导入接口文档失败')
+    return false
+  } finally {
+    importingOpenApi.value = false
+  }
+}
+
+const handleExportOpenApi = async (value: unknown) => {
+  if (!projectStore.currentProjectId) {
+    Message.warning('请先选择项目')
+    return
+  }
+
+  const supportedFormats: ApiDocumentExportFormat[] = ['json', 'yaml', 'apifox', 'apipost', 'yapi']
+  const format: ApiDocumentExportFormat = supportedFormats.includes(value as ApiDocumentExportFormat)
+    ? value as ApiDocumentExportFormat
+    : 'json'
+
+  try {
+    exportingOpenApi.value = true
+    const { blob, filename } = await exportApiDocument(format)
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+    Message.success('导出接口文档成功')
+  } catch (error: any) {
+    Message.error(error.message || '导出接口文档失败')
+  } finally {
+    exportingOpenApi.value = false
+  }
 }
 
 // 获取接口列表（支持分页）
@@ -109,19 +303,40 @@ const fetchInterfaceListForDisplay = async () => {
 
   try {
     loading.value = true
-    const params = {
+    const ordering = listSortField.value
+      ? `${listSortOrder.value === 'ascend' ? '' : '-'}${listSortField.value}`
+      : '-created_at'
+
+    // 列表模块筛选：undefined 跟随左侧树；null 表示不限模块；number 指定模块
+    let moduleId: number | undefined
+    if (listFilterModuleId.value === undefined) {
+      moduleId = selectedApi.value?.id
+    } else if (listFilterModuleId.value === null) {
+      moduleId = undefined
+    } else {
+      moduleId = listFilterModuleId.value
+    }
+
+    const params: Record<string, any> = {
       project_id: Number(projectStore.currentProjectId),
       page: pagination.value.page,
       page_size: pagination.value.pageSize,
-      ...(selectedApi.value ? { module_id: selectedApi.value.id } : {})
+      ordering,
     }
-
+    if (moduleId != null) {
+      params.module_id = moduleId
+    }
+    if (listFilterStatus.value) {
+      params.status = listFilterStatus.value
+    }
+    if (listSearchKeyword.value.trim()) {
+      params.search = listSearchKeyword.value.trim()
+    }
+    
     const { data } = await getInterfaces(params)
     if (data) {
-      const resultList = toInterfaceList(data.results ?? data)
-      allInterfaces.value = resultList
+      allInterfaces.value = data.results || []
       pagination.value.total = data.count || 0
-      console.log(`获取到${resultList.length}个接口，总数：${data.count}`)
     } else {
       allInterfaces.value = []
       pagination.value.total = 0
@@ -149,13 +364,12 @@ const fetchInterfaces = async (moduleId?: number | null) => {
       project_id: Number(projectStore.currentProjectId),
       page_size: 1000 // 设置较大的页面大小，确保能显示所有接口
     })
-    const resultList = toInterfaceList(data?.results ?? data)
-    if (resultList.length > 0) {
-      interfaces.value = resultList
-      console.log(`获取到${resultList.length}个接口`)
+    if (data?.results) {
+      interfaces.value = data.results
+      console.log(`获取到${data.results.length}个接口`)
       // 如果有选中的接口，更新它的数据
       if (selectedInterface.value) {
-        const updatedInterface = resultList.find(item => item.id === selectedInterface.value?.id)
+        const updatedInterface = data.results.find(item => item.id === selectedInterface.value?.id)
         if (updatedInterface) {
           selectedInterface.value = updatedInterface
         }
@@ -187,11 +401,11 @@ const fetchNoModuleInterfaces = async () => {
       page_size: 1000,
       no_module: true
     })
-    const resultList = toInterfaceList(data?.results ?? data)
-    if (resultList.length > 0) {
-      noModuleInterfaces.value = resultList
+    
+    if (data?.results && data.results.length > 0) {
+      noModuleInterfaces.value = data.results
       hasNoModuleInterfaces.value = true
-      console.log(`获取到${resultList.length}个无模块接口`)
+      console.log(`获取到${data.results.length}个无模块接口`)
     } else {
       noModuleInterfaces.value = []
       hasNoModuleInterfaces.value = false
@@ -222,40 +436,40 @@ provide('dragOverPosition', dragOverPosition)
 
 const handleModuleDrop = async (dragged: ApiModule, target: ApiModule, position: number) => {
   if (!projectStore.currentProjectId || dragged.id === target.id) return
-
+  
   // 检查移动后的深度是否超过5级限制
   let newLevel = target.level as number
   if (position === 0) {
     newLevel = (target.level as number) + 1
   }
-
+  
   const getSubtreeDepth = (module: ApiModule): number => {
     if (!module.children || module.children.length === 0) return 1
     return 1 + Math.max(...module.children.map(child => getSubtreeDepth(child)))
   }
-
+  
   const subtreeDepth = getSubtreeDepth(dragged)
   if (newLevel + subtreeDepth - 1 > 5) {
-    Message.error('移动后模块层级将超过5级限制')
+    Message.error(isEnglish.value ? 'Hierarchy exceeds the limit of 5 levels' : '移动后模块层级将超过5级限制')
     return
   }
-
+  
   loading.value = true
   try {
     const response = await moveModule(dragged.id, {
       target_id: target.id,
       drop_position: position
     })
-
+    
     if (response.status === 'success') {
-      Message.success('模块排序/移动成功')
+      Message.success(isEnglish.value ? 'Module reordered successfully' : '模块排序/移动成功')
       await fetchApiModules()
     } else {
-      Message.error(response.message || '移动模块失败')
+      Message.error(response.message || (isEnglish.value ? 'Failed to move module' : '移动模块失败'))
     }
   } catch (error: any) {
     console.error('Failed to move module:', error)
-    Message.error(error.message || '移动模块时发生错误')
+    Message.error(error.message || (isEnglish.value ? 'Error moving module' : '移动模块时发生错误'))
   } finally {
     loading.value = false
     draggingModule.value = null
@@ -264,6 +478,39 @@ const handleModuleDrop = async (dragged: ApiModule, target: ApiModule, position:
   }
 }
 provide('handleModuleDrop', handleModuleDrop)
+
+// 递归收集所有模块ID
+const collectAllModuleIds = (moduleList: ApiModule[]): number[] => {
+  const ids: number[] = []
+  const traverse = (modules: ApiModule[]) => {
+    for (const module of modules) {
+      ids.push(module.id)
+      if (module.children && module.children.length > 0) {
+        traverse(module.children)
+      }
+    }
+  }
+  traverse(moduleList)
+  return ids
+}
+
+// 预加载所有模块的接口数据
+const preloadAllModulesData = async (moduleList: ApiModule[]) => {
+  const allModuleIds = collectAllModuleIds(moduleList)
+
+  // 为每个模块预加载接口数据
+  const preloadPromises = allModuleIds.map(moduleId =>
+    getInterfaces({
+      module_id: moduleId,
+      project_id: Number(projectStore.currentProjectId),
+      page_size: 1000
+    }).catch(error => {
+      console.error(`Failed to preload interfaces for module ${moduleId}:`, error)
+    })
+  )
+
+  await Promise.all(preloadPromises)
+}
 
 // 获取API模块列表
 const fetchApiModules = async () => {
@@ -280,7 +527,14 @@ const fetchApiModules = async () => {
       project_id: projectStore.currentProjectId
     })
 
-    apis.value = toArray<ApiModule>(response.data?.results ?? response.data)
+    if (response.data?.results) {
+      apis.value = response.data.results
+      // 首次加载时预加载所有模块的接口数据
+      await preloadAllModulesData(response.data.results)
+    } else {
+      apis.value = []
+    }
+
     // 获取无模块接口
     await fetchNoModuleInterfaces()
   } catch (error: any) {
@@ -296,19 +550,19 @@ const getFilteredModules = computed(() => {
   if (!searchKeyword.value) return apis.value
 
   const keyword = searchKeyword.value.toLowerCase()
-
+  
   const filterModules = (modules: ApiModule[]): ApiModule[] => {
     return modules.reduce((filtered: ApiModule[], module) => {
       const isMatch = module.name.toLowerCase().includes(keyword)
       const children = module.children ? filterModules(module.children) : []
-
+      
       if (isMatch || children.length > 0) {
         filtered.push({
           ...module,
           children: children
         })
       }
-
+      
       return filtered
     }, [])
   }
@@ -316,74 +570,39 @@ const getFilteredModules = computed(() => {
   return filterModules(apis.value)
 })
 
+// 扁平模块选项（列表筛选用，保留层级缩进）
+const flattenModuleOptions = (modules: ApiModule[], level = 0): Array<{ id: number; name: string; level: number }> => {
+  const result: Array<{ id: number; name: string; level: number }> = []
+  for (const module of modules || []) {
+    if (module?.id == null) continue
+    result.push({ id: module.id, name: module.name, level })
+    if (module.children?.length) {
+      result.push(...flattenModuleOptions(module.children, level + 1))
+    }
+  }
+  return result
+}
+
+const listModuleOptions = computed(() => flattenModuleOptions(apis.value || []))
+
+
 // 切换展开状态
 const handleToggleExpand = async (moduleId: number) => {
   const index = expandedIds.value.indexOf(moduleId)
   if (index === -1) {
+    // 展开时，添加到展开列表
     expandedIds.value.push(moduleId)
+    // 注意：不在这里调用 fetchInterfaces，因为子组件的 watch 会自动调用
   } else {
+    // 收起时，从展开列表中移除
     expandedIds.value.splice(index, 1)
   }
-  // 同时获取该模块的接口列表
-  await fetchInterfaces(moduleId)
 }
 
 // 选择模块
 const handleSelectModule = async (module: ApiModule) => {
   selectedApi.value = module
-
-  // 根据树显示模式决定右侧显示什么
-  if (treeDisplayMode.value === 'list') {
-    // 列表模式：点击模块显示接口列表
-    viewMode.value = 'list'
-    pagination.value.page = 1 // 重置页码
-
-    try {
-      loading.value = true
-      const { data } = await getInterfaces({
-        module_id: module.id,
-        project_id: Number(projectStore.currentProjectId),
-        page_size: 1000 // 设置较大的页面大小，确保能显示所有接口
-      })
-      const resultList = toInterfaceList(data?.results ?? data)
-      if (resultList.length > 0) {
-        console.log(`模块${module.name}获取到${resultList.length}个接口`)
-      }
-      interfaces.value = resultList
-    } catch (error: any) {
-      Message.error(error.message || '获取接口列表失败')
-      interfaces.value = []
-    } finally {
-      loading.value = false
-    }
-
-    // 获取用于列表显示的接口数据
-    await fetchInterfaceListForDisplay()
-  } else {
-    // 详情模式：保持原有逻辑，展开模块显示接口
-    try {
-      loading.value = true
-      const { data } = await getInterfaces({
-        module_id: module.id,
-        project_id: Number(projectStore.currentProjectId),
-        page_size: 1000
-      })
-      const resultList = toInterfaceList(data?.results ?? data)
-      if (resultList.length > 0) {
-        console.log(`模块${module.name}获取到${resultList.length}个接口`)
-        // 如果有接口数据，就展开该模块
-        if (!expandedIds.value.includes(module.id)) {
-          expandedIds.value.push(module.id)
-        }
-      }
-      interfaces.value = resultList
-    } catch (error: any) {
-      Message.error(error.message || '获取接口列表失败')
-      interfaces.value = []
-    } finally {
-      loading.value = false
-    }
-  }
+  // 不再自动展开模块，由用户通过点击控制展开/收起
 }
 
 // 打开创建模块表单
@@ -506,10 +725,10 @@ const handleSelectInterface = (api: ApiInterface) => {
   console.log('父组件收到接口选择事件:', api)
   selectedInterface.value = api
   viewMode.value = 'detail' // 切换到详情模式
-
+  
   // 创建或激活页签
   const tabId = tabsStore.openOrActivateInterface(api)
-
+  
   // 如果是已存在的页签，强制触发状态恢复
   const existingTab = tabsStore.tabs.find(t => t.id === tabId)
   if (existingTab && existingTab.activeTab) {
@@ -519,8 +738,35 @@ const handleSelectInterface = (api: ApiInterface) => {
       detailKey.value++
     })
   }
-
+  
   console.log('已更新选中的接口:', selectedInterface.value)
+}
+
+
+const applyInterfacePatchToLocalLists = (updated: ApiInterface) => {
+  if (!updated?.id) return
+
+  const patchList = (list: ApiInterface[]) => {
+    const index = list.findIndex(item => item.id === updated.id)
+    if (index !== -1) {
+      list[index] = { ...list[index], ...updated }
+    }
+  }
+
+  patchList(interfaces.value)
+  patchList(noModuleInterfaces.value)
+  patchList(allInterfaces.value)
+
+  if (selectedInterface.value?.id === updated.id) {
+    selectedInterface.value = { ...selectedInterface.value, ...updated }
+  }
+}
+
+const handleInterfaceStatusChange = (payload: { api: ApiInterface; status: InterfaceStatus }) => {
+  const { api } = payload
+  if (!api?.id) return
+  // list already patched server + optimistic row; sync other local caches / selection
+  applyInterfacePatchToLocalLists(api)
 }
 
 // 更新接口
@@ -531,7 +777,7 @@ const handleUpdateInterface = (api: ApiInterface) => {
     console.log('接收到接口数据，设置为当前选中接口:', api)
     // 设置当前选中的接口
     selectedInterface.value = api
-
+    
     // 如果接口有ID且在接口列表中存在，则更新列表中的数据
     if (api.id) {
       const index = interfaces.value.findIndex(item => item.id === api.id)
@@ -543,7 +789,7 @@ const handleUpdateInterface = (api: ApiInterface) => {
         interfaces.value.push(api)
       }
     }
-
+    
     // 确保在下一个tick渲染完成后，detailKey不会导致selectedInterface被清空
     nextTick(() => {
       console.log('确认选中接口状态:', selectedInterface.value)
@@ -617,7 +863,7 @@ const handleCopyInterface = async (api: ApiInterface) => {
 
 const handleDeleteInterface = (api: ApiInterface) => {
   const modalLoading = ref(false)
-
+  
   Modal.error({
     title: '确认删除',
     content: `确定要删除接口"${api.name}"吗？删除后不可恢复。`,
@@ -630,7 +876,7 @@ const handleDeleteInterface = (api: ApiInterface) => {
     async onOk() {
       if (modalLoading.value) return
       modalLoading.value = true
-
+      
       try {
         const previousActiveTabId = tabsStore.activeTabId
         const deletingCurrentInterface = selectedInterface.value?.id === api.id
@@ -657,7 +903,7 @@ const handleDeleteInterface = (api: ApiInterface) => {
         const deletedActiveTab = previousActiveTabId
           ? removedTabIds.includes(previousActiveTabId)
           : false
-
+        
         // 如果删除的是当前选中的接口，清空选中状态
         if (selectedInterface.value?.id === api.id) {
           selectedInterface.value = undefined
@@ -671,14 +917,14 @@ const handleDeleteInterface = (api: ApiInterface) => {
             detailKey.value++
           }
         }
-
+        
         // 如果接口有模块ID，刷新该模块的接口列表
         if (api.module) {
           // 确保模块是展开状态
           if (!expandedIds.value.includes(api.module)) {
             expandedIds.value.push(api.module)
           }
-
+          
           // 先从expandedIds中移除，再添加回来，强制刷新
           const index = expandedIds.value.indexOf(api.module)
           if (index > -1) {
@@ -703,6 +949,116 @@ const handleDeleteInterface = (api: ApiInterface) => {
   })
 }
 
+const handleBatchDeleteInterfaces = (apis: ApiInterface[]) => {
+  const targets = (apis || []).filter(item => item?.id != null)
+  if (targets.length === 0) {
+    Message.warning('请先选择要删除的接口')
+    return
+  }
+
+  const namesPreview = targets
+    .slice(0, 3)
+    .map(item => item.name)
+    .join('、')
+  const moreText = targets.length > 3 ? ` 等 ${targets.length} 个接口` : ''
+  const modalLoading = ref(false)
+
+  Modal.error({
+    title: '确认批量删除',
+    content: `确定删除「${namesPreview}${moreText}」吗？删除后不可恢复。`,
+    hideCancel: false,
+    okText: '删除',
+    cancelText: '取消',
+    okButtonProps: {
+      status: 'danger'
+    },
+    async onOk() {
+      if (modalLoading.value) return
+      modalLoading.value = true
+
+      try {
+        const ids = targets.map(item => item.id!)
+        const previousActiveTabId = tabsStore.activeTabId
+        const deletingCurrentInterface = !!selectedInterface.value?.id && ids.includes(selectedInterface.value.id)
+        const previousActiveTab = previousActiveTabId
+          ? tabsStore.tabs.find(tab => tab.id === previousActiveTabId)
+          : undefined
+
+        const response = await batchDeleteInterfaces(ids)
+        const deletedIds = Array.isArray(response.data?.deleted_ids)
+          ? response.data.deleted_ids.filter((id: any): id is number => Number.isInteger(id))
+          : ids
+
+        Message.success(response.data?.message || `成功删除 ${deletedIds.length} 个接口`)
+
+        removeInterfacesFromLocalLists(deletedIds)
+        pagination.value.total = Math.max(0, (pagination.value.total || 0) - deletedIds.length)
+
+        const removedTabIds = deletedIds.flatMap(interfaceId => tabsStore.removeInterfaceTabs(interfaceId))
+
+        if (
+          removedTabIds.length === 0 &&
+          deletingCurrentInterface &&
+          previousActiveTab?.id &&
+          !previousActiveTab.interfaceId
+        ) {
+          tabsStore.removeTab(previousActiveTab.id)
+          removedTabIds.push(previousActiveTab.id)
+        }
+
+        if (selectedInterface.value?.id && deletedIds.includes(selectedInterface.value.id)) {
+          selectedInterface.value = undefined
+        }
+
+        const deletedActiveTab = previousActiveTabId
+          ? removedTabIds.includes(previousActiveTabId)
+          : false
+
+        if (deletedActiveTab) {
+          if (tabsStore.activeTabId) {
+            handleTabChange(tabsStore.activeTabId)
+          } else {
+            viewMode.value = 'list'
+            detailKey.value++
+          }
+        }
+
+        // 仅刷新当前已展开模块，与单删一致：先收起再展开触发 ModuleTree 重拉
+        const moduleIds = Array.from(new Set(
+          targets
+            .map(item => item.module)
+            .filter((moduleId): moduleId is number => typeof moduleId === 'number')
+        ))
+        const expandedModuleIds = moduleIds.filter(moduleId => expandedIds.value.includes(moduleId))
+        if (expandedModuleIds.length > 0) {
+          for (const moduleId of expandedModuleIds) {
+            const index = expandedIds.value.indexOf(moduleId)
+            if (index > -1) {
+              expandedIds.value.splice(index, 1)
+            }
+          }
+          await nextTick()
+          await Promise.all(expandedModuleIds.map(async (moduleId) => {
+            if (!expandedIds.value.includes(moduleId)) {
+              expandedIds.value.push(moduleId)
+            }
+            await fetchInterfaces(moduleId)
+          }))
+        }
+        if (targets.some(item => !item.module) || hasNoModuleInterfaces.value) {
+          await fetchNoModuleInterfaces()
+        }
+        await fetchInterfaceListForDisplay()
+      } catch (error: any) {
+        Message.error(error?.message || '批量删除接口失败')
+        throw error
+      } finally {
+        modalLoading.value = false
+      }
+    }
+  })
+}
+
 // 编辑接口 - 进入接口详情编辑页面
 const handleEditInterface = (api: ApiInterface) => {
   console.log('编辑接口:', api)
@@ -710,7 +1066,7 @@ const handleEditInterface = (api: ApiInterface) => {
   // 创建或激活页签
   const tabId = tabsStore.openOrActivateInterface(api)
   viewMode.value = 'detail' // 切换到详情模式进行编辑
-
+  
   // 如果是已存在的页签，强制触发状态恢复
   const existingTab = tabsStore.tabs.find(t => t.id === tabId)
   if (existingTab && existingTab.activeTab) {
@@ -730,7 +1086,7 @@ const handleSelectNoModuleInterface = async (api: ApiInterface) => {
     const tabId = tabsStore.openOrActivateInterface(response.data)
     // 切换到详情视图
     viewMode.value = 'detail'
-
+    
     // 如果是已存在的页签，强制触发状态恢复
     const existingTab = tabsStore.tabs.find(t => t.id === tabId)
     if (existingTab && existingTab.activeTab) {
@@ -738,7 +1094,7 @@ const handleSelectNoModuleInterface = async (api: ApiInterface) => {
         detailKey.value++
       })
     }
-
+    
     // 刷新无模块接口列表
     await fetchNoModuleInterfaces()
   } catch (error: any) {
@@ -747,7 +1103,7 @@ const handleSelectNoModuleInterface = async (api: ApiInterface) => {
     selectedInterface.value = api
     // 创建或激活页签
     const tabId = tabsStore.openOrActivateInterface(api)
-
+    
     // 如果是已存在的页签，强制触发状态恢复
     const existingTab = tabsStore.tabs.find(t => t.id === tabId)
     if (existingTab && existingTab.activeTab) {
@@ -755,7 +1111,7 @@ const handleSelectNoModuleInterface = async (api: ApiInterface) => {
         detailKey.value++
       })
     }
-
+    
     // 即使出错也要切换到详情视图
     viewMode.value = 'detail'
   } finally {
@@ -768,12 +1124,12 @@ const handleRefresh = async (moduleId?: number) => {
   try {
     loading.value = true
     console.log('刷新模块:', moduleId, '当前选中接口:', selectedInterface.value)
-
+    
     // 如果有模块ID，确保模块是展开状态
     if (moduleId && !expandedIds.value.includes(moduleId)) {
       expandedIds.value.push(moduleId)
     }
-
+    
     // 同时刷新模块列表和接口列表
     if (moduleId) {
       await Promise.all([
@@ -827,6 +1183,23 @@ const handleRefresh = async (moduleId?: number) => {
 }
 
 // 处理分页变化
+const handleListFilterChange = (payload: {
+  moduleId: number | null
+  status: InterfaceStatus | ''
+  sortField: 'created_at' | 'updated_at' | ''
+  sortOrder: 'ascend' | 'descend' | ''
+  keyword: string
+}) => {
+  // null=不限模块；number=指定模块（列表筛选显式生效，不再回退左侧树）
+  listFilterModuleId.value = payload.moduleId
+  listFilterStatus.value = payload.status
+  listSortField.value = payload.sortField || 'created_at'
+  listSortOrder.value = payload.sortOrder || 'descend'
+  listSearchKeyword.value = payload.keyword || ''
+  pagination.value.page = 1
+  fetchInterfaceListForDisplay()
+}
+
 const handlePageChange = (page: number) => {
   pagination.value.page = page
   fetchInterfaceListForDisplay()
@@ -864,7 +1237,7 @@ const handleInterfaceRun = async (api: ApiInterface) => {
   autoDebug.value = true
   // 切换到详情模式
   viewMode.value = 'detail'
-
+  
   // 如果是已存在的页签，强制触发状态恢复
   const existingTab = tabsStore.tabs.find(t => t.id === tabId)
   if (existingTab && existingTab.activeTab) {
@@ -886,7 +1259,7 @@ const handleRunInterface = async (api: ApiInterface) => {
   autoDebug.value = true
   // 切换到详情模式
   viewMode.value = 'detail'
-
+  
   // 如果是已存在的页签，强制触发状态恢复
   const existingTab = tabsStore.tabs.find(t => t.id === tabId)
   if (existingTab && existingTab.activeTab) {
@@ -900,16 +1273,25 @@ const handleRunInterface = async (api: ApiInterface) => {
 // 监听项目变化
 watch(
   () => projectStore.currentProjectId,
-  () => {
-    fetchApiModules()
+  (newProjectId, oldProjectId) => {
+    if (newProjectId !== oldProjectId) {
+      tabsStore.clearInterfaceTabs()
+      autoDebug.value = false
+      detailKey.value++
+    }
+
     selectedApi.value = undefined
     selectedInterface.value = undefined
     interfaces.value = []
+    allInterfaces.value = []
     noModuleInterfaces.value = []
     hasNoModuleInterfaces.value = false
     expandedIds.value = []
     viewMode.value = 'detail'
     pagination.value.page = 1
+    pagination.value.total = 0
+
+    fetchApiModules()
     fetchInterfaceListForDisplay()
   }
 )
@@ -920,16 +1302,16 @@ const handleCreateInterface = () => {
   // 清空选中的接口,但保留选中的模块
   console.log('准备创建新接口，清空当前选中接口')
   selectedInterface.value = undefined
-
+  
   // 切换到详情视图模式
   viewMode.value = 'detail'
-
+  
   // 创建新的空白页签
   tabsStore.createTab()
-
+  
   // 强制重新渲染右侧组件，确保所有状态都被重置
   detailKey.value++
-
+  
   // 使用nextTick确保在DOM更新后执行
   nextTick(() => {
     console.log('创建新接口模式已准备就绪')
@@ -953,6 +1335,7 @@ watch(() => selectedInterface.value, (newInterface) => {
         setupHooks: newInterface.setup_hooks,
         teardownHooks: newInterface.teardown_hooks,
         extractRules: newInterface.extract,
+        extractMeta: newInterface.extract_meta,
         assertRules: newInterface.validators
       })
     }
@@ -968,7 +1351,7 @@ const handleTabChange = (tabId: string) => {
       // 尝试从各个列表中找到接口数据
       const foundInterface = [...interfaces.value, ...noModuleInterfaces.value, ...allInterfaces.value]
         .find(api => api.id === tab.interfaceId)
-
+      
       if (foundInterface) {
         // 创建一个包含页签保存数据的接口对象
         selectedInterface.value = {
@@ -980,6 +1363,7 @@ const handleTabChange = (tabId: string) => {
           setup_hooks: tab.setupHooks || foundInterface.setup_hooks,
           teardown_hooks: tab.teardownHooks || foundInterface.teardown_hooks,
           extract: tab.extractRules || foundInterface.extract,
+          extract_meta: tab.extractMeta || foundInterface.extract_meta,
           validators: tab.assertRules || foundInterface.validators
         }
       } else {
@@ -989,7 +1373,7 @@ const handleTabChange = (tabId: string) => {
       // 新建接口页签
       selectedInterface.value = undefined
     }
-
+    
     viewMode.value = 'detail'
     // 不再强制刷新，让 ApiDetail 组件自己处理状态恢复
     // detailKey.value++
@@ -999,7 +1383,7 @@ const handleTabChange = (tabId: string) => {
 // 初始化时恢复页签
 onMounted(async () => {
   // 恢复本地存储的页签
-  tabsStore.loadFromLocalStorage()
+  tabsStore.loadFromLocalStorage(projectStore.currentProjectId)
 
   if (projectStore.currentProjectId) {
     await Promise.all([
@@ -1049,7 +1433,7 @@ onMounted(async () => {
 
 // 保存页签到本地存储
 watch(() => tabsStore.tabs, () => {
-  tabsStore.saveToLocalStorage()
+  tabsStore.saveToLocalStorage(projectStore.currentProjectId)
 }, { deep: true })
 </script>
 
@@ -1063,6 +1447,57 @@ watch(() => tabsStore.tabs, () => {
           <div class="flex justify-between items-center mb-4">
             <h2 class="text-lg font-medium text-gray-100">模块列表</h2>
             <div class="flex items-center gap-2">
+              <input
+                ref="openApiFileInput"
+                type="file"
+                accept=".json,.yaml,.yml,.har,.md,.markdown,.js,application/json,application/yaml,text/yaml,text/x-yaml,text/markdown"
+                style="display: none"
+                @change="handleOpenApiFileChange"
+              />
+              <a-dropdown trigger="click" @select="handleImportTypeSelect">
+                <a-button
+                  type="text"
+                  size="small"
+                  :loading="importingOpenApi"
+                  :disabled="importingOpenApi || exportingOpenApi"
+                  title="导入接口文档"
+                >
+                  <template #icon><icon-upload /></template>
+                </a-button>
+                <template #content>
+                  <a-doption value="swagger">Swagger 文件</a-doption>
+                  <a-doption value="swagger-url">Swagger URL</a-doption>
+                  <a-doption value="postman">Postman</a-doption>
+                  <a-doption value="curl">cURL</a-doption>
+                  <a-doption value="markdown">Markdown</a-doption>
+                  <a-doption value="har">HAR</a-doption>
+                  <a-doption value="insomnia">Insomnia</a-doption>
+                  <a-doption value="apidoc">ApiDoc</a-doption>
+                  <a-doption value="apifox">Apifox</a-doption>
+                  <a-doption value="apipost">Apipost</a-doption>
+                  <a-doption value="yapi">YApi</a-doption>
+                  <a-doption value="apizza">Apizza</a-doption>
+                  <a-doption value="eolink">Eolink</a-doption>
+                </template>
+              </a-dropdown>
+              <a-dropdown trigger="click" @select="handleExportOpenApi">
+                <a-button
+                  type="text"
+                  size="small"
+                  :loading="exportingOpenApi"
+                  :disabled="importingOpenApi || exportingOpenApi"
+                  title="导出接口文档"
+                >
+                  <template #icon><icon-download /></template>
+                </a-button>
+                <template #content>
+                  <a-doption value="json">OpenAPI JSON</a-doption>
+                  <a-doption value="yaml">OpenAPI YAML</a-doption>
+                  <a-doption value="apifox">Apifox JSON</a-doption>
+                  <a-doption value="apipost">Apipost JSON</a-doption>
+                  <a-doption value="yapi">YApi JSON</a-doption>
+                </template>
+              </a-dropdown>
               <a-button type="text" size="small" @click="handleShowAllInterfaces" title="显示全部接口列表">
                 <template #icon><icon-list /></template>
               </a-button>
@@ -1227,11 +1662,19 @@ watch(() => tabsStore.tabs, () => {
             :loading="loading"
             :selected-interface-id="selectedInterface?.id"
             :current-module-name="currentModuleName"
+            :modules="listModuleOptions"
+            :filter-module-id="listFilterModuleId ?? null"
+            :filter-status="listFilterStatus"
+            :sort-field="listSortField"
+            :sort-order="listSortOrder"
             @interface-select="handleSelectInterface"
             @interface-edit="handleEditInterface"
             @interface-delete="handleDeleteInterface"
+            @interface-batch-delete="handleBatchDeleteInterfaces"
             @interface-copy="handleCopyInterface"
             @interface-run="handleInterfaceRun"
+            @interface-status-change="handleInterfaceStatusChange"
+            @filter-change="handleListFilterChange"
           />
         </div>
 
@@ -1270,6 +1713,113 @@ watch(() => tabsStore.tabs, () => {
         />
       </div>
     </div>
+
+    <a-modal
+      v-model:visible="importTextDialogVisible"
+      :title="importTextDialogType === 'swagger' ? '通过 Swagger URL 导入' : '通过 cURL 导入'"
+      :footer="false"
+      :mask-closable="!importingOpenApi"
+      :closable="!importingOpenApi"
+      width="640px"
+    >
+      <a-input
+        v-if="importTextDialogType === 'swagger'"
+        v-model="importTextValue"
+        placeholder="https://example.com/openapi.json"
+        allow-clear
+        @press-enter="handleImportTextConfirm"
+      />
+      <a-textarea
+        v-else
+        v-model="importTextValue"
+        placeholder="curl -X POST https://example.com/api/..."
+        :auto-size="{ minRows: 8, maxRows: 16 }"
+      />
+      <div class="mt-5 flex justify-end gap-2">
+        <a-button :disabled="importingOpenApi" @click="importTextDialogVisible = false">取消</a-button>
+        <a-button type="primary" :loading="importingOpenApi" @click="handleImportTextConfirm">导入</a-button>
+      </div>
+    </a-modal>
+
+    <!-- 导入文件弹窗：选择格式 / 选择文件 / 去除域名开关 / 创建环境开关 -->
+    <a-modal
+      v-model:visible="importFileDialogVisible"
+      title="导入接口文档"
+      :footer="false"
+      :mask-closable="!importingOpenApi"
+      :closable="!importingOpenApi"
+      width="560px"
+      @cancel="resetImportFileDialog"
+    >
+      <div class="flex flex-col gap-4 import-file-dialog-body">
+        <!-- 导入格式 -->
+        <div class="flex items-center gap-3">
+          <span class="w-20 flex-shrink-0 import-dialog-label">导入格式</span>
+          <a-select
+            v-model="importFileDialogType"
+            :options="importFormatOptions"
+            :disabled="importingOpenApi"
+            placeholder="请选择导入格式"
+            class="flex-1"
+          />
+        </div>
+
+        <!-- 导入文件区域 -->
+        <div>
+          <div class="mb-1.5 import-dialog-label">导入文件</div>
+          <div
+            class="import-file-dropzone flex items-center justify-center gap-2 rounded-md border border-dashed border-gray-600 px-4 py-6 cursor-pointer hover:border-blue-500 transition-colors"
+            :class="{ 'import-file-dropzone--active': importFileSelected }"
+            @click="handlePickImportFile"
+          >
+            <template v-if="importFileSelected">
+              <icon-upload class="import-dialog-icon" />
+              <span class="import-dialog-filename truncate" :title="importFileSelected.name">
+                {{ importFileSelected.name }}
+              </span>
+              <a-button
+                type="text"
+                size="mini"
+                class="!p-0 import-dialog-clear-btn"
+                :disabled="importingOpenApi"
+                title="取消选择"
+                @click.stop="importFileSelected = null"
+              >
+                <template #icon><icon-close /></template>
+              </a-button>
+            </template>
+            <template v-else>
+              <icon-upload class="import-dialog-icon" />
+              <span class="import-dialog-hint">点击选择要导入的文件</span>
+            </template>
+          </div>
+        </div>
+
+        <!-- 开关1：去除 URL 里的域名 -->
+        <div class="flex items-center justify-between rounded-md border border-gray-600/60 px-4 py-3 import-dialog-switch-row">
+          <div class="pr-3">
+            <div class="import-dialog-label">去除 URL 里的 http://...com</div>
+            <div class="mt-0.5 text-xs import-dialog-hint">开启后接口默认去掉域名只保留 URL；关闭则导入完整 URL</div>
+          </div>
+          <a-switch v-model="stripBaseUrl" :disabled="importingOpenApi" />
+        </div>
+
+        <!-- 开关2：创建环境 -->
+        <div class="flex items-center justify-between rounded-md border border-gray-600/60 px-4 py-3 import-dialog-switch-row">
+          <div class="pr-3">
+            <div class="import-dialog-label">创建环境</div>
+            <div class="mt-0.5 text-xs import-dialog-hint">开启后识别接口 URL 前缀，在环境管理创建对应环境（同一域名仅创建一次）</div>
+          </div>
+          <a-switch v-model="createEnvironments" :disabled="importingOpenApi" />
+        </div>
+      </div>
+
+      <!-- 右下角操作按钮 -->
+      <div class="mt-5 flex justify-end gap-2">
+        <a-button :disabled="importingOpenApi" @click="importFileDialogVisible = false">取消</a-button>
+        <a-button type="primary" :loading="importingOpenApi" @click="handleImportFileConfirm">开始导入</a-button>
+      </div>
+    </a-modal>
 
     <!-- 模块表单弹窗 -->
     <ModuleForm
@@ -1468,6 +2018,69 @@ watch(() => tabsStore.tabs, () => {
   --interface-module-active-border: rgba(147, 197, 253, 0.22);
   --interface-dark-shadow: 0 20px 44px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(148, 163, 184, 0.05);
   background-color: rgba(0, 0, 0, 0.18);
+}
+
+.api-management--dark :deep(.api-tabs-card) {
+  background: var(--interface-dark-surface) !important;
+  border-color: var(--interface-dark-border) !important;
+  box-shadow: var(--interface-dark-shadow) !important;
+}
+
+.api-management--dark :deep(.tab-chip--active) {
+  background: rgba(59, 130, 246, 0.18) !important;
+  border-color: rgba(96, 165, 250, 0.38) !important;
+  color: rgb(191, 219, 254) !important;
+  box-shadow: 0 10px 18px rgba(15, 23, 42, 0.22) !important;
+}
+
+.api-management--dark :deep(.tab-chip--inactive) {
+  background: var(--interface-dark-surface-muted) !important;
+  border-color: var(--interface-dark-border) !important;
+  color: var(--interface-dark-text-secondary) !important;
+}
+
+.api-management--dark :deep(.tab-chip--inactive:hover) {
+  background: var(--interface-dark-hover) !important;
+  border-color: rgba(96, 165, 250, 0.24) !important;
+}
+
+.api-management--dark :deep(.tabs-empty-hint) {
+  color: var(--interface-dark-text-muted) !important;
+}
+
+.api-management--dark :deep(.api-detail) {
+  --detail-shell-bg: var(--interface-dark-surface);
+  --detail-shell-border: var(--interface-dark-border);
+  --detail-shell-shadow: var(--interface-dark-shadow);
+  --detail-tab-border: var(--interface-dark-border);
+  --detail-tab-text: var(--interface-dark-text-muted);
+  --detail-tab-active: rgb(var(--primary-6));
+  --detail-resize-bg: var(--interface-dark-surface-muted);
+  --detail-resize-bg-hover: rgba(59, 130, 246, 0.24);
+  --detail-resize-line: var(--interface-dark-text-muted);
+}
+
+.api-management--dark :deep(.api-response) {
+  --response-summary-border: var(--interface-dark-border);
+  --response-summary-text: var(--interface-dark-text-muted);
+  --response-shell-bg: var(--interface-dark-surface-soft);
+  --response-shell-text: var(--interface-dark-text-secondary);
+  --response-tab-border: var(--interface-dark-border);
+  --response-tab-text: var(--interface-dark-text-muted);
+  --response-tab-active: rgb(var(--primary-6));
+  --response-copy-bg: rgba(30, 41, 59, 0.9);
+  --response-copy-hover-bg: rgba(51, 65, 85, 0.96);
+  --response-copy-icon: var(--interface-dark-text-secondary);
+  --response-extracted-bg: rgba(30, 41, 59, 0.56);
+  --response-extracted-hover-bg: rgba(51, 65, 85, 0.76);
+}
+
+.api-management--dark :deep(.api-request-header) {
+  border-color: var(--interface-dark-border) !important;
+}
+
+.api-management--dark :deep(.module-select-shell) {
+  border-color: var(--interface-dark-border) !important;
 }
 
 .api-management--dark :deep([class~='bg-gray-800']),
@@ -1757,5 +2370,65 @@ watch(() => tabsStore.tabs, () => {
   align-items: center;
   flex-shrink: 0;
   margin-left: 1rem;
+}
+
+/* 导入文件弹窗：文件选择区域 */
+.import-file-dropzone {
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.import-file-dropzone--active {
+  border-style: solid;
+}
+
+/* 导入文件弹窗：文本/图标颜色（弹窗 teleport 到 body，需按主题区分） */
+/* 浅色主题（body 无 api-testing-theme）：文本黑色 */
+:global(body:not(.api-testing-theme) .import-file-dialog-body) {
+  .import-dialog-label {
+    color: #1d2129;
+  }
+  .import-dialog-hint {
+    color: #4e5969;
+  }
+  .import-dialog-icon {
+    color: #4e5969;
+  }
+  .import-dialog-filename {
+    color: #1d2129;
+  }
+  .import-dialog-clear-btn {
+    color: #86909c;
+    &:hover {
+      color: #1d2129;
+    }
+  }
+  .import-dialog-switch-row {
+    border-color: rgba(15, 23, 42, 0.12) !important;
+  }
+  .import-file-dropzone {
+    border-color: rgba(15, 23, 42, 0.2) !important;
+  }
+}
+
+/* 深色主题（body 含 api-testing-theme）：文本浅色 */
+:global(body.api-testing-theme .import-file-dialog-body) {
+  .import-dialog-label {
+    color: #cbd5e1;
+  }
+  .import-dialog-hint {
+    color: #94a3b8;
+  }
+  .import-dialog-icon {
+    color: #94a3b8;
+  }
+  .import-dialog-filename {
+    color: #f8fafc;
+  }
+  .import-dialog-clear-btn {
+    color: #86909c;
+    &:hover {
+      color: #f8fafc;
+    }
+  }
 }
 </style>
