@@ -3,7 +3,6 @@
 提供文档处理、向量化、检索等核心功能
 """
 
-import concurrent.futures
 import hashlib
 import logging
 import os
@@ -41,6 +40,7 @@ from qdrant_client.models import (
     models,
 )
 
+from .image_utils import attach_proxy_image_urls, build_document_image_proxy_url
 from .models import (
     KnowledgeBase,
     Document,
@@ -115,24 +115,7 @@ class SparseBM25Encoder:
 
         self.model_name = model_name or self.DEFAULT_MODEL
 
-        # 优先使用随仓库/镜像分发的本地平铺模型目录（通过 specific_model_path 直接加载，
-        # 无需 HuggingFace 缓存结构，也不联网）
-        local_model_dir = os.environ.get("BM25_MODEL_PATH") or os.path.join(
-            settings.BASE_DIR, "bm25_model"
-        )
-        if os.path.isfile(os.path.join(local_model_dir, "config.json")) and any(
-            f.endswith(".txt") for f in os.listdir(local_model_dir)
-        ):
-            logger.info(f"📦 发现本地 BM25 模型目录: {local_model_dir}，离线加载")
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            self._encoder = SparseTextEmbedding(
-                model_name=self.model_name,
-                specific_model_path=local_model_dir,
-            )
-            logger.info(f"✅ 初始化 BM25 稀疏编码器: {self.model_name}")
-            return
-
-        # 检查是否存在 HuggingFace 标准缓存（Docker 部署时模型已预下载）
+        # 检查是否存在本地缓存（Docker 部署时模型已预下载）
         cache_path = os.environ.get(
             "FASTEMBED_CACHE_PATH", os.path.expanduser("~/.cache/fastembed")
         )
@@ -226,7 +209,7 @@ class CustomAPIEmbeddings(Embeddings):
                 self.api_base_url,
                 json=data,
                 headers=self._build_headers(),
-                timeout=1200,
+                timeout=120,
             )
             response.raise_for_status()
             result = response.json()
@@ -242,33 +225,16 @@ class CustomAPIEmbeddings(Embeddings):
             raise RuntimeError(f"嵌入API调用失败: {str(e)}")
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        """批量嵌入文档（按 BATCH_SIZE 分片，并行调用）"""
-        batches = [
-            (i, texts[i : i + self.BATCH_SIZE])
-            for i in range(0, len(texts), self.BATCH_SIZE)
-        ]
-
-        def _embed_batch(item):
-            idx, batch = item
-            try:
-                return idx, self._call_api(batch)
-            except Exception:
-                # 批次失败时缩小为一半批次重试，避免逐条
-                half = max(1, len(batch) // 2)
-                results = []
-                for j in range(0, len(batch), half):
-                    sub = batch[j : j + half]
-                    results.extend(self._call_api(sub) if len(sub) > 1 else [self._call_api(sub[0])])
-                return idx, results
-
-        max_workers = min(4, len(batches))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            results = list(executor.map(_embed_batch, batches))
-
-        results.sort(key=lambda x: x[0])
+        """批量嵌入文档（按 BATCH_SIZE 分片，不支持批量时自动降级逐条）"""
         all_embeddings: List[List[float]] = []
-        for _, embeddings in results:
-            all_embeddings.extend(embeddings)
+        for i in range(0, len(texts), self.BATCH_SIZE):
+            batch = texts[i : i + self.BATCH_SIZE]
+            try:
+                embeddings = self._call_api(batch)
+                all_embeddings.extend(embeddings)
+            except Exception:
+                for text in batch:
+                    all_embeddings.append(self._call_api(text))
         return all_embeddings
 
     def embed_query(self, text: str) -> List[float]:
@@ -458,7 +424,7 @@ class DocumentProcessor:
     def _load_pdf_structured(
         self, file_path: str, document: Document
     ) -> List[LangChainDocument]:
-        """解析 PDF 文件，按页加载文本"""
+        """解析 PDF 文件，按页加载文本并在对应位置插入图片占位标记"""
         try:
             from pypdf import PdfReader
         except ImportError:
@@ -468,9 +434,25 @@ class DocumentProcessor:
 
         reader = PdfReader(file_path)
         docs = []
+        image_index = 0
 
         for page_num, page in enumerate(reader.pages):
-            content = (page.extract_text() or "").strip()
+            text = (page.extract_text() or "").strip()
+
+            # 统计此页的有效图片数量，确保与后续图片落库顺序一致。
+            page_image_markers = []
+            for image in page.images:
+                width = image.image.width if image.image else 0
+                height = image.image.height if image.image else 0
+                if width < 50 or height < 50:
+                    continue
+
+                page_image_markers.append(f"{{{{IMAGE:{image_index}}}}}")
+                image_index += 1
+
+            content = text
+            if page_image_markers:
+                content = f"{content}\n\n{chr(10).join(page_image_markers)}".strip()
 
             if content:
                 docs.append(
@@ -487,15 +469,16 @@ class DocumentProcessor:
                     )
                 )
 
-        logger.info(f"PDF 结构化解析完成 - 页数: {len(docs)}")
+        logger.info(f"PDF 结构化解析完成 - 页数: {len(docs)}, 图片占位: {image_index}")
         return docs
 
     def _load_docx_structured(
         self, file_path: str, document: Document
     ) -> List[LangChainDocument]:
-        """结构化解析 .docx 文件，保留标题层级和表格结构"""
+        """结构化解析 .docx 文件，保留标题层级、表格结构和图片位置"""
         try:
             from docx import Document as DocxDocument
+            from lxml import etree
 
             doc = DocxDocument(file_path)
             logger.info(
@@ -505,17 +488,66 @@ class DocumentProcessor:
             paragraph_map = {p._element: p for p in doc.paragraphs}
             table_map = {t._element: t for t in doc.tables}
 
+            # 构建 rId -> 图片关系映射
+            image_rels = {}
+            for key, rel in doc.part.rels.items():
+                if "image" in rel.reltype:
+                    image_rels[key] = rel
+
             content_parts = []
             extracted_paragraphs = 0
             extracted_tables = 0
+            image_index = 0
+
+            # XML 命名空间
+            nsmap = {
+                "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+                "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+                "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                "v": "urn:schemas-microsoft-com:vml",
+            }
 
             for element in doc.element.body:
                 if element.tag.endswith("p"):
                     paragraph = paragraph_map.get(element)
                     if paragraph:
+                        # 检测段落中的内嵌图片
+                        drawings = element.findall(".//w:drawing", nsmap)
+                        vml_images = element.findall(".//w:pict//v:imagedata", nsmap)
+
+                        embedded_rids = []
+                        for drawing in drawings:
+                            blip = drawing.find(".//a:blip", nsmap)
+                            if blip is not None:
+                                rid = blip.get(f"{{{nsmap['r']}}}embed")
+                                if rid and rid in image_rels:
+                                    embedded_rids.append(rid)
+                        for vml_img in vml_images:
+                            rid = vml_img.get(f"{{{nsmap['r']}}}id")
+                            if rid and rid in image_rels:
+                                embedded_rids.append(rid)
+
                         text = paragraph.text.strip()
-                        if text:
-                            markdown_text = self._convert_paragraph_to_markdown(paragraph)
+                        markdown_text = (
+                            self._convert_paragraph_to_markdown(paragraph)
+                            if text
+                            else ""
+                        )
+
+                        if embedded_rids:
+                            # 为段落中的每张图片插入占位标记
+                            image_markers = []
+                            for rid in embedded_rids:
+                                image_markers.append(f"{{{{IMAGE:{image_index}}}}}")
+                                image_index += 1
+                            marker_text = "\n".join(image_markers)
+                            if markdown_text:
+                                content_parts.append(f"{markdown_text}\n{marker_text}")
+                            else:
+                                content_parts.append(marker_text)
+                            extracted_paragraphs += 1
+                        elif text:
                             content_parts.append(markdown_text)
                             extracted_paragraphs += 1
 
@@ -530,7 +562,7 @@ class DocumentProcessor:
             content = "\n\n".join(content_parts)
             logger.info(
                 f"Word 结构化解析完成 - 段落: {extracted_paragraphs}, "
-                f"表格: {extracted_tables}, 内容长度: {len(content)}"
+                f"表格: {extracted_tables}, 图片占位: {image_index}, 内容长度: {len(content)}"
             )
 
             return [
@@ -598,7 +630,7 @@ class DocumentProcessor:
                     ],
                     capture_output=True,
                     text=True,
-                    timeout=1200,
+                    timeout=120,
                 )
                 if result.returncode == 0:
                     import os
@@ -939,7 +971,210 @@ class DocumentProcessor:
         table_parts = [header_row, separator] + data_rows
         return "\n".join(table_parts)
 
+    def extract_images(self, document: Document) -> int:
+        """从文档中提取嵌入的图片，返回提取的图片数量"""
+        from .models import DocumentImage
 
+        if not document.file or not hasattr(document.file, "path"):
+            return 0
+
+        file_path = document.file.path
+        if not os.path.exists(file_path):
+            return 0
+
+        extractors = {
+            "pdf": self._extract_images_from_pdf,
+            "docx": self._extract_images_from_docx,
+        }
+
+        extractor = extractors.get(document.document_type)
+        if not extractor:
+            return 0
+
+        try:
+            # 清理已有图片
+            document.images.all().delete()
+            count = extractor(document, file_path)
+            logger.info(f"文档 {document.title} 提取到 {count} 张图片")
+            return count
+        except Exception as e:
+            logger.warning(f"图片提取失败: {e}")
+            return 0
+
+    def _extract_images_from_pdf(self, document: Document, file_path: str) -> int:
+        """从 PDF 中提取图片，保存页面文本作为上下文"""
+        from .models import DocumentImage
+        from django.core.files.base import ContentFile
+
+        try:
+            from pypdf import PdfReader
+        except ImportError:
+            logger.info("pypdf 未安装，跳过PDF图片提取")
+            return 0
+
+        count = 0
+        reader = PdfReader(file_path)
+        for page_num, page in enumerate(reader.pages):
+            page_text = (page.extract_text() or "").strip()[:500]
+            for img_idx, image in enumerate(page.images):
+                try:
+                    width = image.image.width if image.image else 0
+                    height = image.image.height if image.image else 0
+
+                    if width < 50 or height < 50:
+                        continue
+
+                    image_bytes = image.data
+                    image_ext = os.path.splitext(image.name)[1].lstrip(".").lower()
+                    if not image_ext:
+                        image_ext = (
+                            getattr(image.image, "format", "png").lower()
+                            if image.image
+                            else "png"
+                        )
+
+                    filename = f"page{page_num + 1}_img{img_idx + 1}.{image_ext}"
+                    doc_image = DocumentImage(
+                        document=document,
+                        page_number=page_num + 1,
+                        image_index=count,
+                        width=width,
+                        height=height,
+                        file_size=len(image_bytes),
+                        caption=page_text,
+                    )
+                    doc_image.image.save(filename, ContentFile(image_bytes), save=True)
+                    count += 1
+                except Exception as e:
+                    logger.warning(
+                        f"PDF图片提取单张失败 (page={page_num}, idx={img_idx}): {e}"
+                    )
+
+        return count
+
+    def _extract_images_from_docx(self, document: Document, file_path: str) -> int:
+        """从 Word 文档按段落顺序提取图片，与结构化解析中的占位标记一一对应"""
+        from .models import DocumentImage
+        from django.core.files.base import ContentFile
+
+        try:
+            from docx import Document as DocxDocument
+        except ImportError:
+            logger.info("python-docx 未安装，跳过DOCX图片提取")
+            return 0
+
+        count = 0
+        try:
+            doc = DocxDocument(file_path)
+
+            # 构建 rId -> 图片关系映射
+            image_rels = {}
+            for key, rel in doc.part.rels.items():
+                if "image" in rel.reltype:
+                    image_rels[key] = rel
+
+            if not image_rels:
+                return 0
+
+            nsmap = {
+                "w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+                "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+                "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
+                "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+                "v": "urn:schemas-microsoft-com:vml",
+            }
+
+            ext_map = {
+                "image/png": "png",
+                "image/jpeg": "jpg",
+                "image/gif": "gif",
+                "image/bmp": "bmp",
+                "image/webp": "webp",
+                "image/svg+xml": "svg",
+                "image/tiff": "tiff",
+            }
+
+            # 收集段落文本用于上下文
+            p_map = {p._element: p for p in doc.paragraphs}
+            paragraph_texts = []
+            for element in doc.element.body:
+                if element.tag.endswith("p"):
+                    para = p_map.get(element)
+                    if para:
+                        paragraph_texts.append(para.text.strip())
+
+            # 按段落顺序遍历，提取内嵌图片
+            para_idx = 0
+            for element in doc.element.body:
+                if not element.tag.endswith("p"):
+                    continue
+
+                drawings = element.findall(".//w:drawing", nsmap)
+                vml_images = element.findall(".//w:pict//v:imagedata", nsmap)
+
+                embedded_rids = []
+                for drawing in drawings:
+                    blip = drawing.find(".//a:blip", nsmap)
+                    if blip is not None:
+                        rid = blip.get(f"{{{nsmap['r']}}}embed")
+                        if rid and rid in image_rels:
+                            embedded_rids.append(rid)
+                for vml_img in vml_images:
+                    rid = vml_img.get(f"{{{nsmap['r']}}}id")
+                    if rid and rid in image_rels:
+                        embedded_rids.append(rid)
+
+                for rid in embedded_rids:
+                    try:
+                        rel = image_rels[rid]
+                        image_part = rel.target_part
+                        image_bytes = image_part.blob
+                        ext = ext_map.get(image_part.content_type, "png")
+
+                        # 获取尺寸
+                        width, height = 0, 0
+                        try:
+                            from PIL import Image
+                            import io
+
+                            with Image.open(io.BytesIO(image_bytes)) as img:
+                                width, height = img.size
+                        except Exception:
+                            pass
+
+                        if width and height and (width < 50 or height < 50):
+                            continue
+
+                        # 生成上下文文本（前后段落）
+                        context_parts = []
+                        if para_idx > 0 and para_idx - 1 < len(paragraph_texts):
+                            context_parts.append(paragraph_texts[para_idx - 1])
+                        if para_idx < len(paragraph_texts):
+                            context_parts.append(paragraph_texts[para_idx])
+                        context_text = " ".join(p for p in context_parts if p)[:500]
+
+                        filename = f"img_{count + 1}.{ext}"
+                        doc_image = DocumentImage(
+                            document=document,
+                            image_index=count,
+                            width=width or None,
+                            height=height or None,
+                            file_size=len(image_bytes),
+                            caption=context_text,
+                        )
+                        doc_image.image.save(
+                            filename, ContentFile(image_bytes), save=True
+                        )
+                        count += 1
+                    except Exception as e:
+                        logger.warning(f"DOCX图片提取单张失败 (rId={rid}): {e}")
+
+                para_idx += 1
+
+        except Exception as e:
+            logger.warning(f"DOCX图片提取失败: {e}")
+
+        return count
 
 
 class VectorStoreManager:
@@ -972,21 +1207,13 @@ class VectorStoreManager:
 
     @classmethod
     def _get_global_config(cls):
-        """获取全局配置（带缓存，5分钟过期）"""
-        import time
+        """获取全局配置。
 
-        current_time = time.time()
-
-        # 缓存5分钟
-        if (
-            cls._global_config_cache
-            and (current_time - cls._global_config_cache_time) < 300
-        ):
-            return cls._global_config_cache
-
-        cls._global_config_cache = KnowledgeGlobalConfig.get_config()
-        cls._global_config_cache_time = current_time
-        return cls._global_config_cache
+        不做进程内缓存：文档处理在 Celery worker 进程执行，而配置保存发生在
+        Web 进程，进程级缓存会导致 worker 继续使用旧配置（跨进程无法失效）。
+        KnowledgeGlobalConfig 是 pk=1 的单例主键查询，开销可忽略。
+        """
+        return KnowledgeGlobalConfig.get_config()
 
     @classmethod
     def clear_global_config_cache(cls):
@@ -997,8 +1224,11 @@ class VectorStoreManager:
     def _get_embeddings_instance(self):
         """获取嵌入模型实例，使用全局配置"""
         config = self.global_config
+        # cache_key 包含全部影响嵌入行为的配置字段（含 api_key），
+        # 避免仅修改某个字段（如 api_key）时复用到旧配置创建的实例
         cache_key = (
-            f"{config.embedding_service}_{config.api_base_url}_{config.model_name}"
+            f"{config.embedding_service}_{config.api_base_url}_"
+            f"{config.model_name}_{config.api_key}"
         )
 
         if cache_key not in self._embeddings_cache:
@@ -1494,16 +1724,13 @@ class VectorStoreManager:
             vector_ids = [str(uuid.uuid4()) for _ in chunks]
             chunk_texts = [chunk.page_content for chunk in chunks]
 
-            # 并行计算稠密向量和稀疏向量
+            # 计算稠密向量
+            dense_embeddings = self.embeddings.embed_documents(chunk_texts)
+
+            # 计算稀疏向量（如果可用）
             sparse_embeddings = None
             if self.sparse_encoder:
-                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                    dense_future = executor.submit(self.embeddings.embed_documents, chunk_texts)
-                    sparse_future = executor.submit(self.sparse_encoder.encode_documents, chunk_texts)
-                    dense_embeddings = dense_future.result()
-                    sparse_embeddings = sparse_future.result()
-            else:
-                dense_embeddings = self.embeddings.embed_documents(chunk_texts)
+                sparse_embeddings = self.sparse_encoder.encode_documents(chunk_texts)
 
             # 构建 PointStruct 列表
             points: List[PointStruct] = []
@@ -1600,6 +1827,111 @@ class VectorStoreManager:
 
         DocumentChunk.objects.bulk_create(chunk_objects)
 
+    def add_image_vectors(self, document_obj: Document) -> int:
+        """将文档提取的图片直接通过多模态嵌入模型向量化并存入 Qdrant"""
+        from .models import DocumentImage
+        import base64
+
+        images = document_obj.images.all()
+        if not images.exists():
+            return 0
+
+        # 检查 embeddings 是否支持 embed_image
+        if not hasattr(self.embeddings, "embed_image"):
+            logger.info("当前嵌入模型不支持图片嵌入 (embed_image)，跳过图片向量化")
+            return 0
+
+        _ = self.vector_store  # 确保集合存在
+
+        # 获取当前文本分块数量作为 chunk_index 的起始偏移
+        existing_chunks = document_obj.chunks.count()
+
+        points: List[PointStruct] = []
+        chunk_objects = []
+        count = 0
+
+        for img in images:
+            try:
+                image_path = img.image.path
+                if not os.path.exists(image_path):
+                    continue
+
+                with open(image_path, "rb") as f:
+                    b64_data = base64.b64encode(f.read()).decode("utf-8")
+
+                ext = os.path.splitext(image_path)[1].lower().lstrip(".")
+                mime_map = {
+                    "jpg": "jpeg",
+                    "jpeg": "jpeg",
+                    "png": "png",
+                    "gif": "gif",
+                    "bmp": "bmp",
+                    "webp": "webp",
+                }
+                mime_type = f"image/{mime_map.get(ext, 'png')}"
+
+                dense_vector = self.embeddings.embed_image(b64_data, mime_type)
+
+                vector_id = str(uuid.uuid4())
+                chunk_index = existing_chunks + count
+                page_info = f"第{img.page_number}页" if img.page_number else ""
+                content_text = (
+                    f"[图片{img.image_index + 1}{page_info}] {img.caption or ''}"
+                )
+
+                payload = {
+                    "page_content": content_text,
+                    "document_id": str(document_obj.id),
+                    "chunk_index": chunk_index,
+                    "vector_id": vector_id,
+                    "knowledge_base_id": str(self.knowledge_base.id),
+                    "content_type": "image",
+                    "image_id": str(img.id),
+                    "image_index": img.image_index,
+                    "image_url": build_document_image_proxy_url(
+                        document_obj.id, img.image_index
+                    ),
+                    "source": document_obj.title,
+                    "title": document_obj.title,
+                    "document_type": document_obj.document_type,
+                }
+
+                points.append(
+                    PointStruct(
+                        id=vector_id,
+                        vector={self.DENSE_VECTOR_NAME: dense_vector},
+                        payload=payload,
+                    )
+                )
+
+                chunk_objects.append(
+                    DocumentChunk(
+                        document=document_obj,
+                        chunk_index=chunk_index,
+                        content=content_text,
+                        vector_id=vector_id,
+                        embedding_hash=hashlib.md5(
+                            b64_data[:1000].encode()
+                        ).hexdigest(),
+                        page_number=img.page_number,
+                    )
+                )
+
+                count += 1
+                logger.debug(f"图片 {img.image_index + 1} 向量化成功")
+
+            except Exception as e:
+                logger.warning(f"图片 {img.image_index + 1} 向量化失败: {e}")
+
+        if points:
+            self.qdrant_client.upsert(
+                collection_name=self._get_collection_name(),
+                points=points,
+            )
+            DocumentChunk.objects.bulk_create(chunk_objects)
+            logger.info(f"✅ {count} 张图片向量化并写入 Qdrant")
+
+        return count
 
     def similarity_search(
         self, query: str, k: int = 5, score_threshold: float = 0.1
@@ -1907,6 +2239,11 @@ class KnowledgeBaseService:
             # 加载文档
             langchain_docs = self.document_processor.load_document(document)
 
+            # 提取文档中的嵌入图片
+            image_count = self.document_processor.extract_images(document)
+            if image_count > 0:
+                logger.info(f"文档 {document.id} 提取到 {image_count} 张图片")
+
             # 计算文档统计信息
             total_content = "\n".join([doc.page_content for doc in langchain_docs])
             document.word_count = len(total_content.split())
@@ -1914,6 +2251,12 @@ class KnowledgeBaseService:
 
             # 向量化并存储文本分块
             vector_ids = self.vector_manager.add_documents(langchain_docs, document)
+
+            # 图片向量化（通过多模态嵌入模型，与文本向量存入同一集合）
+            if image_count > 0:
+                img_vec_count = self.vector_manager.add_image_vectors(document)
+                if img_vec_count > 0:
+                    logger.info(f"文档 {document.id} 完成 {img_vec_count} 张图片向量化")
 
             # 更新状态为完成
             document.status = "completed"
@@ -1933,24 +2276,21 @@ class KnowledgeBaseService:
             logger.error(f"文档处理失败: {document.id}, 错误: {e}")
             return False
 
-    def _rewrite_query(self, query: str) -> Optional[str]:
+    def _rewrite_query(self, query: str, user=None) -> Optional[str]:
         """用 LLM 改写查询，提升检索召回率"""
         try:
-            from langgraph_integration.models import LLMConfig
-            from langchain_openai import ChatOpenAI
-
-            config = LLMConfig.objects.filter(is_active=True).first()
-            if not config:
-                return None
-
-            llm = ChatOpenAI(
-                model=config.name,
-                api_key=config.api_key,
-                base_url=config.api_url,
-                temperature=0.3,
-                max_tokens=100,
-                timeout=15,
+            from langgraph_integration.models import DEFAULT_LLM_BUNDLE_SLOT_KEY
+            from langgraph_integration.bundle_runtime import (
+                LLMConfigResolutionError,
+                resolve_llm_config,
             )
+            from langgraph_integration.views import create_llm_instance
+
+            resolution = resolve_llm_config(
+                user=user,
+                module_key=DEFAULT_LLM_BUNDLE_SLOT_KEY,
+            )
+            llm = create_llm_instance(resolution.runtime_config, temperature=0.3)
             response = llm.invoke(
                 [
                     {
@@ -1967,6 +2307,8 @@ class KnowledgeBaseService:
             if rewritten and rewritten != query:
                 logger.info(f"Query Rewrite: '{query}' → '{rewritten}'")
                 return rewritten
+        except LLMConfigResolutionError:
+            logger.info("Query Rewrite skipped: 当前没有可用的新版 LLM 配置")
         except Exception as e:
             logger.warning(f"Query Rewrite 失败: {e}")
         return None
@@ -2117,13 +2459,14 @@ class KnowledgeBaseService:
         top_k: int = 5,
         similarity_threshold: float = 0.5,
         enable_rewrite: bool = True,
+        user=None,
     ) -> List[Dict[str, Any]]:
         """统一检索增强入口：原始检索 + Query Rewrite 二次检索 + 多维度去重"""
         results = self.vector_manager.similarity_search(
             query_text, k=top_k, score_threshold=similarity_threshold
         )
         if enable_rewrite:
-            rewritten = self._rewrite_query(query_text)
+            rewritten = self._rewrite_query(query_text, user=user)
             if rewritten:
                 rewrite_results = self.vector_manager.similarity_search(
                     rewritten, k=top_k, score_threshold=similarity_threshold
@@ -2166,8 +2509,12 @@ class KnowledgeBaseService:
                 top_k=top_k,
                 similarity_threshold=similarity_threshold,
                 enable_rewrite=enable_rewrite,
+                user=user,
             )
             retrieval_time = time.time() - retrieval_start
+
+            # 解析 {{IMAGE:N}} 占位符
+            search_results = self._resolve_image_placeholders(search_results)
 
             # 生成回答（这里可以集成LLM）
             generation_start = time.time()
@@ -2207,6 +2554,11 @@ class KnowledgeBaseService:
             logger.error(f"知识库查询失败: {e}")
             raise
 
+    def _resolve_image_placeholders(
+        self, sources: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """解析搜索结果中的图片引用，统一使用代理 URL。"""
+        return attach_proxy_image_urls(sources)
 
     def _generate_answer(self, query: str, sources: List[Dict[str, Any]]) -> str:
         """生成回答（简单版本，后续可集成LLM）"""

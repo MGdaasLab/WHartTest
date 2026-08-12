@@ -185,6 +185,9 @@ def update_capability(actuator_id: str, payload: dict[str, Any]) -> dict[str, An
                 continue  # server-owned
             if value is not None:
                 info[key] = value
+        # 浏览器类型变更时同步默认浏览器，避免 normalize_capability 按 default_browser 优先回退旧值
+        if payload.get("browser_type") and payload.get("browser_type") != info.get("default_browser"):
+            info["default_browser"] = payload["browser_type"]
         # Normalize capability fields only; never overwrite busy from payload/normalize alone.
         cap = normalize_capability({**info, "id": actuator_id})
         info.update(

@@ -33,13 +33,15 @@ class TaskConsumer:
     
     def __init__(self, ws_client: WebSocketClient, api_base_url: str, 
                  config: Any = None,
-                 api_username: str = 'admin', api_password: str = 'admin123'):
+                 api_username: str = 'admin', api_password: str = 'admin123',
+                 config_path: str = 'config.toml'):
         self.ws_client = ws_client
         self.api_base_url = api_base_url.rstrip('/')
         self.api_username = api_username
         self.api_password = api_password
         self._api_token: Optional[str] = None
         self.config = config
+        self.config_path = config_path
         
         # 从配置创建执行器
         executor_config = {}
@@ -55,6 +57,10 @@ class TaskConsumer:
                 'launch_timeout': launch_timeout * 1000,  # 转毫秒
                 'action_timeout': action_timeout * 1000,  # 转毫秒
                 'screenshot_dir': getattr(config, 'screenshot_dir', './data/screenshots'),
+                'retry_count': getattr(config, 'retry_count', 3),
+                'step_interval': getattr(config, 'step_interval', 500),
+                'viewport_width': getattr(config, 'viewport_width', 1280),
+                'viewport_height': getattr(config, 'viewport_height', 720),
                 # Trace 配置
                 'trace_enabled': getattr(config, 'trace_enabled', False),
                 'trace_dir': getattr(config, 'trace_dir', './data/traces'),
@@ -337,6 +343,7 @@ class TaskConsumer:
             UiSocketEnum.TEST_CASE: self.execute_test_case,
             UiSocketEnum.TEST_CASE_BATCH: self.execute_batch,
             UiSocketEnum.STOP_EXECUTION: self.stop_execution,
+            UiSocketEnum.SET_ACTUATOR_CONFIG: self.apply_config_update,
         }
         
         handler = handlers.get(task.func_name)
@@ -344,6 +351,136 @@ class TaskConsumer:
             await handler(task.func_args)
         else:
             logger.warning(f"未知任务类型: {task.func_name}")
+
+    # 平台下发的可编辑配置字段（key → Config 属性）
+    _CONFIG_FIELD_MAP = {
+        'name': 'actuator_name',
+        'browser_type': 'browser_type',
+        'persistent': 'persistent',
+        'launch_timeout': 'launch_timeout',
+        'action_timeout': 'action_timeout',
+        'retry_count': 'retry_count',
+        'step_interval': 'step_interval',
+        'max_concurrent': 'max_concurrent',
+        'log_level': 'log_level',
+        'trace_enabled': 'trace_enabled',
+        'trace_screenshots': 'trace_screenshots',
+        'trace_snapshots': 'trace_snapshots',
+        'trace_sources': 'trace_sources',
+        'headless': 'headless',
+        'viewport_width': 'viewport_width',
+        'viewport_height': 'viewport_height',
+    }
+
+    async def apply_config_update(self, args: dict):
+        """应用平台下发的执行器配置：更新内存配置 + 写回 config.toml + 实时生效"""
+        if not isinstance(args, dict) or not args:
+            logger.warning(f"配置更新消息格式错误: {args}")
+            return
+
+        # 1. 更新 Config 对象
+        if self.config:
+            for key, attr in self._CONFIG_FIELD_MAP.items():
+                if key in args and args[key] is not None:
+                    setattr(self.config, attr, args[key])
+
+        # 2. 写回 config.toml 持久化（重启后仍生效）
+        self._persist_config(args)
+
+        # 3. 实时应用到执行器实例（秒 → 毫秒换算）
+        if self.executor:
+            if 'browser_type' in args:
+                self.executor.browser_type = args['browser_type']
+            if 'headless' in args:
+                self.executor.headless = bool(args['headless'])
+            if 'persistent' in args:
+                self.executor.persistent = bool(args['persistent'])
+            if 'launch_timeout' in args:
+                self.executor.launch_timeout = int(args['launch_timeout']) * 1000
+            if 'action_timeout' in args:
+                self.executor.action_timeout = int(args['action_timeout']) * 1000
+            if 'retry_count' in args:
+                self.executor.retry_count = int(args['retry_count'])
+            if 'step_interval' in args:
+                self.executor.step_interval = int(args['step_interval'])
+            if 'viewport_width' in args or 'viewport_height' in args:
+                self.executor.default_viewport = {
+                    "width": int(args.get('viewport_width', self.executor.default_viewport.get('width', 1280))),
+                    "height": int(args.get('viewport_height', self.executor.default_viewport.get('height', 720))),
+                }
+            for key in ('trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources'):
+                if key in args:
+                    setattr(self.executor, key, bool(args[key]))
+
+        # 4. 动态调整日志级别
+        if 'log_level' in args and args['log_level']:
+            level = str(args['log_level']).upper()
+            if hasattr(logging, level):
+                logging.getLogger('actuator').setLevel(getattr(logging, level))
+                logger.info(f"日志级别已更新为: {level}")
+
+        logger.info(f"执行器配置已更新: {args}")
+
+        # 5. 重新上报能力（browser_type/max_concurrent 等变化需同步给平台）
+        try:
+            await self.ws_client._send_actuator_info()
+        except Exception as e:
+            logger.warning(f"配置更新后重新上报执行器信息失败: {e}")
+
+    def _persist_config(self, updates: dict) -> None:
+        """把配置更新写回 config.toml（保留 server/actuator 等未编辑内容）"""
+        try:
+            import tomllib
+            import tomli_w
+        except ImportError:
+            logger.warning("tomllib/tomli_w 未安装，跳过配置持久化")
+            return
+
+        path = Path(self.config_path)
+        data: dict = {}
+        if path.exists():
+            try:
+                with open(path, 'rb') as f:
+                    data = tomllib.load(f)
+            except Exception as e:
+                logger.warning(f"读取 config.toml 失败，将以默认结构覆盖: {e}")
+
+        actuator = data.setdefault('actuator', {})
+        browser = data.setdefault('browser', {})
+        execution = data.setdefault('execution', {})
+        trace = data.setdefault('trace', {})
+        logging_cfg = data.setdefault('logging', {})
+
+        # 执行器名称（config.toml [actuator] 组 name）
+        if updates.get('name'):
+            actuator['name'] = updates['name']
+
+        for key in ('browser_type', 'persistent', 'launch_timeout', 'action_timeout', 'headless', 'viewport_width', 'viewport_height'):
+            if key in updates and updates[key] is not None:
+                browser[key] = updates[key]
+        for key in ('retry_count', 'step_interval', 'max_concurrent'):
+            if key in updates and updates[key] is not None:
+                execution[key] = updates[key]
+        # config.toml 中 trace 组键名为 enabled/screenshots/snapshots/sources
+        trace_toml_keys = {
+            'trace_enabled': 'enabled',
+            'trace_screenshots': 'screenshots',
+            'trace_snapshots': 'snapshots',
+            'trace_sources': 'sources',
+        }
+        for key, toml_key in trace_toml_keys.items():
+            if key in updates and updates[key] is not None:
+                trace[toml_key] = updates[key]
+        if updates.get('log_level'):
+            logging_cfg['level'] = updates['log_level']
+
+        try:
+            # tomli_w.dump 需要二进制模式文件
+            with open(path, 'wb') as f:
+                tomli_w.dump(data, f)
+            logger.info(f"配置已持久化到: {self.config_path}")
+        except Exception as e:
+            logger.error(f"写回 config.toml 失败: {e}")
     
     async def execute_page_steps(self, args: dict):
         """执行页面步骤"""

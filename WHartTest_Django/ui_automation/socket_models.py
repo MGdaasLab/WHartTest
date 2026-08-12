@@ -31,6 +31,7 @@ class UiSocketEnum:
     STEP_RESULT = 'u_step_result'         # 步骤执行结果
     CASE_RESULT = 'u_case_result'         # 用例执行结果
     SET_ACTUATOR_INFO = 't_set_actuator_info'  # 设置执行器信息
+    SET_ACTUATOR_CONFIG = 't_set_actuator_config'  # 平台下发执行器配置
 
 
 class QueueModel(BaseModel):

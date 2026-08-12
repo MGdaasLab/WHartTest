@@ -928,7 +928,7 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
     queryset = UiEnvironmentConfig.objects.select_related('project', 'creator')
     serializer_class = UiEnvironmentConfigSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['project', 'browser', 'headless', 'is_default']
+    filterset_fields = ['project', 'is_default']
     search_fields = ['name', 'base_url']
     ordering_fields = ['name', 'created_at']
     ordering = ['project', 'name']
@@ -937,9 +937,24 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
         serializer.save(creator=self.request.user)
 
 
+# 执行器可编辑配置字段白名单（与执行器 Config 属性一致）
+_ACTUATOR_CONFIG_FIELDS = frozenset({
+    'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
+    'retry_count', 'step_interval', 'max_concurrent', 'log_level',
+    'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
+    'headless', 'viewport_width', 'viewport_height',
+})
+
+
 class ActuatorViewSet(viewsets.ViewSet):
     """执行器管理视图"""
     permission_classes = []  # 公开访问，不需要特殊权限
+
+    def get_permissions(self):
+        """config 为写操作，需要登录；其余保持公开"""
+        if self.action == 'config':
+            return [IsAuthenticated()]
+        return []
 
     @action(detail=False, methods=['get'])
     def list_actuators(self, request):
@@ -971,6 +986,21 @@ class ActuatorViewSet(viewsets.ViewSet):
                 'os': cap.get('os'),
                 'labels': cap.get('labels') or [],
                 'connected_at': raw.get('connected_at'),
+                # 运行配置（供编辑弹窗预填）
+                'persistent': raw.get('persistent', True),
+                'launch_timeout': raw.get('launch_timeout', 30),
+                'action_timeout': raw.get('action_timeout', 30),
+                'retry_count': raw.get('retry_count', 3),
+                'step_interval': raw.get('step_interval', 500),
+                'log_level': raw.get('log_level', 'INFO'),
+                'trace_enabled': raw.get('trace_enabled', True),
+                'trace_screenshots': raw.get('trace_screenshots', True),
+                'trace_snapshots': raw.get('trace_snapshots', True),
+                'trace_sources': raw.get('trace_sources', False),
+                'headless': raw.get('headless', False),
+                'viewport_width': raw.get('viewport_width', 1280),
+                'viewport_height': raw.get('viewport_height', 720),
+                'in_container': raw.get('in_container', False),
             }
             actuators.append(item)
 
@@ -981,6 +1011,131 @@ class ActuatorViewSet(viewsets.ViewSet):
                 'items': actuators
             }
         })
+
+    @action(detail=False, methods=['post'])
+    def config(self, request):
+        """保存执行器配置：更新 registry 并实时下发到执行器"""
+        from .consumers import SocketUserManager
+        from .actuator_registry import update_capability
+        from .socket_models import (
+            SocketDataModel, QueueModel, NoticeType, ResponseCode, UiSocketEnum,
+        )
+        from asgiref.sync import async_to_sync
+
+        actuator_id = request.data.get('actuator_id')
+        config = request.data.get('config')
+        if not actuator_id:
+            return Response({'error': 'actuator_id 必填'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(config, dict) or not config:
+            return Response({'error': 'config 不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+        consumer = SocketUserManager.get_actuator_by_id(str(actuator_id))
+        if not consumer:
+            return Response(
+                {'error': f'执行器 {actuator_id} 不在线'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 只允许编辑白名单字段
+        normalized = {}
+        for key, value in config.items():
+            if key in _ACTUATOR_CONFIG_FIELDS and value is not None:
+                normalized[key] = value
+
+        # 校验浏览器类型在支持列表内
+        if 'browser_type' in normalized:
+            supported = consumer.actuator_info.get('supported_browsers') or []
+            if normalized['browser_type'] not in supported:
+                return Response(
+                    {
+                        'error': (
+                            f'执行器不支持浏览器类型 {normalized["browser_type"]}，'
+                            f'支持: {", ".join(supported) or "无"}'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # 数值范围校验
+        int_ranges = {
+            'launch_timeout': (10, 120),
+            'action_timeout': (5, 60),
+            'retry_count': (0, 10),
+            'step_interval': (0, 60000),
+            'max_concurrent': (1, 20),
+            'viewport_width': (320, 3840),
+            'viewport_height': (240, 2160),
+        }
+        for key, (lo, hi) in int_ranges.items():
+            if key in normalized:
+                try:
+                    value = int(normalized[key])
+                except (TypeError, ValueError):
+                    return Response(
+                        {'error': f'{key} 必须是整数'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if not lo <= value <= hi:
+                    return Response(
+                        {'error': f'{key} 必须在 {lo}-{hi} 之间'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                normalized[key] = value
+
+        if 'log_level' in normalized and normalized['log_level'].upper() not in (
+            'DEBUG', 'INFO', 'WARNING', 'ERROR',
+        ):
+            return Response(
+                {'error': 'log_level 必须是 DEBUG/INFO/WARNING/ERROR 之一'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless'):
+            if key in normalized:
+                normalized[key] = bool(normalized[key])
+
+        # 执行器名称校验
+        if 'name' in normalized:
+            name = str(normalized['name']).strip()
+            if not name or len(name) > 50:
+                return Response(
+                    {'error': '执行器名称不能为空且不能超过50个字符'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            normalized['name'] = name
+
+        # 容器内执行器禁止启用有头模式
+        if normalized.get('headless') is False and consumer.actuator_info.get('in_container'):
+            return Response(
+                {'error': '当前执行器使用docker环境部署无法启用有头模式'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 更新 registry，使列表立即反映新配置
+        try:
+            update_capability(str(actuator_id), normalized)
+        except Exception as exc:
+            return Response({'error': f'更新执行器配置失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 实时下发到执行器
+        try:
+            async_to_sync(consumer.send_json)(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg="set_config",
+                user=request.user.username if request.user.is_authenticated else None,
+                is_notice=NoticeType.ACTUATOR,
+                data=QueueModel(
+                    func_name=UiSocketEnum.SET_ACTUATOR_CONFIG,
+                    func_args=normalized,
+                )
+            ))
+        except Exception as exc:
+            return Response(
+                {'error': f'配置已保存但下发失败: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({'status': 'success', 'data': normalized})
 
     @action(detail=False, methods=['get'])
     def status(self, request):

@@ -12,6 +12,7 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 from models import SocketDataModel, QueueModel, ResponseCode, NoticeType, UiSocketEnum
+from runtime_env import should_force_headless, is_running_in_container
 
 logger = logging.getLogger('actuator')
 
@@ -90,19 +91,44 @@ class WebSocketClient:
             return False
     
     async def _send_actuator_info(self):
-        """发送执行器信息到服务端"""
+        """发送执行器信息到服务端（连接/重连/配置更新后调用）"""
+        browser_type = getattr(self.config, 'browser_type', 'chromium') if self.config else 'chromium'
+        max_slots = getattr(self.config, 'max_concurrent', 3) if self.config else 3
+        headless = getattr(self.config, 'headless', False) if self.config else False
         actuator_info = {
             'name': getattr(self.config, 'actuator_name', None) or self.actuator_id,
             'type': 'web_ui',
             'is_open': True,
             'debug': False,
             'version': self.VERSION,
+            'browser_type': browser_type,
+            'default_browser': browser_type,
+            'headless': headless,
+            # 上报实际已安装的浏览器，供平台执行器列表/编辑弹窗选择
+            'supported_browsers': self._detect_supported_browsers(),
+            'supports_headed': not should_force_headless(),
+            'supports_headless': True,
+            'max_slots': max_slots,
+            'max_concurrent': max_slots,
+            'busy_slots': 0,
+            # 运行配置（供平台列表/编辑弹窗预填当前值）
+            'persistent': bool(getattr(self.config, 'persistent', True)) if self.config else True,
+            'launch_timeout': getattr(self.config, 'launch_timeout', 30) if self.config else 30,
+            'action_timeout': getattr(self.config, 'action_timeout', 30) if self.config else 30,
+            'retry_count': getattr(self.config, 'retry_count', 3) if self.config else 3,
+            'step_interval': getattr(self.config, 'step_interval', 500) if self.config else 500,
+            'log_level': getattr(self.config, 'log_level', 'INFO') if self.config else 'INFO',
+            'trace_enabled': bool(getattr(self.config, 'trace_enabled', True)) if self.config else True,
+            'trace_screenshots': bool(getattr(self.config, 'trace_screenshots', True)) if self.config else True,
+            'trace_snapshots': bool(getattr(self.config, 'trace_snapshots', True)) if self.config else True,
+            'trace_sources': bool(getattr(self.config, 'trace_sources', False)) if self.config else False,
+            # 无头模式与视口（执行器维护，任务运行时作为默认值）
+            'headless': headless,
+            'viewport_width': getattr(self.config, 'viewport_width', 1280) if self.config else 1280,
+            'viewport_height': getattr(self.config, 'viewport_height', 720) if self.config else 720,
+            # 容器部署标识（docker 环境无法启用有头模式）
+            'in_container': is_running_in_container(),
         }
-        
-        # 从配置中获取浏览器相关设置
-        if self.config:
-            actuator_info['browser_type'] = getattr(self.config, 'browser_type', 'chromium')
-            actuator_info['headless'] = getattr(self.config, 'headless', False)
         
         await self.send(SocketDataModel(
             code=ResponseCode.SUCCESS,
@@ -113,6 +139,19 @@ class WebSocketClient:
             )
         ))
         logger.info(f"已发送执行器信息: {actuator_info}")
+
+    @staticmethod
+    def _detect_supported_browsers() -> list[str]:
+        """检测本机实际安装的 Playwright 浏览器列表"""
+        try:
+            from browser_installer import is_browser_installed
+            installed = [
+                b for b in ('chromium', 'firefox', 'webkit')
+                if is_browser_installed(b)
+            ]
+            return installed or ['chromium']
+        except Exception:
+            return ['chromium']
     
     async def disconnect(self):
         """断开连接"""

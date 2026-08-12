@@ -34,7 +34,7 @@ else:
 sys.path.insert(0, str(_base_path))
 
 # 导入浏览器安装模块（必须在其他模块之前）
-from browser_installer import setup_playwright_env, ensure_browser
+from browser_installer import ensure_browser
 
 from websocket_client import WebSocketClient
 from consumer import TaskConsumer
@@ -101,6 +101,7 @@ persistent = true
 user_data_dir = "./data/browser"
 launch_timeout = 30
 action_timeout = 30
+stealth_enabled = true
 
 [execution]
 retry_count = 3
@@ -127,7 +128,7 @@ language = "zh"
 
 class Config:
     """配置类"""
-
+    
     def __init__(self):
         container_mode = is_running_in_container()
 
@@ -149,6 +150,10 @@ class Config:
         self.user_data_dir = "./data/browser"
         self.launch_timeout = 30
         self.action_timeout = 30
+        self.viewport_width = 1280
+        self.viewport_height = 720
+        self.stealth_enabled = True
+        self.stealth_user_agent: str | None = None
         
         # 执行配置
         self.retry_count = 3
@@ -203,6 +208,10 @@ class Config:
             self.user_data_dir = browser.get('user_data_dir', self.user_data_dir)
             self.launch_timeout = browser.get('launch_timeout', self.launch_timeout)
             self.action_timeout = browser.get('action_timeout', self.action_timeout)
+            self.viewport_width = browser.get('viewport_width', self.viewport_width)
+            self.viewport_height = browser.get('viewport_height', self.viewport_height)
+            self.stealth_enabled = browser.get('stealth_enabled', self.stealth_enabled)
+            self.stealth_user_agent = browser.get('stealth_user_agent', self.stealth_user_agent)
         
         # 执行配置
         if 'execution' in data:
@@ -242,12 +251,15 @@ class Config:
             self.api_password = api_password.strip()
         if browser_type := os.environ.get('WHARTTEST_ACTUATOR_BROWSER_TYPE'):
             self.browser_type = browser_type.strip()
+        if stealth_user_agent := os.environ.get('WHARTTEST_ACTUATOR_STEALTH_USER_AGENT'):
+            self.stealth_user_agent = stealth_user_agent.strip()
 
         bool_env_map = {
             'WHARTTEST_ACTUATOR_USE_GUI': 'use_gui',
             'WHARTTEST_ACTUATOR_HEADLESS': 'headless',
             'WHARTTEST_ACTUATOR_PERSISTENT': 'persistent',
             'WHARTTEST_ACTUATOR_TRACE_ENABLED': 'trace_enabled',
+            'WHARTTEST_ACTUATOR_STEALTH_ENABLED': 'stealth_enabled',
         }
         for env_name, attr_name in bool_env_map.items():
             env_value = parse_bool_env(os.environ.get(env_name))
@@ -266,7 +278,7 @@ class Config:
         if should_force_headless() and not self.headless:
             logging.info("检测到容器内无显示服务，自动启用无头模式")
             self.headless = True
-
+    
     def apply_args(self, args: argparse.Namespace) -> None:
         """应用命令行参数（覆盖配置文件）"""
         if args.server:
@@ -365,13 +377,13 @@ async def main():
     args = parse_args()
     config_path = resolve_config_path(args.config)
     ensure_config_file(config_path)
-
+    
     # 加载配置
     config = Config()
     config.load_from_toml(str(config_path))
     config.load_from_env()
     config.apply_args(args)
-
+    
     # 配置日志
     setup_logging(config.log_level, config.log_file)
     config.normalize_for_runtime()
@@ -395,7 +407,7 @@ async def main():
             logger.error(f"或者设置 use_gui = false 使用配置文件中的账号密码")
             logger.error(f"导入错误: {e}")
             sys.exit(1)
-
+        
         logger.info("启动 GUI 登录窗口...")
         login_result = show_login_dialog(str(config_path))
         
@@ -461,7 +473,8 @@ async def main():
         config.api_url, 
         config,
         api_username=config.api_username,
-        api_password=config.api_password
+        api_password=config.api_password,
+        config_path=str(config_path)
     )
     
     # 设置信号处理（Windows 不支持 add_signal_handler，使用 try/except 处理）

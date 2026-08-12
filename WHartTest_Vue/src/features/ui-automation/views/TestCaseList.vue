@@ -53,6 +53,7 @@
           </a-option>
         </a-select>
         <a-select
+          :key="`env-config-select-${projectId || 'none'}`"
           v-model="selectedEnvConfig"
           :placeholder="pageText.executionEnvironment"
           allow-clear
@@ -244,6 +245,7 @@ const pageText = computed(() => (
         online: 'Online',
         offline: 'Offline',
         executionEnvironment: 'Execution environment',
+        noCompatibleActuator: 'No online actuator matches the effective browser/headless policy',
         defaultSuffix: ' (Default)',
         batchExecute: 'Batch run',
         batchDelete: 'Batch delete',
@@ -312,6 +314,7 @@ const pageText = computed(() => (
         online: '在线',
         offline: '离线',
         executionEnvironment: '执行环境',
+        noCompatibleActuator: '没有与生效浏览器/无头策略匹配的在线执行器',
         defaultSuffix: ' (默认)',
         batchExecute: '批量执行',
         batchDelete: '批量删除',
@@ -384,7 +387,7 @@ const moduleOptions = ref<UiModule[]>([])
 const envConfigs = ref<UiEnvironmentConfig[]>([]) // 环境配置列表
 const actuators = ref<ActuatorInfo[]>([]) // 执行器列表
 const selectedEnvConfig = ref<number | undefined>() // 选中的环境配置
-const selectedActuator = ref<string | undefined>() // 选中的执行器
+const selectedActuator = ref<string | undefined>()
 const selectedRowKeys = ref<number[]>([]) // 批量选中的用例ID
 const modalVisible = ref(false)
 const stepsDrawerVisible = ref(false)
@@ -669,6 +672,25 @@ const viewSteps = (record: UiTestCase) => {
   stepsDrawerVisible.value = true
 }
 
+
+const ensureDefaultEnvSelected = () => {
+  if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
+    const defaultEnv = envConfigs.value.find(e => e.is_default)
+    selectedEnvConfig.value = (defaultEnv || envConfigs.value[0])?.id
+  }
+}
+
+/** 选择有足够空闲 slot 的在线执行器（浏览器/无头由执行器自身配置决定） */
+const selectAvailableActuator = (needSlots = 1): string | undefined => {
+  const match = actuators.value.find(a => {
+    if (!a.is_open) return false
+    const max = a.max_slots ?? 1
+    const busy = a.busy_slots ?? 0
+    return (max - busy) >= needSlots
+  })
+  return match?.id
+}
+
 const runTestCase = async (record: UiTestCase) => {
   // 先获取执行器列表
   await fetchActuators()
@@ -679,22 +701,16 @@ const runTestCase = async (record: UiTestCase) => {
     return
   }
 
-  // 如果没有选择执行器，自动选择第一个可用的
-  if (!selectedActuator.value) {
-    const available = actuators.value.find(a => a.is_open)
-    if (available) {
-      selectedActuator.value = available.id
-    } else {
-      Message.warning(pageText.value.selectOnlineActuator)
-      return
-    }
-  }
+  // 先补齐默认环境，再按生效策略选执行器（与后端 hard-fail 对齐）
+  ensureDefaultEnvSelected()
 
-  // 如果没有选择环境配置，使用默认的
-  if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
-    const defaultEnv = envConfigs.value.find(e => e.is_default)
-    if (defaultEnv) {
-      selectedEnvConfig.value = defaultEnv.id
+  if (!selectedActuator.value) {
+    const availableId = selectAvailableActuator(1)
+    if (availableId) {
+      selectedActuator.value = availableId
+    } else {
+      Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
+      return
     }
   }
 
@@ -738,22 +754,17 @@ const runBatchTestCases = async () => {
     return
   }
 
-  // 如果没有选择执行器，自动选择第一个可用的
-  if (!selectedActuator.value) {
-    const available = actuators.value.find(a => a.is_open)
-    if (available) {
-      selectedActuator.value = available.id
-    } else {
-      Message.warning(pageText.value.selectOnlineActuator)
-      return
-    }
-  }
+  // 先补齐默认环境，再按生效策略与所需 slot 数选执行器
+  ensureDefaultEnvSelected()
 
-  // 如果没有选择环境配置，使用默认的
-  if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
-    const defaultEnv = envConfigs.value.find(e => e.is_default)
-    if (defaultEnv) {
-      selectedEnvConfig.value = defaultEnv.id
+  if (!selectedActuator.value) {
+    const needSlots = selectedRowKeys.value.length || 1
+    const availableId = selectAvailableActuator(needSlots)
+    if (availableId) {
+      selectedActuator.value = availableId
+    } else {
+      Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
+      return
     }
   }
 
@@ -830,20 +841,25 @@ const handleCaseResult = (data: any) => {
 }
 
 /** 获取环境配置 */
-const fetchEnvConfigs = async () => {
-  if (!projectId.value) return
+const fetchEnvConfigs = async (options: { resetSelected?: boolean } = {}) => {
+  const currentProjectId = projectId.value
+  if (options.resetSelected) {
+    selectedEnvConfig.value = undefined
+    envConfigs.value = []
+  }
+  if (!currentProjectId) {
+    selectedEnvConfig.value = undefined
+    envConfigs.value = []
+    return
+  }
   try {
-    const res = await envConfigApi.list({ project: projectId.value })
+    const res = await envConfigApi.list({ project: currentProjectId })
+    if (projectId.value !== currentProjectId) return
+
     envConfigs.value = extractListData<UiEnvironmentConfig>(res)
-    // 优先选择默认环境，如果没有默认环境则选择第一个环境配置
-    if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
-      const defaultEnv = envConfigs.value.find(e => e.is_default)
-      if (defaultEnv) {
-        selectedEnvConfig.value = defaultEnv.id
-      } else {
-        // 如果没有默认环境，选择第一个环境配置
-        selectedEnvConfig.value = envConfigs.value[0].id
-      }
+    const selectedStillAvailable = envConfigs.value.some(env => env.id === selectedEnvConfig.value)
+    if (!selectedStillAvailable) {
+      selectedEnvConfig.value = envConfigs.value.find(env => env.is_default)?.id ?? envConfigs.value[0]?.id
     }
   } catch {
     // 静默失败
@@ -851,15 +867,19 @@ const fetchEnvConfigs = async () => {
 }
 
 /** 获取执行器列表 */
-const fetchActuators = async () => {
+const fetchActuators = async (options: { resetSelected?: boolean } = {}) => {
+  if (options.resetSelected) {
+    selectedActuator.value = undefined
+    actuators.value = []
+  }
   try {
     const res = await actuatorApi.list()
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
-    // 自动选择第一个可用的执行器
-    if (!selectedActuator.value && actuators.value.length > 0) {
-      const available = actuators.value.find(a => a.is_open)
-      if (available) selectedActuator.value = available.id
+    // Do not auto-fallback to an arbitrary online actuator; capability match happens at run time.
+    const selectedStillAvailable = actuators.value.some(act => act.id === selectedActuator.value && act.is_open)
+    if (!selectedStillAvailable) {
+      selectedActuator.value = undefined
     }
   } catch {
     // 静默失败
@@ -877,14 +897,24 @@ watch(() => props.selectedModuleId, (newVal) => {
 
 /** 监听项目变化，重新加载数据 */
 watch(projectId, async (newVal) => {
+  selectedActuator.value = undefined
+  actuators.value = []
+  selectedEnvConfig.value = undefined
+  envConfigs.value = []
+  selectedRowKeys.value = []
+  filters.module = undefined
+  moduleOptions.value = []
+  testcaseData.value = []
+  pagination.total = 0
+
   if (newVal) {
     pagination.current = 1
     fetchModules()
     fetchTestCases()
     // 同时获取环境配置和执行器列表，并自动选择默认值
     await Promise.all([
-      fetchEnvConfigs(),
-      fetchActuators()
+      fetchEnvConfigs({ resetSelected: true }),
+      fetchActuators({ resetSelected: true })
     ])
   }
 }, { immediate: true })
@@ -893,6 +923,7 @@ const refresh = () => {
   fetchModules()
   fetchTestCases()
   fetchEnvConfigs()
+  fetchActuators()
 }
 
 defineExpose({ refresh })
@@ -934,4 +965,6 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 12px;
 }
+
+
 </style>
