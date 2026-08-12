@@ -254,9 +254,13 @@ def _iter_operations(
             if method_key in PATH_ITEM_KEYS or not isinstance(operation, dict):
                 continue
             raw_path_text = str(raw_path)
+            parsed_raw = urlparse(raw_path_text)
+            # strip_base_url 模式下，完整 URL 路径先剥离 origin，
+            # 避免拼出 "/http:/host/..." 垃圾路径（也导致模块名变成 "http:"）
+            if strip_base_url and (parsed_raw.scheme or parsed_raw.netloc):
+                raw_path_text = parsed_raw.path or "/"
             # 当保留完整 URL 且路径本身已含 scheme/netloc（Postman/HAR/cURL 等），
             # 不再拼接 root_prefix，直接使用原始路径。
-            parsed_raw = urlparse(raw_path_text)
             if not strip_base_url and (parsed_raw.scheme or parsed_raw.netloc):
                 full_path = raw_path_text
             elif not strip_base_url and root_prefix and _is_url_prefix(root_prefix):
@@ -324,7 +328,7 @@ def _operation_to_interface_payload(
         "extract": {},
         "extract_meta": {},
         "file_ids": [],
-        "_module_name": _module_name_from_operation(operation, path),
+        "_module_name": _module_name_from_operation(operation, path, document),
     }
 
 
@@ -422,6 +426,7 @@ def _swagger_request_body(
                     "value": stringify_pair_value(_sample_from_parameter(document, parameter)),
                     "description": stringify_pair_value(parameter.get("description", "")),
                     "enabled": True,
+                    "value_type": "file" if str(parameter.get("type") or "").lower() == "file" else "text",
                 }
                 for parameter in form_parameters
                 if parameter.get("name")
@@ -561,17 +566,24 @@ def _operation_name(operation: dict[str, Any], method: str, path: str) -> str:
     return name[:100] or f"{method} {path}"[:100]
 
 
-def _module_name_from_operation(operation: dict[str, Any], path: str) -> str:
+def _module_name_from_operation(operation: dict[str, Any], path: str, document: dict[str, Any] | None = None) -> str:
     tags = operation.get("tags")
     if isinstance(tags, list):
         for tag in tags:
             if tag not in (None, ""):
                 return str(tag).strip()[:100]
 
-    # 完整 URL（保留域名模式）需先提取 path 部分，避免把 "https:" 当成模块名
+    # 无显式 tags 时取文档 title 作为模块名
+    if isinstance(document, dict):
+        info = document.get("info")
+        if isinstance(info, dict) and info.get("title"):
+            return str(info["title"]).strip()[:100]
+
+    # 兜底：从路径第一段提取；完整 URL（保留域名模式）需先提取 path 部分，
+    # 避免把 "http:" 之类的 origin 片段当成模块名
     parsed = urlparse(str(path))
     if parsed.scheme or parsed.netloc:
-        path = parsed.path or path
+        path = parsed.path or "/"
 
     parts = [part for part in path.split("/") if part and not part.startswith("{")]
     return parts[0][:100] if parts else ""

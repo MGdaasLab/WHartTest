@@ -1114,6 +1114,71 @@ class ApiInterfaceAPITest(TestCase):
         self.assertEqual(curl_interface.body['content'], {'name': 'curl'})
         self.assertEqual(curl_interface.params[0]['key'], 'page')
 
+    def test_import_curl_with_windows_line_continuation(self):
+        """Windows cmd 粘贴的 curl（行尾 ^ 续行符）不应把 ^ 残留进 URL/请求头/参数。"""
+        curl_command = (
+            'curl ^\r\n'
+            '-X POST ^\r\n'
+            '-H "Content-Type: application/json" ^\r\n'
+            '-H "X-Token: token" ^\r\n'
+            '-d "{\\"name\\":\\"curl\\"}" ^\r\n'
+            '"https://example.com/exchange/curl?page=7" ^\r\n'
+        )
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'source_type': 'curl', 'content': curl_command},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        interface = ApiInterface.objects.get(project=self.project, url='/exchange/curl')
+        # URL 不再带 ^（也不会被 ^ 顶替成 /^）
+        self.assertEqual(interface.url, '/exchange/curl')
+        self.assertNotIn('^', interface.url)
+        for header in interface.headers:
+            self.assertNotIn('^', f"{header.get('key', '')}{header.get('value', '')}")
+        for param in interface.params:
+            self.assertNotIn('^', f"{param.get('key', '')}{param.get('value', '')}")
+        self.assertEqual(interface.body['content'], {'name': 'curl'})
+        self.assertNotIn('^', json.dumps(interface.body.get('content', '')))
+
+    def test_import_curl_with_caret_prefix(self):
+        """^ 紧贴 token 开头的 Windows 续行写法（curl ^http://...）不应残留 ^。"""
+        curl_command = (
+            'curl ^http://172.31.69.83:5173/api/lg/token-usage/ ^\n'
+            '-H "^authorization: Bearer xxx" ^\n'
+        )
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'source_type': 'curl', 'content': curl_command},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        interface = ApiInterface.objects.get(project=self.project, url='/api/lg/token-usage/')
+        self.assertEqual(interface.name, 'GET /api/lg/token-usage/')
+        self.assertNotIn('^', interface.url)
+        header = next(item for item in interface.headers if item.get('key') == 'authorization')
+        self.assertEqual(header['value'], 'Bearer xxx')
+        self.assertNotIn('^', header['key'])
+        self.assertNotIn('^', header['value'])
+
+    def test_import_curl_keeps_real_caret_in_values(self):
+        """curl 命令中 URL/请求头里真实存在的 ^ 字符不应被误删。"""
+        curl_command = (
+            'curl -G "https://example.com/exchange/curl?filter=a^b" '
+            '-H "X-Mark: a^b"'
+        )
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'source_type': 'curl', 'content': curl_command},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        interface = ApiInterface.objects.get(project=self.project, url='/exchange/curl')
+        header = next(item for item in interface.headers if item.get('key') == 'X-Mark')
+        self.assertEqual(header['value'], 'a^b')
+        param = next(item for item in interface.params if item.get('key') == 'filter')
+        self.assertEqual(param['value'], 'a^b')
+
         markdown_response = self.client.post(
             f'{self.base_url}import-openapi/',
             {
@@ -1135,6 +1200,122 @@ class ApiInterfaceAPITest(TestCase):
         label_interface = ApiInterface.objects.get(project=self.project, url='/exchange/markdown-label')
         self.assertEqual(label_interface.method, 'POST')
         self.assertEqual(label_interface.name, 'Create record')
+
+    def test_import_markdown_widdershins_style(self):
+        """widdershins 风格 Markdown 应导入请求体、title 模块名、方法后接口名并自动创建 Content-Type。"""
+        markdown_content = (
+            '---\n'
+            'title: zw\n'
+            'language_tabs:\n'
+            '  - shell: Shell\n'
+            'generator: "@tarslib/widdershins v4.0.30"\n'
+            '---\n\n'
+            '# zw\n\n'
+            '# Default\n\n'
+            '## POST login\n\n'
+            'POST /api/auth/management/login\n\n'
+            '> Body 请求参数\n\n'
+            '```json\n'
+            '{\n'
+            '  "uuid": null,\n'
+            '  "password": "0Xh0YZc7SWjLzsJDP1e8VQ==",\n'
+            '  "username": "hPU75IwyzvA="\n'
+            '}\n'
+            '```\n\n'
+            '### 请求参数\n\n'
+            '|名称|位置|类型|必选|说明|\n'
+            '|---|---|---|---|---|\n'
+            '|body|body|object| 否 |none|\n\n'
+            '> 返回示例\n\n'
+            '```json\n'
+            '{}\n'
+            '```\n\n'
+            '## POST 上传文件\n\n'
+            'POST /api/projects/1/files/\n\n'
+            '> Body 请求参数\n\n'
+            '```yaml\n'
+            'files: /C:/Users/zhangsan/Downloads/需求文档.docx\n'
+            '```\n'
+        )
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'source_type': 'markdown', 'content': markdown_content},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['format'], 'markdown')
+
+        login_interface = ApiInterface.objects.get(project=self.project, url='/api/auth/management/login')
+        # 接口名取 "## POST login" 中请求方法后的名称
+        self.assertEqual(login_interface.name, 'login')
+        # 模块名取文档 frontmatter 的 title 字段
+        self.assertEqual(login_interface.module.name, 'zw')
+        # JSON 请求体被导入
+        self.assertEqual(login_interface.body['type'], 'raw')
+        self.assertEqual(
+            login_interface.body['content'],
+            {'uuid': None, 'password': '0Xh0YZc7SWjLzsJDP1e8VQ==', 'username': 'hPU75IwyzvA='},
+        )
+        # 根据请求体类型自动创建 Content-Type 请求头
+        self.assertTrue(
+            any(h.get('key') == 'Content-Type' and h.get('value') == 'application/json'
+                for h in login_interface.headers)
+        )
+
+        upload_interface = ApiInterface.objects.get(project=self.project, url='/api/projects/1/files/')
+        self.assertEqual(upload_interface.name, '上传文件')
+        self.assertEqual(upload_interface.module.name, 'zw')
+        # yaml 请求体转为 multipart/form-data
+        self.assertEqual(upload_interface.body['type'], 'form-data')
+        self.assertEqual(upload_interface.body['content'][0]['key'], 'files')
+        self.assertTrue(
+            any(h.get('key') == 'Content-Type' and h.get('value') == 'multipart/form-data'
+                for h in upload_interface.headers)
+        )
+
+    def test_import_swagger_module_name_from_title(self):
+        """Swagger 文档无 tags 时模块名取 info.title，完整 URL 路径剥离 origin。"""
+        swagger_document = {
+            'swagger': '2.0',
+            'info': {'title': '水稻平台API', 'version': '1.0'},
+            'paths': {
+                'http://example.com/api/orders': {
+                    'get': {'summary': '订单列表', 'responses': {'200': {'description': 'OK'}}},
+                },
+            },
+        }
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'source_type': 'swagger', 'content': json.dumps(swagger_document)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        interface = ApiInterface.objects.get(project=self.project, url='/api/orders')
+        # 完整 URL 路径剥离 origin，不再出现 /http:/... 垃圾路径
+        self.assertEqual(interface.url, '/api/orders')
+        # 模块名取文档 title，而不是路径片段
+        self.assertEqual(interface.module.name, '水稻平台API')
+        self.assertNotIn('http', interface.module.name.lower())
+
+    def test_import_swagger_tags_prefer_over_title(self):
+        """Swagger 文档显式声明 tags 时仍按 tags 分组，不覆盖为 title。"""
+        swagger_document = {
+            'swagger': '2.0',
+            'info': {'title': '水稻平台API', 'version': '1.0'},
+            'paths': {
+                '/api/orders': {
+                    'get': {'tags': ['订单模块'], 'summary': '订单列表', 'responses': {'200': {'description': 'OK'}}},
+                },
+            },
+        }
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'source_type': 'swagger', 'content': json.dumps(swagger_document)},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        interface = ApiInterface.objects.get(project=self.project, url='/api/orders')
+        self.assertEqual(interface.module.name, '订单模块')
 
     @patch('api_interfaces.views.fetch_api_document')
     def test_import_swagger_url(self, fetch_api_document_mock):

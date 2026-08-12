@@ -1164,12 +1164,19 @@ def _apidoc_to_openapi(source: Any, *, keep_full_url: bool = False) -> dict[str,
 
 
 def _curl_to_openapi(command: str, *, keep_full_url: bool = False) -> dict[str, Any]:
+    # 兼容 Windows cmd 粘贴的 curl：^ 是续行符，可能独立成 token（被误当 URL）
+    # 或紧贴 token 末尾（粘进 header/参数值）；同时兼容 CRLF 与 Linux 的 \ 续行符
+    command = command.replace("\\\r\n", " ").replace("\\\n", " ")
     try:
-        tokens = shlex.split(command.replace("\\\n", " "))
+        tokens = shlex.split(command)
     except ValueError as exc:
         raise OpenAPIError(f"Invalid cURL command: {exc}") from exc
     if not tokens or tokens[0].lower() != "curl":
         raise OpenAPIError("The content must start with a cURL command.")
+    # 去掉 Windows cmd 续行符残留：^ 可能独立成 token，或紧贴 token 首尾
+    # （如 "curl ^http://..."），统一剥离；引号内数据中间的 ^（如 URL 的 a^b）不受影响
+    tokens = [token.strip("^") for token in tokens]
+    tokens = [token for token in tokens if token]
 
     method = ""
     raw_url = ""
@@ -1260,43 +1267,158 @@ def _curl_to_openapi(command: str, *, keep_full_url: bool = False) -> dict[str, 
     return document
 
 
+def _markdown_frontmatter_title(text: str) -> str:
+    """从 Markdown 文档开头的 YAML frontmatter 中提取 title 字段。"""
+    frontmatter_match = re.match(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n?", text.lstrip("\ufeff"), re.DOTALL)
+    if not frontmatter_match:
+        return ""
+    raw = frontmatter_match.group(1)
+    if yaml is not None:
+        try:
+            parsed = yaml.safe_load(raw)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict) and parsed.get("title") not in (None, ""):
+            return str(parsed["title"]).strip()
+    title_match = re.search(r"(?m)^\s*title\s*[:：]\s*(.+?)\s*$", raw)
+    if title_match:
+        return title_match.group(1).strip().strip("'\"")
+    return ""
+
+
+def _markdown_body_from_code(content: str, language: str) -> dict[str, Any] | None:
+    """把 Markdown 文档中 Body 代码块转换为 OpenAPI requestBody。
+
+    json/xml/text 等原始体按原始内容导入；yaml 块通常是 Postman 导出的
+    form-data 键值（如 files: /path），转换为 multipart/form-data。
+    """
+    if not content.strip():
+        return None
+    lang = str(language or "").strip().lower()
+    if lang in {"yaml", "yml"}:
+        if yaml is None:
+            return None
+        try:
+            parsed = yaml.safe_load(content)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict) and parsed:
+            properties: dict[str, Any] = {}
+            for key, value in parsed.items():
+                name = str(key)
+                item: dict[str, Any] = {"type": "string", "example": value}
+                text_value = str(value or "")
+                # 字段名含 file 或值为带扩展名的文件路径时按二进制文件处理
+                if "file" in name.lower() or (
+                    ("/" in text_value or "\\" in text_value)
+                    and re.search(r"\.(?:[A-Za-z0-9]{1,8})$", text_value.strip())
+                ):
+                    item["format"] = "binary"
+                properties[name] = item
+            return {
+                "content": {
+                    "multipart/form-data": {
+                        "schema": {"type": "object", "properties": properties},
+                    },
+                },
+            }
+        return None
+    media_type = {
+        "json": "application/json",
+        "xml": "application/xml",
+        "html": "text/html",
+        "text": "text/plain",
+        "plain": "text/plain",
+    }.get(lang, "application/json")
+    return _body_from_raw(content, media_type)
+
+
 def _markdown_to_openapi(text: str, *, keep_full_url: bool = False) -> dict[str, Any]:
     if not text.strip():
         raise OpenAPIError("The uploaded Markdown document is empty.")
-    document = _new_openapi("Markdown Import")
+    frontmatter_title = _markdown_frontmatter_title(text)
+    document = _new_openapi(frontmatter_title or "Markdown Import")
     heading = ""
-    module_name = "Markdown"
+    # 文档 frontmatter 的 title 字段作为整个文档的模块名
+    module_name = frontmatter_title or "Markdown"
+    module_from_title = bool(frontmatter_title)
     pending_method = ""
     pending_title = ""
+    last_operation: dict[str, Any] | None = None
+    body_pending = False
+    fence_language = ""
+    fence_lines: list[str] = []
     endpoint_pattern = re.compile(
         r"^\s*(?:[-*]\s*)?(?:\*\*)?(GET|POST|PUT|DELETE|PATCH)(?:\*\*)?\s*[:：]?\s*`?(https?://[^\s`]+|/[^\s`]*)`?",
         flags=re.IGNORECASE,
     )
     label_method_pattern = re.compile(r"(?:请求方式|method)\s*[:：|]\s*`?(?:\*\*)?(GET|POST|PUT|DELETE|PATCH)", re.IGNORECASE)
     label_url_pattern = re.compile(r"(?:请求地址|请求路径|url|path)\s*[:：|]\s*`?(?:\*\*)?(https?://[^\s`*]+|/[^\s`*]+)", re.IGNORECASE)
+    body_marker_pattern = re.compile(r"^>\s*(?:body\b|请求体|request\s*body)", re.IGNORECASE)
 
     def add_endpoint(method: str, raw_url: str, title: str) -> None:
+        nonlocal last_operation
         operation = {
-            "summary": title or f"{method.upper()} {_normalize_import_path(raw_url)}",
+            # 优先取 "## POST 上传文件" 头部中请求方法后的名称作为接口名
+            "summary": pending_title or title or f"{method.upper()} {_normalize_import_path(raw_url)}",
             "description": "Imported from Markdown",
             "tags": [module_name] if module_name else [],
             "parameters": _parameters_from_url(raw_url),
             "responses": _example_response(),
         }
         _add_operation(document, path=raw_url, method=method, operation=operation, keep_full_url=keep_full_url)
+        last_operation = operation
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
         plain_line = line.replace("**", "")
+
+        # 代码块：收集内容，跟在 "> Body" 标记后的代码块作为请求体
+        if line.startswith(("```", "~~~")):
+            if fence_language:
+                if body_pending and last_operation:
+                    request_body = _markdown_body_from_code("\n".join(fence_lines), fence_language)
+                    if request_body:
+                        last_operation["requestBody"] = request_body
+                fence_language = ""
+                body_pending = False
+                fence_lines = []
+            else:
+                fence_language = line.lstrip("`~").strip() or "text"
+                fence_lines = []
+            continue
+        if fence_language:
+            fence_lines.append(raw_line)
+            continue
+
         if line.startswith("#"):
             level = len(line) - len(line.lstrip("#"))
             heading = line[level:].strip().strip("`*")
-            if level <= 2 and not re.search(r"\b(?:GET|POST|PUT|DELETE|PATCH)\b", heading, re.IGNORECASE):
+            if not module_from_title and level <= 2 and not re.search(
+                r"\b(?:GET|POST|PUT|DELETE|PATCH)\b", heading, re.IGNORECASE
+            ):
                 module_name = heading or module_name
+            last_operation = None
+            body_pending = False
+            method_heading = re.match(r"^(GET|POST|PUT|DELETE|PATCH)\s+(.+)$", heading, re.IGNORECASE)
+            if method_heading and not method_heading.group(2).lstrip("`*").startswith(("/", "http")):
+                # "## POST 上传文件"：记录请求方法与名称，等待下一行 URL 形成接口
+                pending_method = method_heading.group(1)
+                pending_title = method_heading.group(2).strip().strip("`*")
+            else:
+                pending_method = ""
+                pending_title = ""
+
+        if line.startswith(">"):
+            body_pending = bool(body_marker_pattern.match(line))
+            continue
+
         endpoint_match = endpoint_pattern.match(line.lstrip("# "))
         if endpoint_match:
             method, raw_url = endpoint_match.groups()
-            suffix = line[endpoint_match.end():].strip(" `*-:：")
+            # 偏移量相对去掉 "# " 前缀后的行计算，避免 heading 行索引错位
+            matched_line = line.lstrip("# ")
+            suffix = matched_line[endpoint_match.end():].strip(" `*-:：")
             add_endpoint(method, raw_url, suffix or heading)
             pending_method = ""
             pending_title = ""

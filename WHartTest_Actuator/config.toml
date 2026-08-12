@@ -1,6 +1,6 @@
 [server]
 ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
-api_url = "http://127.0.0.1:8000"
+api_url = "http://172.31.69.83:5173"
 use_gui = true
 api_username = "admin"
 api_password = "admin123456"
