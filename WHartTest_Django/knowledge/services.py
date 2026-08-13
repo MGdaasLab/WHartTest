@@ -972,21 +972,13 @@ class VectorStoreManager:
 
     @classmethod
     def _get_global_config(cls):
-        """获取全局配置（带缓存，5分钟过期）"""
-        import time
+        """获取全局配置。
 
-        current_time = time.time()
-
-        # 缓存5分钟
-        if (
-            cls._global_config_cache
-            and (current_time - cls._global_config_cache_time) < 300
-        ):
-            return cls._global_config_cache
-
-        cls._global_config_cache = KnowledgeGlobalConfig.get_config()
-        cls._global_config_cache_time = current_time
-        return cls._global_config_cache
+        不做进程内缓存：文档处理在 Celery worker 进程执行，而配置保存发生在
+        Web 进程，进程级缓存会导致 worker 继续使用旧配置（跨进程无法失效）。
+        KnowledgeGlobalConfig 是 pk=1 的单例主键查询，开销可忽略。
+        """
+        return KnowledgeGlobalConfig.get_config()
 
     @classmethod
     def clear_global_config_cache(cls):
@@ -997,8 +989,11 @@ class VectorStoreManager:
     def _get_embeddings_instance(self):
         """获取嵌入模型实例，使用全局配置"""
         config = self.global_config
+        # cache_key 包含全部影响嵌入行为的配置字段（含 api_key），
+        # 避免仅修改某个字段（如 api_key）时复用到旧配置创建的实例
         cache_key = (
-            f"{config.embedding_service}_{config.api_base_url}_{config.model_name}"
+            f"{config.embedding_service}_{config.api_base_url}_"
+            f"{config.model_name}_{config.api_key}"
         )
 
         if cache_key not in self._embeddings_cache:

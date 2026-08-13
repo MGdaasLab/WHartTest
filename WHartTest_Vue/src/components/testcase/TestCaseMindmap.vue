@@ -7,22 +7,33 @@
           <a-button-group size="medium">
             <a-button @click="handleZoomIn" :disabled="loading">
               <template #icon><icon-zoom-in /></template>
-              <span class="btn-text">放大</span>
+              <span class="btn-text">{{ tl('放大') }}</span>
             </a-button>
             <a-button @click="handleZoomOut" :disabled="loading">
               <template #icon><icon-zoom-out /></template>
-              <span class="btn-text">缩小</span>
+              <span class="btn-text">{{ tl('缩小') }}</span>
             </a-button>
             <a-button @click="handleFit" :disabled="loading">
               <template #icon><icon-refresh /></template>
-              <span class="btn-text">自适应</span>
+              <span class="btn-text">{{ tl('自适应') }}</span>
+            </a-button>
+          </a-button-group>
+
+          <a-button-group size="medium">
+            <a-button @click="handleExpandAll" :disabled="loading || !hasData">
+              <template #icon><icon-plus /></template>
+              <span class="btn-text">{{ tl('全部展开') }}</span>
+            </a-button>
+            <a-button @click="handleCollapseAll" :disabled="loading || !hasData">
+              <template #icon><icon-minus /></template>
+              <span class="btn-text">{{ tl('全部收起') }}</span>
             </a-button>
           </a-button-group>
 
           <a-dropdown @select="handleThemeChange" trigger="click">
             <a-button type="outline" :disabled="loading">
               <template #icon><icon-skin /></template>
-              主题: {{ activeThemeLabel }}
+              {{ tl('主题:') }} {{ activeThemeLabel }}
             </a-button>
             <template #content>
               <a-doption v-for="t in themeOptions" :key="t.value" :value="t.value">
@@ -34,11 +45,12 @@
           <a-dropdown @select="handleExport" trigger="click">
             <a-button type="outline" :loading="exporting">
               <template #icon><icon-download /></template>
-              导出为...
+              {{ tl('导出为...') }}
             </a-button>
             <template #content>
-              <a-doption value="png">PNG 图片 (.png)</a-doption>
-              <a-doption value="json">JSON 脑图数据 (.json)</a-doption>
+              <a-doption value="png">{{ exportPngLabel }}</a-doption>
+              <a-doption value="json">{{ exportJsonLabel }}</a-doption>
+              <a-doption value="xmind">{{ exportXmindLabel }}</a-doption>
             </template>
           </a-dropdown>
         </a-space>
@@ -47,27 +59,27 @@
       <div class="toolbar-right">
         <div class="tip-text">
           <icon-info-circle-fill class="tip-icon" />
-          <span><b>操作提示：</b>单击选中 | 双击重命名 | 叶子节点右侧 + 可直接新增 | 左键框选节点 | 右键拖动画布/右键点按打开菜单 | 拖动调整模块</span>
+          <span><b>{{ tl('操作提示：') }}</b>{{ tl('单击选中 | 双击重命名 | 叶子节点右侧 + 可直接新增 | 左键框选节点 | 右键拖动画布/右键点按打开菜单 | 拖动调整模块') }}</span>
         </div>
       </div>
     </div>
 
     <!-- 脑图容器 -->
     <div class="mindmap-canvas-container">
-      <div
-        ref="mindMapContainerRef"
+      <div 
+        ref="mindMapContainerRef" 
         class="mindmap-container"
         v-show="!loading && hasData"
       ></div>
 
       <!-- 加载中 -->
       <div v-if="loading" class="state-overlay">
-        <a-spin :size="40" tip="脑图正在生成中..." />
+        <a-spin :size="40" :tip="tl('脑图正在生成中...')" />
       </div>
 
       <!-- 空白状态 -->
       <div v-else-if="!hasData" class="state-overlay">
-        <a-empty description="请先选择项目后查看测试用例脑图" />
+        <a-empty :description="tl('请先选择项目后查看测试用例脑图')" />
       </div>
     </div>
 
@@ -85,7 +97,7 @@
         :disabled="!isModuleOrRootSelected"
         @click="handleContextMenuAction('create-submodule')"
       >
-        新建子模块
+        {{ tl('新建子模块') }}
       </button>
       <button
         type="button"
@@ -93,7 +105,7 @@
         :disabled="selectedNodeType !== 'module'"
         @click="handleContextMenuAction('create-case')"
       >
-        新建用例
+        {{ tl('新建用例') }}
       </button>
       <button
         type="button"
@@ -101,7 +113,7 @@
         :disabled="!isCaseSelected || hasPreconditionSelected"
         @click="handleContextMenuAction('create-precondition')"
       >
-        新建前置条件
+        {{ tl('新建前置条件') }}
       </button>
       <button
         type="button"
@@ -109,7 +121,7 @@
         :disabled="!isCaseSelected"
         @click="handleContextMenuAction('create-step')"
       >
-        新建步骤
+        {{ tl('新建步骤') }}
       </button>
       <button
         type="button"
@@ -117,7 +129,7 @@
         :disabled="!isCaseSelected || hasNotesSelected"
         @click="handleContextMenuAction('create-notes')"
       >
-        新建备注
+        {{ tl('新建备注') }}
       </button>
       <button
         type="button"
@@ -125,7 +137,7 @@
         :disabled="!isStepSelected"
         @click="handleContextMenuAction('create-expected')"
       >
-        新建预期
+        {{ tl('新建预期') }}
       </button>
       <button
         v-if="contextMenuMode === 'default'"
@@ -134,7 +146,7 @@
         :disabled="!isDeletableSelected"
         @click="handleContextMenuAction('delete')"
       >
-        {{ selectedNodeType === 'expected' ? '清除预期' : (selectedNodeType === 'precondition' ? '删除前置条件' : (selectedNodeType === 'notes' ? '删除备注' : '删除节点')) }}
+        {{ deleteMenuLabel }}
       </button>
 
       <!-- 复制与粘贴节点 -->
@@ -146,7 +158,7 @@
         :disabled="!selectedNode || selectedNodeType === 'root'"
         @click="handleContextMenuAction('copy-node')"
       >
-        复制节点 (Copy)
+        {{ tl('复制节点 (Copy)') }}
       </button>
       <button
         v-if="contextMenuMode === 'default'"
@@ -155,18 +167,18 @@
         :disabled="!clipboardNode || !selectedNode"
         @click="handleContextMenuAction('paste-node')"
       >
-        粘贴节点 (Paste)
+        {{ tl('粘贴节点 (Paste)') }}
       </button>
 
       <!-- 优先级选择标签 (仅在选中用例时显示) -->
       <div v-if="isCaseSelected" class="context-menu-divider"></div>
       <div v-if="isCaseSelected" class="context-menu-priority-section">
-        <div class="priority-title">设为优先级：</div>
+        <div class="priority-title">{{ tl('设为优先级：') }}</div>
         <div class="priority-options">
-          <span
-            v-for="lvl in ['P0', 'P1', 'P2', 'P3']"
-            :key="lvl"
-            class="priority-tag-btn"
+          <span 
+            v-for="lvl in ['P0', 'P1', 'P2', 'P3']" 
+            :key="lvl" 
+            class="priority-tag-btn" 
             :class="[lvl.toLowerCase(), { active: currentSelectedCaseLevel === lvl }]"
             @click="handleSetPriority(lvl)"
           >
@@ -184,17 +196,174 @@ import { Message, Modal } from '@arco-design/web-vue';
 import MindMap from 'simple-mind-map';
 import Drag from 'simple-mind-map/src/plugins/Drag.js';
 import Export from 'simple-mind-map/src/plugins/Export.js';
+import ExportXMind from 'simple-mind-map/src/plugins/ExportXMind.js';
 import KeyboardNavigation from 'simple-mind-map/src/plugins/KeyboardNavigation.js';
 import Select from 'simple-mind-map/src/plugins/Select.js';
+import expandBtnMethods from 'simple-mind-map/src/core/render/node/nodeExpandBtn.js';
+import quickCreateChildBtnMethods from 'simple-mind-map/src/core/render/node/quickCreateChildBtn.js';
+import { Rect } from '@svgdotjs/svg.js';
 import 'simple-mind-map/dist/simpleMindMap.esm.css';
 import { useThemeStore } from '@/store/themeStore';
+import { useAppI18n } from '@/composables/useAppI18n';
 
 import type { TestCaseModule } from '@/services/testcaseModuleService';
 import type { TestCase } from '@/services/testcaseService';
 
+// simple-mind-map defaults to a circular collapsed-count badge; use a square instead.
+// expandBtnSize includes a left gap so the badge is not flush against the node border.
+const EXPAND_COUNT_BADGE_SIZE = 22;
+const EXPAND_COUNT_BADGE_GAP = 8;
+const EXPAND_BTN_SLOT_SIZE = EXPAND_COUNT_BADGE_SIZE + EXPAND_COUNT_BADGE_GAP;
+
+// Collapsed-count rules:
+// - project/root: modules only
+// - module: cases only (ignore steps/precondition/notes under cases)
+// - case: steps only (ignore expected/precondition/notes)
+const countDescendantsByType = (treeNode: any, targetType: string): number => {
+  const children = Array.isArray(treeNode?.children) ? treeNode.children : [];
+  let total = 0;
+  for (const child of children) {
+    const childData = child?.data || {};
+    if (childData.type === targetType) {
+      total += 1;
+    }
+    total += countDescendantsByType(child, targetType);
+  }
+  return total;
+};
+
+const getExpandBadgeCountByNodeType = (mindMapNode: any, fallbackCount: number): number => {
+  const payload =
+    (typeof mindMapNode?.getData === 'function' ? mindMapNode.getData() : null) ||
+    mindMapNode?.nodeData?.data ||
+    {};
+  const treeNode = mindMapNode?.nodeData;
+  const nodeType = payload?.type;
+  if (nodeType === 'root') {
+    return countDescendantsByType(treeNode, 'module');
+  }
+  if (nodeType === 'module') {
+    return countDescendantsByType(treeNode, 'case');
+  }
+  if (nodeType === 'case') {
+    return countDescendantsByType(treeNode, 'step');
+  }
+  return fallbackCount;
+};
+
+const centerExpandCountText = (textNode: any, size: number, gap: number) => {
+  if (!textNode?.attr) return;
+  // Square badge occupies [gap, gap+size] x [-size/2, size/2]; put number at its geometric center.
+  textNode.attr({
+    'text-anchor': 'middle',
+    'dominant-baseline': 'central',
+    'alignment-baseline': 'middle',
+    x: gap + size / 2,
+    y: 0,
+    dy: 0
+  });
+};
+
+const originalCreateExpandNodeContent = expandBtnMethods.createExpandNodeContent;
+const originalUpdateExpandBtnNode = expandBtnMethods.updateExpandBtnNode;
+expandBtnMethods.createExpandNodeContent = function patchedCreateExpandNodeContent(this: any) {
+  if (this._openExpandNode) {
+    return;
+  }
+  originalCreateExpandNodeContent.call(this);
+  if (!this._fillExpandNode) {
+    return;
+  }
+  const fillColor = this.mindMap?.opt?.expandBtnStyle?.fill ?? '#fff';
+  const fontColor =
+    this.mindMap?.opt?.expandBtnStyle?.fontColor ??
+    this.mindMap?.opt?.expandBtnStyle?.color ??
+    '#333333';
+  const size = EXPAND_COUNT_BADGE_SIZE;
+  const gap = EXPAND_COUNT_BADGE_GAP;
+  // Prefer rx/ry over radius: modular Rect exports may not include the sugar radius() helper.
+  const oldFill = this._fillExpandNode;
+  const rect = new Rect().size(size, size).rx(3).ry(3);
+  // Offset into the reserved slot so there is visible space between node and badge.
+  rect.x(gap).y(-size / 2);
+  rect.fill({ color: fillColor });
+  // Library creates a detached Circle first, then later adds _fillExpandNode to the button.
+  // Replace the reference and drop the unused circle to avoid double shapes if it was already mounted.
+  try {
+    if (typeof oldFill?.parent === 'function' && oldFill.parent()) {
+      oldFill.replace(rect);
+    } else if (typeof oldFill?.remove === 'function') {
+      oldFill.remove();
+    }
+  } catch {
+    // ignore svg node detach errors
+  }
+  this._fillExpandNode = rect;
+
+  centerExpandCountText(this._openExpandNode, size, gap);
+  if (this._openExpandNode?.fill) {
+    this._openExpandNode.fill({ color: fontColor });
+  }
+  if (this._closeExpandNode?.size) {
+    this._closeExpandNode.size(size, size).x(gap).y(-size / 2);
+  }
+};
+// Re-center after the library writes the count text (it may reset baseline attrs).
+expandBtnMethods.updateExpandBtnNode = function patchedUpdateExpandBtnNode(this: any) {
+  originalUpdateExpandBtnNode.call(this);
+  const expand = this.getData?.('expand');
+  if (expand === false) {
+    centerExpandCountText(this._openExpandNode, EXPAND_COUNT_BADGE_SIZE, EXPAND_COUNT_BADGE_GAP);
+  }
+};
+
 // 注册插件
+
+// Hide "+" on leaf content nodes that should not create children.
+// Also shrink the "+" icon: expandBtnSize is enlarged for count-badge gap, but the plus itself should stay compact.
+const NO_QUICK_CREATE_TYPES = new Set(['precondition', 'expected', 'notes']);
+const QUICK_CREATE_BTN_SIZE = 16;
+const originalShowQuickCreateChildBtn = quickCreateChildBtnMethods.showQuickCreateChildBtn;
+quickCreateChildBtnMethods.showQuickCreateChildBtn = function patchedShowQuickCreateChildBtn(this: any) {
+  const payload =
+    (typeof this.getData === 'function' ? this.getData() : null) ||
+    this.nodeData?.data ||
+    {};
+  if (NO_QUICK_CREATE_TYPES.has(payload?.type)) {
+    if (typeof this.removeQuickCreateChildBtn === 'function') {
+      this.removeQuickCreateChildBtn();
+    }
+    return;
+  }
+
+  originalShowQuickCreateChildBtn.call(this);
+
+  const btn = this._quickCreateChildBtn;
+  if (!btn || typeof btn.children !== 'function') {
+    return;
+  }
+
+  const size = QUICK_CREATE_BTN_SIZE;
+  const slot = this.mindMap?.opt?.expandBtnSize || EXPAND_BTN_SLOT_SIZE;
+  // Center the smaller plus inside the reserved expand-btn slot.
+  const offsetX = Math.max(0, (slot - size) / 2);
+  const children = btn.children();
+  children.forEach((child: any) => {
+    if (typeof child.size === 'function') {
+      child.size(size, size);
+    }
+    if (typeof child.x === 'function') {
+      child.x(offsetX);
+    }
+    if (typeof child.y === 'function') {
+      child.y(-size / 2);
+    }
+  });
+};
+
 MindMap.usePlugin(Drag)
   .usePlugin(Export)
+  .usePlugin(ExportXMind)
   .usePlugin(KeyboardNavigation)
   .usePlugin(Select);
 
@@ -271,10 +440,11 @@ const emit = defineEmits<{
   (e: 'view-case', id: number): void;
   (e: 'update-case-module', caseId: number, moduleId: number | null): void;
   (e: 'update-module-parent', moduleId: number, parentId: number | null): void;
+  (e: 'move-module', payload: { moduleId: number; targetId: number | null; dropPosition: -1 | 0 | 1 }): void;
   (e: 'rename-case', caseId: number, newName: string): void;
   (e: 'rename-module', moduleId: number, newName: string): void;
   (e: 'create-module', parentModuleId: number | null, name: string): void;
-  (e: 'create-case', moduleId: number | null, name: string): void;
+  (e: 'create-case', moduleId: number | null, name: string, options?: { fullTemplate?: boolean }): void;
   (e: 'create-step', caseId: number, step: { description: string; expectedResult: string }): void;
   (e: 'update-step-desc', caseId: number, stepNumber: number, description: string): void;
   (e: 'update-step-expected', caseId: number, stepNumber: number, expectedResult: string): void;
@@ -295,18 +465,35 @@ const exporting = ref(false);
 const isInitializing = ref(false);
 
 const themeStore = useThemeStore();
+const { tl, locale } = useAppI18n();
+const isEnglish = computed(() => locale.value === 'en-US');
 const activeTheme = ref(themeStore.theme === 'black' ? 'dark' : 'classic');
 
-const themeOptions = [
-  { value: 'classic', label: '经典蓝 (Classic)' },
-  { value: 'freshGreen', label: '清新绿 (Fresh Green)' },
-  { value: 'morandi', label: '莫兰迪 (Morandi)' },
-  { value: 'blackGold', label: '黑金色 (Black Gold)' },
-  { value: 'dark', label: '暗黑风 (Dark)' }
-];
+const themeOptions = computed(() => (
+  isEnglish.value
+    ? [
+        { value: 'classic', label: 'Classic Blue' },
+        { value: 'freshGreen', label: 'Fresh Green' },
+        { value: 'morandi', label: 'Morandi' },
+        { value: 'blackGold', label: 'Black Gold' },
+        { value: 'dark', label: 'Dark' }
+      ]
+    : [
+        { value: 'classic', label: '经典蓝 (Classic)' },
+        { value: 'freshGreen', label: '清新绿 (Fresh Green)' },
+        { value: 'morandi', label: '莫兰迪 (Morandi)' },
+        { value: 'blackGold', label: '黑金色 (Black Gold)' },
+        { value: 'dark', label: '暗黑风 (Dark)' }
+      ]
+));
+
+const exportPngLabel = computed(() => (isEnglish.value ? 'PNG Image (.png)' : 'PNG 图片 (.png)'));
+const exportJsonLabel = computed(() => (isEnglish.value ? 'JSON Mind Map Data (.json)' : 'JSON 脑图数据 (.json)'));
+const exportXmindLabel = computed(() => (isEnglish.value ? 'XMind File (.xmind)' : 'XMind 文件 (.xmind)'));
+const mindmapDefaultName = computed(() => (isEnglish.value ? 'Test Case Mind Map' : '测试用例脑图'));
 
 const activeThemeLabel = computed(() => {
-  const opt = themeOptions.find(o => o.value === activeTheme.value);
+  const opt = themeOptions.value.find(o => o.value === activeTheme.value);
   return opt ? opt.label : activeTheme.value;
 });
 
@@ -326,11 +513,16 @@ const ignoreNextPropsUpdate = ref(false);
 const isPasting = ref(false);
 const lastCopiedCaseExpandMap = ref<Map<string, boolean> | null>(null);
 const newCaseExpandStates = ref<Map<string, boolean>>(new Map());
+const pendingModuleMove = ref<{
+  moduleId: number;
+  targetUid: string | null;
+  dropPosition: -1 | 0 | 1;
+} | null>(null);
 
 const captureSourceExpandStates = (sourceCaseId: number) => {
   const currentExpands = getMindmapExpandStates();
   const statesToCopy = new Map<string, boolean>();
-
+  
   // 1. Capture the case itself
   const caseUid = `case-${sourceCaseId}`;
   if (currentExpands[caseUid] !== undefined) {
@@ -484,10 +676,10 @@ const refreshMindmapData = (preferredUid?: string | null) => {
 
   const expandStates = getMindmapExpandStates();
   const newData = buildMindmapTree(expandStates);
-
+  
   // Smooth incremental data update
   mindMapInstance.value.updateData(newData);
-
+  
   if (preferredUid) {
     // For addition: focus and start editing the newly added node
     scheduleActivateDefaultNode(preferredUid);
@@ -551,6 +743,13 @@ const selectedNodeType = computed(() => {
   return getNodePayload(selectedNode.value)?.type || null;
 });
 
+const deleteMenuLabel = computed(() => {
+  if (selectedNodeType.value === 'expected') return tl('清除预期');
+  if (selectedNodeType.value === 'precondition') return tl('删除前置条件');
+  if (selectedNodeType.value === 'notes') return tl('删除备注');
+  return tl('删除节点');
+});
+
 const isModuleOrRootSelected = computed(() => {
   const type = selectedNodeType.value;
   return type === 'module' || type === 'root';
@@ -590,6 +789,60 @@ const currentSelectedCaseLevel = computed(() => {
   return targetCase ? targetCase.level : null;
 });
 
+const formatCopiedNodeMessage = (text: string) => (
+  isEnglish.value ? `Node copied: ${text}` : `已复制节点: ${text}`
+);
+
+const getDeleteConfirmationContent = (item: { type: string; name: string }) => {
+  if (isEnglish.value) {
+    if (item.type === 'module') {
+      return `Delete module “${item.name}”? All child modules and test cases will be deleted and cannot be recovered.`;
+    }
+    if (item.type === 'case') {
+      return `Delete test case “${item.name}”? This action cannot be undone.`;
+    }
+    if (item.type === 'precondition') {
+      return 'Delete this precondition? This action cannot be undone.';
+    }
+    if (item.type === 'step') {
+      return 'Delete this test step? This action cannot be undone.';
+    }
+    if (item.type === 'expected') {
+      return 'Clear the expected result for this test step? This action cannot be undone.';
+    }
+    if (item.type === 'notes') {
+      return 'Delete this note? This action cannot be undone.';
+    }
+  }
+
+  if (item.type === 'module') {
+    return `确定要删除模块“${item.name}”吗？此操作将同时删除其下的所有子模块与测试用例，且不可恢复！`;
+  }
+  if (item.type === 'case') {
+    return `确定要删除测试用例“${item.name}”吗？此操作不可恢复！`;
+  }
+  if (item.type === 'precondition') {
+    return '确定要删除该前置条件吗？此操作不可恢复！';
+  }
+  if (item.type === 'step') {
+    return '确定要删除该测试步骤吗？此操作不可恢复！';
+  }
+  if (item.type === 'expected') {
+    return '确定要清除该测试步骤的预期结果吗？此操作不可恢复！';
+  }
+  if (item.type === 'notes') {
+    return '确定要删除该备注信息吗？此操作不可恢复！';
+  }
+
+  return '';
+};
+
+const getBatchDeleteConfirmationContent = (count: number) => (
+  isEnglish.value
+    ? `Delete the selected ${count} node(s) and all child nodes? This action cannot be undone.`
+    : `确定要删除选中的 ${count} 个节点及其所有子节点吗？此操作不可恢复！`
+);
+
 const handleSetPriority = (level: string) => {
   if (!isCaseSelected.value || !selectedNode.value) return;
   const caseId = getNodePayload(selectedNode.value).rawId;
@@ -623,7 +876,7 @@ const getParentModuleId = (node: any) => {
 };
 
 const buildDefaultNodeName = (type: 'module' | 'case') => {
-  const baseName = type === 'module' ? '新建模块' : '新建用例';
+  const baseName = type === 'module' ? tl('新建模块') : tl('新建用例');
   const existingNames = new Set(
     (type === 'module' ? props.modules : props.testCases).map(item => item.name)
   );
@@ -643,13 +896,13 @@ const buildDefaultNodeName = (type: 'module' | 'case') => {
 const getTypeBadgeLabel = (nodeData: any) => {
   if (!nodeData?.uid) return null;
 
-  if (nodeData.type === 'module') return '模块';
+  if (nodeData.type === 'module') return isEnglish.value ? 'Module' : '模块';
   if (nodeData.type === 'case') return nodeData.level || 'P2';
-  if (nodeData.type === 'root') return '项目';
-  if (nodeData.type === 'precondition') return '前置条件';
-  if (nodeData.type === 'notes') return '备注';
-  if (nodeData.type === 'step') return '步骤';
-  if (nodeData.type === 'expected') return '预期';
+  if (nodeData.type === 'root') return isEnglish.value ? 'Project' : '项目';
+  if (nodeData.type === 'precondition') return isEnglish.value ? 'Precondition' : '前置条件';
+  if (nodeData.type === 'notes') return isEnglish.value ? 'Notes' : '备注';
+  if (nodeData.type === 'step') return isEnglish.value ? 'Step' : '步骤';
+  if (nodeData.type === 'expected') return isEnglish.value ? 'Expected' : '预期';
 
   return null;
 };
@@ -762,6 +1015,39 @@ const buildTypeBadgeStyle = (nodeData: any) => {
   };
 };
 
+const measureBadgeTextWidth = (text: string): number => {
+  // 优先真实 DOM 测量：与渲染字体环境完全一致，避免 canvas 字体差异导致宽度偏小截断
+  try {
+    const span = document.createElement('span');
+    span.textContent = text;
+    span.style.cssText = [
+      'position:fixed',
+      'visibility:hidden',
+      'left:-9999px',
+      'top:0',
+      'white-space:nowrap',
+      'font-size:11px',
+      'font-weight:600',
+      'line-height:20px',
+      'font-family:inherit'
+    ].join(';');
+    document.body.appendChild(span);
+    const width = span.getBoundingClientRect().width;
+    document.body.removeChild(span);
+    return width;
+  } catch { /* 回退 canvas 测量 */ }
+  try {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.font = '600 11px -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif';
+      return ctx.measureText(text).width;
+    }
+  } catch { /* 回退到估算 */ }
+  const isChinese = /[\u4e00-\u9fa5]/.test(text);
+  return text.length * (isChinese ? 12 : 7);
+};
+
 const createBadgeContent = (
   badgeLabel: string,
   badgeStyle: { background: string; color: string; border: string },
@@ -773,7 +1059,6 @@ const createBadgeContent = (
 ) => {
   const badgeHeight = 20;
   const outerHeight = badgeHeight + safePaddingY * 2;
-  const badgeWidthPadding = 16;
   const shell = document.createElement('div');
   shell.style.cssText = [
     'display:flex',
@@ -816,9 +1101,8 @@ const createBadgeContent = (
   wrapper.appendChild(text);
   shell.appendChild(wrapper);
 
-  const isChinese = /[\u4e00-\u9fa5]/.test(badgeLabel);
-  const charWidth = isChinese ? 12 : 7;
-  const badgeWidth = Math.ceil(badgeLabel.length * charWidth) + badgeWidthPadding;
+  // 宽度 = 文本实测宽度 + 左右 padding(16) + 左右 border(2)，保证标签完整展示
+  const badgeWidth = Math.ceil(measureBadgeTextWidth(badgeLabel)) + 16 + 2;
 
   return {
     el: shell,
@@ -834,6 +1118,32 @@ const createNodeTypeBadge = (node: any) => {
 
   const badgeStyle = buildTypeBadgeStyle(nodeData);
   return createBadgeContent(badgeLabel, badgeStyle, { safePaddingY: 1, gapAfter: 6 });
+};
+
+/**
+ * 语言切换后重建所有节点的类型徽章 DOM。
+ * simple-mind-map 的 updateData 是增量更新，不会为已有节点重新调用
+ * createNodePrefixContent，导致中/英文切换后徽章文本停留在旧语言。
+ */
+const refreshNodeTypeBadges = () => {
+  const root = mindMapInstance.value?.renderer?.root;
+  if (!root) return;
+
+  const walk = (node: any) => {
+    if (node?._prefixData?.el) {
+      const newBadge = createNodeTypeBadge(node);
+      if (newBadge?.el && newBadge.el !== node._prefixData.el) {
+        const oldEl = node._prefixData.el;
+        const parent = oldEl.parentNode;
+        if (parent) {
+          parent.replaceChild(newBadge.el, oldEl);
+          node._prefixData = newBadge;
+        }
+      }
+    }
+    (node?.children || []).forEach(walk);
+  };
+  walk(root);
 };
 
 const createExternalNodeTypeBadge = (node: any) => {
@@ -1006,25 +1316,25 @@ const handleDirectChildCreate = (node: any) => {
 
     if (!hasPrecondition) {
       // 1. 没有前置条件，优先添加前置条件
-      emit('update-precondition', caseId, '新前置条件');
+      emit('update-precondition', caseId, tl('新前置条件'));
       pendingEditUid.value = `precondition-${caseId}`;
     } else if (!hasSteps) {
       // 2. 有前置条件但没有步骤，添加第一个步骤（和预期一起出来）
       emit('create-step', caseId, {
-        description: '新步骤',
-        expectedResult: '新预期结果'
+        description: tl('新步骤'),
+        expectedResult: tl('新预期结果')
       });
       pendingEditUid.value = `step-${caseId}-1`;
     } else if (!hasNotes) {
       // 3. 有步骤但没有备注，添加备注
-      emit('update-notes', caseId, '新备注');
+      emit('update-notes', caseId, tl('新备注'));
       pendingEditUid.value = `notes-${caseId}`;
     } else {
       // 4. 都有了，则继续追加步骤
       const nextStepNumber = targetCase.steps.length + 1;
       emit('create-step', caseId, {
-        description: '新步骤',
-        expectedResult: '新预期结果'
+        description: tl('新步骤'),
+        expectedResult: tl('新预期结果')
       });
       pendingEditUid.value = `step-${caseId}-${nextStepNumber}`;
     }
@@ -1035,7 +1345,7 @@ const handleDirectChildCreate = (node: any) => {
     // 选中步骤时，新建预期子节点，免弹窗
     const caseId = nodeData.rawId;
     const stepNumber = parseInt(nodeData.uid.split('-')[2], 10);
-    emit('update-step-expected', caseId, stepNumber, '新预期结果');
+    emit('update-step-expected', caseId, stepNumber, tl('新预期结果'));
     pendingEditUid.value = `expected-${caseId}-${stepNumber}`;
     return;
   }
@@ -1059,8 +1369,8 @@ const handleDirectSiblingCreate = (node: any) => {
     // 选中前置条件按回车，新建第一个步骤，免弹窗
     const caseId = nodeData.rawId;
     emit('create-step', caseId, {
-      description: '新步骤',
-      expectedResult: '新预期结果'
+      description: tl('新步骤'),
+      expectedResult: tl('新预期结果')
     });
     pendingEditUid.value = `step-${caseId}-1`;
     return;
@@ -1072,8 +1382,8 @@ const handleDirectSiblingCreate = (node: any) => {
     const targetCase = props.testCases.find(c => c.id === caseId);
     const nextStepNumber = (targetCase?.steps?.length || 0) + 1;
     emit('create-step', caseId, {
-      description: '新步骤',
-      expectedResult: '新预期结果'
+      description: tl('新步骤'),
+      expectedResult: tl('新预期结果')
     });
     pendingEditUid.value = `step-${caseId}-${nextStepNumber}`;
     return;
@@ -1087,8 +1397,8 @@ const handleDirectSiblingCreate = (node: any) => {
       const targetCase = props.testCases.find(c => c.id === caseId);
       const nextStepNumber = (targetCase?.steps?.length || 0) + 1;
       emit('create-step', caseId, {
-        description: '新步骤',
-        expectedResult: '新预期结果'
+        description: tl('新步骤'),
+        expectedResult: tl('新预期结果')
       });
       pendingEditUid.value = `step-${caseId}-${nextStepNumber}`;
     }
@@ -1124,22 +1434,22 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
     if (!activeNode) return true;
     const payload = getNodePayload(activeNode);
     if (!payload || payload.type === 'root') {
-      Message.warning('不能复制根节点');
+      Message.warning(tl('不能复制根节点'));
       return true;
     }
     clipboardNode.value = JSON.parse(JSON.stringify(payload));
-    Message.success(`已复制节点: ${payload.text}`);
+    Message.success(formatCopiedNodeMessage(payload.text));
     return true; // 拦截组件默认行为
   }
 
   if (lowerKey === 'control+v' || lowerKey === 'meta+v') {
     if (!clipboardNode.value) {
-      Message.warning('剪贴板为空，请先复制节点');
+      Message.warning(tl('剪贴板为空，请先复制节点'));
       return true;
     }
     const activeNode = nodeList.length === 1 ? nodeList[0] : selectedNode.value;
     if (!activeNode) return true;
-
+    
     const parentData = getNodePayload(activeNode);
     const clipData = clipboardNode.value;
     const clipType = clipData.type;
@@ -1147,7 +1457,7 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
 
     if (clipType === 'case') {
       if (parentData?.type !== 'module') {
-        Message.warning('用例只能粘贴到模块节点下');
+        Message.warning(tl('用例只能粘贴到模块节点下'));
         return true;
       }
       const targetModuleId = parentData.rawId;
@@ -1175,7 +1485,7 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
         console.log(`[Mindmap Shortcut Paste] step: sourceCaseId=${clipRawId}, stepNum=${stepNum}, targetCaseId=${targetCaseId}`);
         emit('copy-step', clipRawId, stepNum, targetCaseId);
       } else {
-        Message.warning('步骤只能粘贴到用例节点下');
+        Message.warning(tl('步骤只能粘贴到用例节点下'));
       }
     } else if (clipType === 'precondition') {
       if (parentData?.type === 'case') {
@@ -1184,7 +1494,7 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
         console.log(`[Mindmap Shortcut Paste] precondition: targetCaseId=${targetCaseId}, text=${text}`);
         emit('update-precondition', targetCaseId, text);
       } else {
-        Message.warning('前置条件只能粘贴到用例节点下');
+        Message.warning(tl('前置条件只能粘贴到用例节点下'));
       }
     } else if (clipType === 'notes') {
       if (parentData?.type === 'case') {
@@ -1193,7 +1503,7 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
         console.log(`[Mindmap Shortcut Paste] notes: targetCaseId=${targetCaseId}, text=${text}`);
         emit('update-notes', targetCaseId, text);
       } else {
-        Message.warning('备注只能粘贴到用例节点下');
+        Message.warning(tl('备注只能粘贴到用例节点下'));
       }
     } else if (clipType === 'expected') {
       if (parentData?.type === 'step') {
@@ -1211,14 +1521,14 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
         console.log(`[Mindmap Shortcut Paste] expected: targetCaseId=${targetCaseId}, stepNum=${targetStepNumber}, text=${text}`);
         emit('update-step-expected', targetCaseId, targetStepNumber, text);
       } else {
-        Message.warning('预期结果只能粘贴到步骤节点下');
+        Message.warning(tl('预期结果只能粘贴到步骤节点下'));
       }
     }
     return true; // 拦截组件默认行为
   }
 
   if (lowerKey === 'control+x' || lowerKey === 'meta+x') {
-    Message.info('暂不支持剪切操作，您可以使用复制后删除来代替');
+    Message.info(tl('暂不支持剪切操作，您可以使用复制后删除来代替'));
     return true; // 拦截组件默认行为
   }
 
@@ -1235,7 +1545,7 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
   // 2. 多选情况下，拦截其他新增相关的快捷键并提示
   if (nodeList.length > 1) {
     if (key === 'Tab' || key === 'Insert' || key === 'Enter' || key === 'Shift+Tab') {
-      Message.info('当前暂不支持多选直接新增，请先选中单个节点');
+      Message.info(tl('当前暂不支持多选直接新增，请先选中单个节点'));
       return true;
     }
     return false;
@@ -1255,7 +1565,7 @@ const handleDirectCreateShortcut = (key: string, nodeList: any[]) => {
   }
 
   if (key === 'Shift+Tab') {
-    Message.info('当前暂不支持直接插入父节点，可先创建模块后再拖拽调整层级');
+    Message.info(tl('当前暂不支持直接插入父节点，可先创建模块后再拖拽调整层级'));
     return true;
   }
 
@@ -1271,14 +1581,15 @@ const handleCreateSubmodule = () => {
 const handleCreateTestCase = () => {
   if (selectedNodeType.value !== 'module') return;
   closeContextMenu();
-  emit('create-case', getSelectedModuleParentId(), buildDefaultNodeName('case'));
+  // Context menu "新建用例" creates a complete template case (precondition/step/notes).
+  emit('create-case', getSelectedModuleParentId(), buildDefaultNodeName('case'), { fullTemplate: true });
 };
 
 const handleCreatePrecondition = () => {
   if (!isCaseSelected.value || !selectedNode.value) return;
   closeContextMenu();
   const caseId = getNodePayload(selectedNode.value).rawId;
-  emit('update-precondition', caseId, '新前置条件');
+  emit('update-precondition', caseId, tl('新前置条件'));
   pendingEditUid.value = `precondition-${caseId}`;
 };
 
@@ -1286,7 +1597,7 @@ const handleCreateNotes = () => {
   if (!isCaseSelected.value || !selectedNode.value) return;
   closeContextMenu();
   const caseId = getNodePayload(selectedNode.value).rawId;
-  emit('update-notes', caseId, '新备注');
+  emit('update-notes', caseId, tl('新备注'));
   pendingEditUid.value = `notes-${caseId}`;
 };
 
@@ -1297,8 +1608,8 @@ const handleCreateStep = () => {
   const targetCase = props.testCases.find(c => c.id === caseId);
   const nextStepNumber = (targetCase?.steps?.length || 0) + 1;
   emit('create-step', caseId, {
-    description: '新步骤',
-    expectedResult: '新预期结果'
+    description: tl('新步骤'),
+    expectedResult: tl('新预期结果')
   });
   pendingEditUid.value = `step-${caseId}-${nextStepNumber}`;
 };
@@ -1309,7 +1620,7 @@ const handleCreateExpected = () => {
   const nodeData = getNodePayload(selectedNode.value);
   const caseId = nodeData.rawId;
   const stepNumber = parseInt(nodeData.uid.split('-')[2], 10);
-  emit('update-step-expected', caseId, stepNumber, '新预期结果');
+  emit('update-step-expected', caseId, stepNumber, tl('新预期结果'));
   pendingEditUid.value = `expected-${caseId}-${stepNumber}`;
 };
 
@@ -1361,28 +1672,17 @@ const handleDeleteSelectedNode = (customNodes?: any[]) => {
     const item = itemsToDelete[0];
     let contentText = '';
 
-    if (item.type === 'module') {
-      contentText = `确定要删除模块“${item.name}”吗？此操作将同时删除其下的所有子模块与测试用例，且不可恢复！`;
-    } else if (item.type === 'case') {
-      contentText = `确定要删除测试用例“${item.name}”吗？此操作不可恢复！`;
-    } else if (item.type === 'precondition') {
-      contentText = `确定要删除该前置条件吗？此操作不可恢复！`;
-    } else if (item.type === 'step') {
-      contentText = `确定要删除该测试步骤吗？此操作不可恢复！`;
-    } else if (item.type === 'expected') {
-      contentText = `确定要清除该测试步骤的预期结果吗？此操作不可恢复！`;
-    } else if (item.type === 'notes') {
-      contentText = `确定要删除该备注信息吗？此操作不可恢复！`;
-    } else {
+    contentText = getDeleteConfirmationContent(item as { type: string; name: string });
+    if (!contentText) {
       return;
     }
 
     Modal.warning({
-      title: '删除确认',
+      title: tl('删除确认'),
       content: contentText,
       hideCancel: false,
-      okText: '确认删除',
-      cancelText: '取消',
+      okText: tl('确认删除'),
+      cancelText: tl('取消'),
       onOk: () => {
         if (item.type === 'module' || item.type === 'case') {
           emit('delete-node', item.type as any, item.rawId);
@@ -1401,11 +1701,11 @@ const handleDeleteSelectedNode = (customNodes?: any[]) => {
   } else {
     // 多个节点批量删除
     Modal.warning({
-      title: '批量删除确认',
-      content: `确定要删除选中的 ${itemsToDelete.length} 个节点及其所有子节点吗？此操作不可恢复！`,
+      title: tl('批量删除确认'),
+      content: getBatchDeleteConfirmationContent(itemsToDelete.length),
       hideCancel: false,
-      okText: '确认批量删除',
-      cancelText: '取消',
+      okText: tl('确认批量删除'),
+      cancelText: tl('取消'),
       onOk: () => {
         const payloadList = itemsToDelete.map(item => ({
           type: item.type!,
@@ -1454,22 +1754,22 @@ const handleContextMenuAction = (action: 'create-submodule' | 'create-case' | 'c
     if (!selectedNode.value) return;
     const payload = getNodePayload(selectedNode.value);
     if (!payload || payload.type === 'root') {
-      Message.warning('不能复制根节点');
+      Message.warning(tl('不能复制根节点'));
       return;
     }
     clipboardNode.value = JSON.parse(JSON.stringify(payload));
-    Message.success(`已复制节点: ${payload.text}`);
+    Message.success(formatCopiedNodeMessage(payload.text));
     closeContextMenu();
     return;
   }
 
   if (action === 'paste-node') {
     if (!clipboardNode.value) {
-      Message.warning('剪贴板为空，请先复制节点');
+      Message.warning(tl('剪贴板为空，请先复制节点'));
       return;
     }
     if (!selectedNode.value) return;
-
+    
     const parentData = getNodePayload(selectedNode.value);
     const clipData = clipboardNode.value;
     const clipType = clipData.type;
@@ -1477,7 +1777,7 @@ const handleContextMenuAction = (action: 'create-submodule' | 'create-case' | 'c
 
     if (clipType === 'case') {
       if (parentData?.type !== 'module') {
-        Message.warning('用例只能粘贴到模块节点下');
+        Message.warning(tl('用例只能粘贴到模块节点下'));
         closeContextMenu();
         return;
       }
@@ -1505,7 +1805,7 @@ const handleContextMenuAction = (action: 'create-submodule' | 'create-case' | 'c
         console.log(`[Mindmap Context Menu Paste] step: sourceCaseId=${clipRawId}, stepNum=${stepNum}, targetCaseId=${targetCaseId}`);
         emit('copy-step', clipRawId, stepNum, targetCaseId);
       } else {
-        Message.warning('步骤只能粘贴到用例节点下');
+        Message.warning(tl('步骤只能粘贴到用例节点下'));
       }
     } else if (clipType === 'precondition') {
       if (parentData?.type === 'case') {
@@ -1514,7 +1814,7 @@ const handleContextMenuAction = (action: 'create-submodule' | 'create-case' | 'c
         console.log(`[Mindmap Context Menu Paste] precondition: targetCaseId=${targetCaseId}, text=${text}`);
         emit('update-precondition', targetCaseId, text);
       } else {
-        Message.warning('前置条件只能粘贴到用例节点下');
+        Message.warning(tl('前置条件只能粘贴到用例节点下'));
       }
     } else if (clipType === 'notes') {
       if (parentData?.type === 'case') {
@@ -1523,7 +1823,7 @@ const handleContextMenuAction = (action: 'create-submodule' | 'create-case' | 'c
         console.log(`[Mindmap Context Menu Paste] notes: targetCaseId=${targetCaseId}, text=${text}`);
         emit('update-notes', targetCaseId, text);
       } else {
-        Message.warning('备注只能粘贴到用例节点下');
+        Message.warning(tl('备注只能粘贴到用例节点下'));
       }
     } else if (clipType === 'expected') {
       if (parentData?.type === 'step') {
@@ -1541,10 +1841,10 @@ const handleContextMenuAction = (action: 'create-submodule' | 'create-case' | 'c
         console.log(`[Mindmap Context Menu Paste] expected: targetCaseId=${targetCaseId}, stepNum=${targetStepNumber}, text=${text}`);
         emit('update-step-expected', targetCaseId, targetStepNumber, text);
       } else {
-        Message.warning('预期结果只能粘贴到步骤节点下');
+        Message.warning(tl('预期结果只能粘贴到步骤节点下'));
       }
     }
-
+    
     closeContextMenu();
     return;
   }
@@ -1584,15 +1884,15 @@ const scheduleMindmapRelayout = () => {
 
 // 构建脑图树结构
 const buildMindmapTree = (expandStates?: Record<string, boolean>): any => {
-  const projName = props.projectName || '测试用例脑图';
+  const projName = props.projectName || mindmapDefaultName.value;
   const themeCfg = themeColorMap[activeTheme.value] || themeColorMap.classic;
   const isDarkOrBlackGold = activeTheme.value === 'dark' || activeTheme.value === 'blackGold';
-
+  
   // 递归处理模块
   const buildModuleNode = (mod: TestCaseModule): any => {
     // 过滤出该模块下的用例
     const cases = props.testCases.filter(c => c.module_id === mod.id);
-
+    
     // 子用例节点
     const caseNodes = cases.map(tc => {
       const levelColors: Record<string, string> = {
@@ -1695,7 +1995,7 @@ const buildMindmapTree = (expandStates?: Record<string, boolean>): any => {
         uid: moduleUid,
         type: 'module',
         rawId: mod.id,
-        expand: expandStates && expandStates[moduleUid] !== undefined ? expandStates[moduleUid] : true,
+        expand: expandStates && expandStates[moduleUid] !== undefined ? expandStates[moduleUid] : false,
         customStyles: {
           fillColor: 'transparent',
           color: themeCfg.text,
@@ -1869,6 +2169,15 @@ const initMindmap = () => {
       data: mindmapData,
       theme: activeTheme.value,
       readonly: false,
+      expandBtnSize: EXPAND_BTN_SLOT_SIZE,
+      expandBtnStyle: {
+        color: '#808080',
+        fill: '#fff',
+        fontSize: 12,
+        strokeColor: '#333333',
+        fontColor: '#333333'
+      },
+      expandBtnNumHandler: (count: number, node: any) => getExpandBadgeCountByNodeType(node, count),
       isShowCreateChildBtnIcon: true,
       createNodePrefixContent: (node: any) => {
         return createNodeTypeBadge(node);
@@ -1889,6 +2198,43 @@ const initMindmap = () => {
       },
       beforeShortcutRun: (key: string, nodeList: any[]) => {
         return handleDirectCreateShortcut(key, nodeList);
+      },
+      beforeDragEnd: ({ overlapNodeUid, prevNodeUid, nextNodeUid, beingDragNodeList }: {
+        overlapNodeUid?: string;
+        prevNodeUid?: string;
+        nextNodeUid?: string;
+        beingDragNodeList: any[];
+      }) => {
+        const draggedModuleNode = Array.isArray(beingDragNodeList)
+          ? beingDragNodeList.find((node: any) => getNodePayload(node)?.type === 'module')
+          : null;
+        const draggedModuleData = getNodePayload(draggedModuleNode);
+
+        if (!draggedModuleData?.rawId || props.selectedModuleId === draggedModuleData.rawId) {
+          pendingModuleMove.value = null;
+          return false;
+        }
+
+        if (overlapNodeUid) {
+          pendingModuleMove.value = {
+            moduleId: draggedModuleData.rawId,
+            targetUid: overlapNodeUid,
+            dropPosition: 0
+          };
+          return false;
+        }
+
+        if (prevNodeUid || nextNodeUid) {
+          pendingModuleMove.value = {
+            moduleId: draggedModuleData.rawId,
+            targetUid: prevNodeUid || nextNodeUid,
+            dropPosition: prevNodeUid ? 1 : -1
+          };
+          return false;
+        }
+
+        pendingModuleMove.value = null;
+        return false;
       },
       useLeftKeySelectionRightKeyDrag: true,
       mouseScaleCenterUseMousePosition: true,
@@ -1922,7 +2268,7 @@ const initMindmap = () => {
 
   } catch (error) {
     console.error('初始化思维导图失败:', error);
-    Message.error('渲染思维导图时发生错误');
+    Message.error(tl('渲染思维导图时发生错误'));
   } finally {
     isInitializing.value = false;
   }
@@ -2156,12 +2502,13 @@ const handleTreeDataChange = (newTree: any) => {
 
   const caseParentMap = new Map<number, number | null>();
   const moduleParentMap = new Map<number, number | null>();
+  const nodeByUid = new Map<string, any>();
   const allNodes: any[] = [];
-
+  
   // 遍历新树以计算节点拓扑
   const traverse = (node: any, parentNode: any = null) => {
     if (!node || !node.data) return;
-
+    
     const current = {
       uid: node.data.uid,
       type: node.data.type,
@@ -2172,6 +2519,9 @@ const handleTreeDataChange = (newTree: any) => {
       parentRawId: parentNode?.data?.rawId || null
     };
     allNodes.push(current);
+    if (current.uid) {
+      nodeByUid.set(current.uid, current);
+    }
 
     if (current.type === 'case') {
       // 记录用例的父节点模块 ID
@@ -2210,10 +2560,11 @@ const handleTreeDataChange = (newTree: any) => {
   }
 
   // 2. 检测拖拽模块层级更改 (Drag and Drop of modules)
+  const pendingMovedModuleId = pendingModuleMove.value?.moduleId ?? null;
   for (const [modId, newParentId] of moduleParentMap.entries()) {
     // 排除作为脑图根节点选中的模块
-    if (props.selectedModuleId === modId) continue;
-
+    if (props.selectedModuleId === modId || pendingMovedModuleId === modId) continue;
+    
     const originalMod = props.modules.find(m => m.id === modId);
     if (originalMod) {
       const oldParentId = originalMod.parent || null;
@@ -2222,6 +2573,29 @@ const handleTreeDataChange = (newTree: any) => {
         ignoreNextPropsUpdate.value = true;
         emit('update-module-parent', modId, newParentId);
       }
+    }
+  }
+
+  if (pendingModuleMove.value) {
+    const { moduleId, targetUid, dropPosition } = pendingModuleMove.value;
+    pendingModuleMove.value = null;
+
+    const targetNode = targetUid ? nodeByUid.get(targetUid) || null : null;
+    const targetId = targetNode?.rawId ?? null;
+    const nextParentId = dropPosition === 0
+      ? targetId
+      : (targetNode?.parentRawId ?? null);
+    const movedModuleOriginal = props.modules.find(module => module.id === moduleId);
+    const oldParentId = movedModuleOriginal?.parent ?? movedModuleOriginal?.parent_id ?? null;
+
+    if (targetNode?.type === 'module' && targetId !== null && (dropPosition !== 0 || oldParentId !== nextParentId)) {
+      ignoreNextPropsUpdate.value = true;
+      emit('move-module', {
+        moduleId,
+        targetId,
+        dropPosition
+      });
+      return;
     }
   }
 
@@ -2304,6 +2678,18 @@ const handleFit = () => {
   (mindMapInstance.value?.view as any).fit();
 };
 
+const handleExpandAll = () => {
+  if (!mindMapInstance.value) return;
+  mindMapInstance.value.execCommand('EXPAND_ALL');
+  scheduleMindmapRelayout();
+};
+
+const handleCollapseAll = () => {
+  if (!mindMapInstance.value) return;
+  mindMapInstance.value.execCommand('UNEXPAND_ALL');
+  scheduleMindmapRelayout();
+};
+
 // 脑图导出为图片或数据
 const handleExport = async (value: string | number | Record<string, any> | undefined) => {
   if (!mindMapInstance.value) return;
@@ -2313,12 +2699,17 @@ const handleExport = async (value: string | number | Record<string, any> | undef
   try {
     if (format === 'png') {
       // 导出 PNG
-      const name = props.projectName || '测试用例脑图';
+      const name = props.projectName || mindmapDefaultName.value;
       await mindMapInstance.value.export('png', true, name);
-      Message.success('成功导出图片');
+      Message.success(tl('成功导出图片'));
+    } else if (format === 'xmind') {
+      // 导出 XMind 文件
+      const name = props.projectName || mindmapDefaultName.value;
+      await mindMapInstance.value.export('xmind', true, name);
+      Message.success(tl('成功导出 XMind 文件'));
     } else if (format === 'json') {
       // 导出 JSON 数据
-      const name = `${props.projectName || '测试用例脑图'}.json`;
+      const name = `${props.projectName || mindmapDefaultName.value}.json`;
       const data = mindMapInstance.value.getData(true);
       const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
       const downloadAnchor = document.createElement('a');
@@ -2327,11 +2718,11 @@ const handleExport = async (value: string | number | Record<string, any> | undef
       document.body.appendChild(downloadAnchor);
       downloadAnchor.click();
       downloadAnchor.remove();
-      Message.success('成功导出数据文件');
+      Message.success(tl('成功导出数据文件'));
     }
   } catch (err) {
     console.error('导出脑图失败:', err);
-    Message.error('导出文件失败，请重试');
+    Message.error(tl('导出文件失败，请重试'));
   } finally {
     exporting.value = false;
   }
@@ -2345,10 +2736,10 @@ const handleThemeChange = (themeName: string | number | Record<string, any> | un
     try {
       // 1. 设置底层内置/自定义主题
       mindMapInstance.value.setTheme(selectedTheme);
-
+      
       // 2. 重新构建并热更新树数据，使 node 内部 customStyles 配合主题同步刷新
       refreshMindmapData();
-
+      
       // 3. 同时自适应视口进行重绘对齐
       scheduleMindmapRelayout();
     } catch (e) {
@@ -2363,6 +2754,17 @@ watch(
   (newTheme) => {
     const defaultTheme = newTheme === 'black' ? 'dark' : 'classic';
     handleThemeChange(defaultTheme);
+  }
+);
+
+// 监听语言切换，重新构建节点数据以刷新类型徽标文本（中/英文宽度不同，需重新计算徽标宽度）
+watch(
+  () => locale.value,
+  () => {
+    if (!mindMapInstance.value) return;
+    refreshMindmapData();
+    refreshNodeTypeBadges(); // 重建已有节点的徽章 DOM（增量更新不会重建 prefix）
+    scheduleMindmapRelayout();
   }
 );
 
@@ -2425,6 +2827,16 @@ watch(
             isPasting.value = false;
             lastCopiedCaseExpandMap.value = null;
           } else {
+            // Expand newly created complete cases so precondition/steps/notes are visible.
+            // Keep this outside paste mapping to avoid overriding copied expand states.
+            const hasCaseBody = Boolean(
+              newCase.precondition?.trim() ||
+              newCase.notes?.trim() ||
+              (Array.isArray(newCase.steps) && newCase.steps.length > 0)
+            );
+            if (hasCaseBody) {
+              newCaseExpandStates.value.set(preferredUid, true);
+            }
             pendingEditUid.value = preferredUid;
           }
         }
@@ -2481,7 +2893,7 @@ let resizeObserver: any = null;
 // 初始化 ResizeObserver 自动响应容器尺寸变化，保障画布能随时适应布局并处理初始宽高为0的问题
 const initResizeObserver = () => {
   if (typeof window === 'undefined' || !window.ResizeObserver) return;
-
+  
   if (resizeObserver) {
     resizeObserver.disconnect();
   }

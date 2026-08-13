@@ -140,6 +140,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'debug': False,
                 'browser_type': 'chromium',
                 'headless': False,
+                'supported_browsers': ['chromium'],
+                'default_browser': 'chromium',
+                'supports_headed': True,
+                'supports_headless': True,
+                'max_slots': 1,
+                'busy_slots': 0,
                 'connected_at': datetime.datetime.now().isoformat(),
             }
             SocketUserManager.add_actuator(self.user_id, self)
@@ -170,6 +176,15 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
         
         if self.is_actuator:
+            try:
+                from .actuator_registry import clear_actuator_leases
+                cleared = clear_actuator_leases(self.user_id)
+                if cleared:
+                    logger.warning(
+                        f"执行器断开，已释放 {cleared} 个 slot lease: {self.user_id}"
+                    )
+            except Exception as exc:
+                logger.warning(f"clear leases on disconnect failed: {exc}")
             SocketUserManager.remove_actuator(self.user_id)
         else:
             SocketUserManager.remove_web_user(self.user_id)
@@ -235,89 +250,197 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 msg=self._localize(f"未知的操作: {func_name}")
             ))
     
+
+    async def _load_env_config(self, env_config_id):
+        """Load UiEnvironmentConfig by id (async)."""
+        if not env_config_id:
+            return None
+        from .models import UiEnvironmentConfig
+
+        def _fetch():
+            return UiEnvironmentConfig.objects.filter(id=env_config_id).first()
+
+        return await sync_to_async(_fetch)()
+
+    async def _prepare_task_dispatch(self, args: dict):
+        """Resolve effective_runtime + select actuator. Returns (args, actuator, error)."""
+        from . import actuator_registry
+
+        args = dict(args or {})
+        run_options = args.get("run_options") or {}
+        preferred = args.get("actuator_id") or None
+        env_config_id = args.get("env_config_id")
+
+        env = await self._load_env_config(env_config_id)
+        effective, selected, err = actuator_registry.resolve_and_select(
+            env=env,
+            run_options=run_options if run_options else None,
+            preferred_actuator_id=preferred,
+        )
+        if err:
+            return args, None, err
+
+        actuator = actuator_registry.get_raw_consumer(selected["id"])
+        if actuator is None:
+            return args, None, f"执行器 {selected['id']} 不在线"
+
+        args["actuator_id"] = selected["id"]
+        args["effective_runtime"] = effective
+        # Slot reservation is done by callers with the correct task size.
+        args["_selected_actuator_for_slots"] = selected["id"]
+        if effective.get("env_config_id") and not args.get("env_config_id"):
+            args["env_config_id"] = effective["env_config_id"]
+        return args, actuator, ""
+
+
+
+
+
+    @staticmethod
+    def _sanitize_result_args(args: dict) -> dict:
+        """Copy result args for frontend broadcast without db secrets."""
+        if not isinstance(args, dict):
+            return {}
+        return dict(args)
+
+    @staticmethod
+    def _public_effective(effective):
+        return effective or {}
+
+    def _release_actuator_slots(self, args: dict, count: int = 1) -> None:
+        from .actuator_registry import adjust_busy_slots
+        if count <= 0:
+            return
+        actuator_id = args.get("actuator_id")
+        if not actuator_id and isinstance(args.get("effective_runtime"), dict):
+            actuator_id = args.get("effective_runtime", {}).get("actuator_id")
+        if not actuator_id and isinstance(args.get("environment"), dict):
+            actuator_id = args.get("environment", {}).get("actuator_id")
+        if not actuator_id:
+            return
+        try:
+            adjust_busy_slots(str(actuator_id), -count)
+        except Exception as exc:
+            logger.warning(f"adjust busy_slots -{count} failed: {exc}")
+
+    def _reserve_actuator_slots(self, args: dict, count: int = 1) -> bool:
+        from . import actuator_registry
+        actuator_id = args.get("actuator_id") or args.get("_selected_actuator_for_slots")
+        if not actuator_id or count <= 0:
+            return True
+        ttl = None
+        effective = args.get("effective_runtime") if isinstance(args.get("effective_runtime"), dict) else {}
+        try:
+            timeout_ms = int(effective.get("timeout") or 0)
+        except (TypeError, ValueError):
+            timeout_ms = 0
+        if timeout_ms > 0:
+            # headroom for multi-step tasks; clamp 15min..6h
+            ttl = max(15 * 60, min(int(timeout_ms / 1000) * 3 * max(count, 1), 6 * 60 * 60))
+        ok, err = actuator_registry.reserve_slots(
+            str(actuator_id),
+            count,
+            ttl_seconds=ttl,
+            meta={
+                "case_id": args.get("case_id"),
+                "batch_id": args.get("batch_id"),
+                "case_ids": args.get("case_ids"),
+            },
+        )
+        if not ok:
+            logger.warning(f"reserve slots failed: {err}")
+            return False
+        return True
+
     async def handle_execute_page_steps(self, args: dict, user: str):
         """处理执行页面步骤请求"""
-        actuator_id = args.get('actuator_id')
-        if actuator_id:
-            actuator = SocketUserManager.get_actuator_by_id(actuator_id)
-        else:
-            actuator = SocketUserManager.get_actuator()
-        
-        if not actuator:
+        args, actuator, err = await self._prepare_task_dispatch(args)
+        if err:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize("没有可用的执行器，请先启动执行器服务" if not actuator_id else f"执行器 {actuator_id} 不在线")
-            ))
-            return
-        
-        # 转发给执行器，使用服务端分配的user_id而非客户端传入的user
-        await actuator.send_json(SocketDataModel(
-            code=ResponseCode.SUCCESS,
-            msg="execute",
-            user=self.user_id,
-            is_notice=NoticeType.ACTUATOR,
-            data=QueueModel(
-                func_name=UiSocketEnum.PAGE_STEPS,
-                func_args=args
-            )
-        ))
-        
-        await self.send_json(SocketDataModel(
-            code=ResponseCode.SUCCESS,
-            msg=self._localize("任务已发送给执行器")
-        ))
-    
-    async def handle_execute_test_case(self, args: dict, user: str):
-        """处理执行测试用例请求"""
-        actuator_id = args.get('actuator_id')
-        if actuator_id:
-            actuator = SocketUserManager.get_actuator_by_id(actuator_id)
-        else:
-            actuator = SocketUserManager.get_actuator()
-        if not actuator:
-            await self.send_json(SocketDataModel(
-                code=ResponseCode.ERROR,
-                msg=self._localize("没有可用的执行器，请先启动执行器服务" if not actuator_id else f"执行器 {actuator_id} 不在线")
-            ))
-            return
-        
-        # 更新用例状态为执行中
-        case_id = args.get('case_id')
-        if case_id:
-            await self.update_testcase_status(case_id, 1)  # 1 = 执行中
-        
-        # 转发给执行器，使用服务端分配的user_id而非客户端传入的user
-        await actuator.send_json(SocketDataModel(
-            code=ResponseCode.SUCCESS,
-            msg="execute",
-            user=self.user_id,
-            is_notice=NoticeType.ACTUATOR,
-            data=QueueModel(
-                func_name=UiSocketEnum.TEST_CASE,
-                func_args=args
-            )
-        ))
-        
-        await self.send_json(SocketDataModel(
-            code=ResponseCode.SUCCESS,
-            msg=self._localize("任务已发送给执行器")
-        ))
-    
-    async def handle_execute_batch(self, args: dict, user: str):
-        """处理批量执行请求"""
-        actuator_id = args.get('actuator_id')
-        if actuator_id:
-            actuator = SocketUserManager.get_actuator_by_id(actuator_id)
-        else:
-            actuator = SocketUserManager.get_actuator()
-        if not actuator:
-            await self.send_json(SocketDataModel(
-                code=ResponseCode.ERROR,
-                msg=self._localize("没有可用的执行器，请先启动执行器服务" if not actuator_id else f"执行器 {actuator_id} 不在线")
+                msg=self._localize(err)
             ))
             return
 
-        case_ids = args.get('case_ids', [])
+        if not self._reserve_actuator_slots(args, 1):
+            await self.send_json(SocketDataModel(
+                code=ResponseCode.ERROR,
+                msg=self._localize("执行器空闲 slot 不足")
+            ))
+            return
+
+        try:
+            await actuator.send_json(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg="execute",
+                user=self.user_id,
+                is_notice=NoticeType.ACTUATOR,
+                data=QueueModel(
+                    func_name=UiSocketEnum.PAGE_STEPS,
+                    func_args=args
+                )
+            ))
+        except Exception:
+            self._release_actuator_slots(args, 1)
+            raise
+
+        await self.send_json(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg=self._localize("任务已发送给执行器"),
+            data=QueueModel(
+                func_name="effective_runtime",
+                func_args=self._public_effective(args.get("effective_runtime"))
+            )
+        ))
+
+    async def handle_execute_test_case(self, args: dict, user: str):
+        """处理执行测试用例请求"""
+        args, actuator, err = await self._prepare_task_dispatch(args)
+        if err:
+            await self.send_json(SocketDataModel(
+                code=ResponseCode.ERROR,
+                msg=self._localize(err)
+            ))
+            return
+
+        if not self._reserve_actuator_slots(args, 1):
+            await self.send_json(SocketDataModel(
+                code=ResponseCode.ERROR,
+                msg=self._localize("执行器空闲 slot 不足")
+            ))
+            return
+
+        try:
+            case_id = args.get("case_id")
+            if case_id:
+                await self.update_testcase_status(case_id, 1)
+
+            await actuator.send_json(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg="execute",
+                user=self.user_id,
+                is_notice=NoticeType.ACTUATOR,
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE,
+                    func_args=args
+                )
+            ))
+        except Exception:
+            self._release_actuator_slots(args, 1)
+            raise
+
+        await self.send_json(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg=self._localize("任务已发送给执行器"),
+            data=QueueModel(
+                func_name="effective_runtime",
+                func_args=self._public_effective(args.get("effective_runtime"))
+            )
+        ))
+
+    async def handle_execute_batch(self, args: dict, user: str):
+        """处理批量执行请求"""
+        case_ids = args.get("case_ids", [])
         if not case_ids:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
@@ -325,43 +448,78 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             ))
             return
 
-        # 创建批量执行记录
+        args, actuator, err = await self._prepare_task_dispatch(args)
+        if err:
+            await self.send_json(SocketDataModel(
+                code=ResponseCode.ERROR,
+                msg=self._localize(err)
+            ))
+            return
+
+        if not self._reserve_actuator_slots(args, len(case_ids)):
+            await self.send_json(SocketDataModel(
+                code=ResponseCode.ERROR,
+                msg=self._localize("执行器空闲 slot 不足")
+            ))
+            return
         batch_id = await self.create_batch_record(case_ids)
         if not batch_id:
+            self._release_actuator_slots(args, len(case_ids))
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
                 msg=self._localize("创建批量执行记录失败")
             ))
             return
+        args["batch_id"] = batch_id
 
-        # 将 batch_id 加入参数传递给执行器
-        args['batch_id'] = batch_id
+        try:
+            for case_id in case_ids:
+                await self.update_testcase_status(case_id, 1)
 
-        # 转发给执行器，使用服务端分配的user_id而非客户端传入的user
-        await actuator.send_json(SocketDataModel(
-            code=ResponseCode.SUCCESS,
-            msg="execute_batch",
-            user=self.user_id,
-            is_notice=NoticeType.ACTUATOR,
-            data=QueueModel(
-                func_name=UiSocketEnum.TEST_CASE_BATCH,
-                func_args=args
-            )
-        ))
+            await actuator.send_json(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg="execute_batch",
+                user=self.user_id,
+                is_notice=NoticeType.ACTUATOR,
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE_BATCH,
+                    func_args=args
+                )
+            ))
+        except Exception:
+            self._release_actuator_slots(args, len(case_ids))
+            raise
 
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg=self._localize("批量任务已发送给执行器"),
             data=QueueModel(
-                func_name='batch_created',
-                func_args={'batch_id': batch_id, 'total_cases': len(case_ids)}
+                func_name="batch_created",
+                func_args={
+                    "batch_id": batch_id,
+                    "total_cases": len(case_ids),
+                    "effective_runtime": self._public_effective(args.get("effective_runtime")),
+                }
             )
         ))
-    
+
     async def handle_stop_execution(self, args: dict, user: str):
         """处理停止执行请求"""
-        # 广播给所有执行器
-        for actuator in SocketUserManager.get_all_actuators():
+        from .actuator_registry import release_all_slots, clear_actuator_leases
+
+        target_id = None
+        if isinstance(args, dict):
+            target_id = args.get("actuator_id")
+            if not target_id and isinstance(args.get("effective_runtime"), dict):
+                target_id = args.get("effective_runtime", {}).get("actuator_id")
+
+        actuators = SocketUserManager.get_all_actuators()
+        if target_id:
+            target = SocketUserManager.get_actuator_by_id(str(target_id))
+            actuators = [target] if target else actuators
+        for actuator in actuators:
+            if actuator is None:
+                continue
             await actuator.send_json(SocketDataModel(
                 code=ResponseCode.SUCCESS,
                 msg="stop",
@@ -369,15 +527,27 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 is_notice=NoticeType.ACTUATOR,
                 data=QueueModel(
                     func_name=UiSocketEnum.STOP_EXECUTION,
-                    func_args=args
+                    func_args=args or {}
                 )
             ))
+
+        # 停止时立即释放 lease，避免执行器无回执导致 slot 长期占用
+        try:
+            if target_id:
+                released = clear_actuator_leases(str(target_id))
+            else:
+                released = release_all_slots()
+            if released:
+                logger.warning(f"stop 已强制释放 {released} 个 slot lease")
+        except Exception as exc:
+            logger.warning(f"stop release slots failed: {exc}")
         
         await self.send_json(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg=self._localize("停止信号已发送")
         ))
-    
+
+
     async def handle_step_result(self, args: dict, user: str):
         """处理步骤执行结果（来自执行器）"""
         logger.info(f"收到步骤结果, 目标用户: {user}, 当前Web用户: {list(SocketUserManager._web_users.keys())}")
@@ -392,7 +562,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 is_notice=NoticeType.WEB,
                 data=QueueModel(
                     func_name=UiSocketEnum.STEP_RESULT,
-                    func_args=args
+                    func_args=self._sanitize_result_args(args)
                 )
             ))
             logger.info(f"步骤结果已发送给用户: {user}")
@@ -406,13 +576,14 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'type': 'broadcast_result',
                 'data': {
                     'func_name': UiSocketEnum.STEP_RESULT,
-                    'args': args
+                    'args': self._sanitize_result_args(args)
                 }
             }
         )
     
     async def handle_page_step_result(self, args: dict, user: str):
         """处理页面步骤执行结果（来自执行器）"""
+        self._release_actuator_slots(args, 1)
         logger.info(f"收到页面步骤结果, 执行用户: {user}")
 
         # 更新页面步骤状态到数据库
@@ -429,7 +600,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'type': 'broadcast_result',
                 'data': {
                     'func_name': UiSocketEnum.PAGE_STEP_RESULT,
-                    'args': args,
+                    'args': self._sanitize_result_args(args),
                     'user': user
                 }
             }
@@ -449,22 +620,24 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'type': 'broadcast_result',
                 'data': {
                     'func_name': UiSocketEnum.CASE_RESULT,
-                    'args': args,
+                    'args': self._sanitize_result_args(args),
                     'user': user  # 携带执行用户信息
                 }
             }
         )
     
     async def broadcast_result(self, event):
-        """广播结果给所有前端"""
+        """Broadcast results to web clients (sanitize secrets)."""
         if not self.is_actuator:
+            raw_args = event["data"].get("args") or {}
+            safe_args = self._sanitize_result_args(raw_args) if isinstance(raw_args, dict) else raw_args
             await self.send_json(SocketDataModel(
                 code=ResponseCode.SUCCESS,
                 msg="broadcast",
                 is_notice=NoticeType.WEB,
                 data=QueueModel(
-                    func_name=event['data']['func_name'],
-                    func_args=event['data']['args']
+                    func_name=event["data"]["func_name"],
+                    func_args=safe_args
                 )
             ))
     
@@ -534,12 +707,17 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
         case_id = args.get('case_id')
         try:
+            self._release_actuator_slots(args, 1)
+            environment_snapshot = args.get('environment') or args.get('effective_runtime')
+            if not (environment_snapshot and isinstance(environment_snapshot, dict)):
+                environment_snapshot = None
+
             record = UiExecutionRecord.objects.create(
                 test_case_id=case_id,
                 batch_id=batch_id,
                 executor=executor,
                 status=status,
-                trigger_type='manual',
+                trigger_type=args.get('trigger_type') or 'manual',
                 step_results=steps,
                 screenshots=screenshots,
                 trace_path=trace_path,
@@ -547,7 +725,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 error_message=args.get('message') if status == 3 else None,
                 start_time=start_time,
                 end_time=end_time,
-                duration=duration
+                duration=duration,
+                environment=environment_snapshot,
             )
             logger.info(f"执行记录已保存: id={record.id}, case_id={case_id}, batch_id={batch_id}, status={status}")
 
@@ -616,6 +795,31 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             self.actuator_info['headless'] = args['headless']
         if 'version' in args:
             self.actuator_info['version'] = args['version']
+        capability_keys = (
+            'supported_browsers', 'default_browser', 'supports_headed', 'supports_headless',
+            'max_slots', 'max_concurrent', 'labels', 'os',
+        )
+        for key in capability_keys:
+            if key in args and args[key] is not None:
+                self.actuator_info[key] = args[key]
+        # 运行配置字段（供平台列表/编辑弹窗预填当前值）
+        config_keys = (
+            'persistent', 'launch_timeout', 'action_timeout', 'retry_count',
+            'step_interval', 'log_level',
+            'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
+            'headless', 'viewport_width', 'viewport_height', 'in_container',
+        )
+        for key in config_keys:
+            if key in args and args[key] is not None:
+                self.actuator_info[key] = args[key]
+        # busy_slots is server-owned accounting; ignore client-provided values.
+        if 'busy_slots' in args:
+            args = {k: v for k, v in args.items() if k != 'busy_slots'}
+        try:
+            from .actuator_registry import update_capability
+            update_capability(self.user_id, self.actuator_info)
+        except Exception as exc:
+            logger.warning(f"normalize actuator capability failed: {exc}")
         
         logger.info(f"执行器 {self.user_id} 信息已更新: {self.actuator_info}")
         
