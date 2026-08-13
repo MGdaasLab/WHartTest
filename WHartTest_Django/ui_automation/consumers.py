@@ -265,18 +265,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
     async def _prepare_task_dispatch(self, args: dict):
         """Resolve effective_runtime + select actuator. Returns (args, actuator, error)."""
         from . import actuator_registry
-        from .runtime_config import RuntimeConfigError, normalize_run_options
 
         args = dict(args or {})
         run_options = args.get("run_options") or {}
         preferred = args.get("actuator_id") or None
         env_config_id = args.get("env_config_id")
-
-        try:
-            if run_options:
-                normalize_run_options(run_options)
-        except RuntimeConfigError as exc:
-            return args, None, str(exc)
 
         env = await self._load_env_config(env_config_id)
         effective, selected, err = actuator_registry.resolve_and_select(
@@ -308,18 +301,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         """Copy result args for frontend broadcast without db secrets."""
         if not isinstance(args, dict):
             return {}
-        safe = dict(args)
-        from .runtime_config import build_environment_snapshot, public_effective_runtime
-        if isinstance(safe.get("effective_runtime"), dict):
-            safe["effective_runtime"] = public_effective_runtime(safe["effective_runtime"])
-        if isinstance(safe.get("environment"), dict):
-            safe["environment"] = build_environment_snapshot(safe["environment"])
-        return safe
+        return dict(args)
 
     @staticmethod
     def _public_effective(effective):
-        from .runtime_config import public_effective_runtime
-        return public_effective_runtime(effective or {})
+        return effective or {}
 
     def _release_actuator_slots(self, args: dict, count: int = 1) -> None:
         from .actuator_registry import adjust_busy_slots
@@ -721,12 +707,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
         case_id = args.get('case_id')
         try:
-            from .runtime_config import build_environment_snapshot
             self._release_actuator_slots(args, 1)
             environment_snapshot = args.get('environment') or args.get('effective_runtime')
-            if environment_snapshot and isinstance(environment_snapshot, dict):
-                environment_snapshot = build_environment_snapshot(environment_snapshot)
-            else:
+            if not (environment_snapshot and isinstance(environment_snapshot, dict)):
                 environment_snapshot = None
 
             record = UiExecutionRecord.objects.create(

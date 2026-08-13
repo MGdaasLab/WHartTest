@@ -1292,15 +1292,9 @@ def trigger_batch_execution(request):
 
     from . import actuator_registry
     from .models import UiEnvironmentConfig
-    from .runtime_config import RuntimeConfigError, normalize_run_options
 
     env_config_id = request.data.get('env_config_id')
     run_options = request.data.get('run_options') or {}
-    try:
-        if run_options:
-            normalize_run_options(run_options)
-    except RuntimeConfigError as exc:
-        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
     env = None
     if env_config_id:
@@ -1341,7 +1335,6 @@ def trigger_batch_execution(request):
 
     # 创建批量执行记录
     from django.utils import timezone as tz
-    from .runtime_config import public_effective_runtime
 
     reserved_count = len(case_ids)
     batch = None
@@ -1399,6 +1392,6 @@ def trigger_batch_execution(request):
             'batch_id': batch.id,
             'total_cases': len(case_ids),
             'actuator_id': actuator_id,
-            'effective_runtime': public_effective_runtime(effective),
+            'effective_runtime': effective,
         },
     })
