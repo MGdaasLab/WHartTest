@@ -595,7 +595,6 @@ const updateDefaultPort = () => {
     mysql: 3306,
     postgresql: 5432,
     oracle: 1521,
-    sqlserver: 1433,
   }
   
   if (formData.value.type && portMap[formData.value.type]) {
@@ -852,9 +851,7 @@ defineExpose({
           <a-select v-model="formData.type" :placeholder="panelText.selectDatabaseType" @change="handleTypeChange">
             <a-option value="mysql">MySQL</a-option>
             <a-option value="postgresql">PostgreSQL</a-option>
-            <a-option value="sqlite">SQLite</a-option>
             <a-option value="oracle">Oracle</a-option>
-            <a-option value="sqlserver">SQL Server</a-option>
           </a-select>
         </a-form-item>
         
@@ -928,9 +925,7 @@ defineExpose({
           <a-select v-model="formData.type" :placeholder="panelText.selectDatabaseType" @change="handleTypeChange">
             <a-option value="mysql">MySQL</a-option>
             <a-option value="postgresql">PostgreSQL</a-option>
-            <a-option value="sqlite">SQLite</a-option>
             <a-option value="oracle">Oracle</a-option>
-            <a-option value="sqlserver">SQL Server</a-option>
           </a-select>
         </a-form-item>
         
