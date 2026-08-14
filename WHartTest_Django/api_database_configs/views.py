@@ -2,8 +2,8 @@ import logging
 
 import pymysql
 import psycopg2
-import sqlite3
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import NoSuchModuleError
 
 from rest_framework import permissions, status
 from rest_framework.response import Response
@@ -21,6 +21,7 @@ from .models import ApiDatabaseConfig
 from .serializers import ApiDatabaseConfigSerializer
 
 logger = logging.getLogger(__name__)
+
 
 
 class ApiDatabaseConfigViewSet(BaseModelViewSet):
@@ -67,10 +68,10 @@ class ApiDatabaseConfigViewSet(BaseModelViewSet):
         host = request.data.get('host')
         port_raw = request.data.get('port', 3306)
         database = request.data.get('database')
-        user = request.data.get('user')
+        user = request.data.get('user') or request.data.get('username')
         password = request.data.get('password')
 
-        if not database or (db_type != 'sqlite' and not all([host, user, password])):
+        if not database or not all([host, user, password]):
             return Response(
                 {"detail": "Missing required connection parameters."},
                 status=status.HTTP_400_BAD_REQUEST,
@@ -100,6 +101,7 @@ class ApiDatabaseConfigViewSet(BaseModelViewSet):
     @staticmethod
     def _do_test_connection(*, db_type, host, port, database, user, password):
         """Execute a lightweight SELECT 1 against the target database."""
+        validation_sql = "SELECT 1"
         try:
             if db_type == 'mysql':
                 conn = pymysql.connect(
@@ -119,24 +121,36 @@ class ApiDatabaseConfigViewSet(BaseModelViewSet):
                     cur.execute("SELECT 1")
                 conn.close()
 
-            elif db_type == 'sqlite':
-                conn = sqlite3.connect(database)
-                conn.execute("SELECT 1")
-                conn.close()
+            elif db_type == 'oracle':
+                # Oracle 12c+ 默认是 CDB/PDB 架构，FREEPDB1 这类是 PDB 的
+                # 服务名(service name)而非 SID，SQLAlchemy URL 中 /xxx 是 SID，
+                # 服务名必须用 ?service_name=xxx 传参。
+                # 先按服务名连接（现代 Oracle 标准），失败再回退 SID 格式。
+                service_name_uri = (
+                    f"oracle+oracledb://{user}:{password}"
+                    f"@{host}:{port}?service_name={database}"
+                )
+                try:
+                    engine = create_engine(service_name_uri)
+                    with engine.connect() as conn:
+                        conn.execute(text(validation_sql))
+                except Exception as first_exc:
+                    sid_uri = (
+                        f"oracle+oracledb://{user}:{password}"
+                        f"@{host}:{port}/{database}"
+                    )
+                    try:
+                        engine = create_engine(sid_uri)
+                        with engine.connect() as conn:
+                            conn.execute(text(validation_sql))
+                    except Exception:
+                        raise first_exc
 
             else:
-                conn_strings = {
-                    'oracle': f"oracle://{user}:{password}@{host}:{port}/{database}",
-                    'sqlserver': f"mssql+pymssql://{user}:{password}@{host}:{port}/{database}",
-                }
-                if db_type not in conn_strings:
-                    return Response(
-                        {"detail": f"Unsupported database type: {db_type}"},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
-                engine = create_engine(conn_strings[db_type])
-                with engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
+                return Response(
+                    {"detail": f"Unsupported database type: {db_type}"},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             return Response({
                 "connected": True,
@@ -144,6 +158,11 @@ class ApiDatabaseConfigViewSet(BaseModelViewSet):
                 "message": "Connection successful",
             })
 
+        except NoSuchModuleError as e:
+            return Response(
+                {"detail": f"Connection failed: {e}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         except Exception as e:
             return Response(
                 {"detail": f"Connection failed: {e}"},
