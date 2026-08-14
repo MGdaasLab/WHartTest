@@ -6,11 +6,11 @@ api_username = "admin"
 api_password = "admin123456"
 
 [actuator]
-name = "本地执行器"
+name = "本地执行器111"
 
 [browser]
 browser_type = "chromium"
-headless = true
+headless = false
 persistent = false
 user_data_dir = "./data/browser"
 launch_timeout = 30
@@ -19,10 +19,10 @@ viewport_width = 1280
 viewport_height = 720
 
 [execution]
-retry_count = 0
+retry_count = 1
 step_interval = 100
 screenshot_dir = "./data/screenshots"
-max_concurrent = 1
+max_concurrent = 2
 
 [trace]
 enabled = true

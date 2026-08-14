@@ -131,11 +131,120 @@ def _leases_view() -> dict[str, dict[str, Any]]:
     return _SLOT_LEASES
 
 
-from .runtime_config import (
-    normalize_capability,
-    resolve_from_env_and_actuator,
-    select_actuator,
-)
+# NOTE: master-ce 分支不存在 runtime_config 模块（该模块属 PE 分支内容）。
+# 此处内联 normalize_capability 及其辅助函数，避免引用不存在的模块导致导入崩溃。
+SUPPORTED_BROWSERS = ("chromium", "firefox", "webkit")
+
+
+def normalize_browser(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if not text:
+        return None
+    if text in SUPPORTED_BROWSERS:
+        return text
+    aliases = {
+        "chrome": "chromium",
+        "google-chrome": "chromium",
+        "msedge": "chromium",
+        "edge": "chromium",
+    }
+    return aliases.get(text)
+
+
+def normalize_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on", "y"}:
+            return True
+        if text in {"0", "false", "no", "off", "n"}:
+            return False
+    return None
+
+
+def normalize_positive_int(value: Any, *, minimum: int = 1) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    if number < minimum:
+        return None
+    return number
+
+
+def normalize_capability(actuator_info: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """Normalize online actuator capability for matching / UI."""
+    info = actuator_info or {}
+    supported = info.get("supported_browsers")
+    browsers: list[str] = []
+    if isinstance(supported, (list, tuple)):
+        for item in supported:
+            browser = normalize_browser(item)
+            if browser and browser not in browsers:
+                browsers.append(browser)
+    if not browsers:
+        legacy = normalize_browser(
+            info.get("browser_type") or info.get("browser") or info.get("default_browser")
+        )
+        if legacy:
+            browsers = [legacy]
+        else:
+            browsers = ["chromium"]
+
+    default_browser = normalize_browser(
+        info.get("default_browser") or info.get("browser_type") or browsers[0]
+    )
+    # Keep supported_browsers as the declared capability set.
+    # If default is outside that set, fall back rather than inventing support.
+    if default_browser and default_browser not in browsers:
+        default_browser = browsers[0]
+    if not default_browser:
+        default_browser = browsers[0]
+
+    supports_headless = normalize_bool(info.get("supports_headless"))
+    if supports_headless is None:
+        supports_headless = True
+    supports_headed = normalize_bool(info.get("supports_headed"))
+    if supports_headed is None:
+        supports_headed = True
+
+    max_slots = normalize_positive_int(
+        info.get("max_slots") or info.get("max_concurrent"), minimum=1
+    ) or 1
+    busy_slots = normalize_positive_int(info.get("busy_slots"), minimum=0)
+    if busy_slots is None:
+        busy_slots = 0
+    busy_slots = min(busy_slots, max_slots)
+
+    is_open = normalize_bool(info.get("is_open"))
+    if is_open is None:
+        is_open = True
+
+    return {
+        "id": info.get("id") or info.get("actuator_id"),
+        "name": info.get("name") or info.get("id") or "actuator",
+        "supported_browsers": browsers,
+        "default_browser": default_browser,
+        "supports_headed": supports_headed,
+        "supports_headless": supports_headless,
+        "max_slots": max_slots,
+        "busy_slots": busy_slots,
+        "is_open": is_open,
+        "version": info.get("version"),
+        "labels": info.get("labels") if isinstance(info.get("labels"), list) else [],
+        "os": info.get("os"),
+        "browser_type": default_browser,
+        "headless": normalize_bool(info.get("headless")),
+    }
 
 
 def _list_raw_actuators() -> list[dict[str, Any]]:
@@ -428,7 +537,7 @@ def resolve_and_select(
     run_options: Optional[dict[str, Any]] = None,
     preferred_actuator_id: Optional[str] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], str]:
-    """解析有效运行时并选择在线且能力匹配的执行器。
+    """选择在线执行器并生成简化 effective_runtime。
 
     供 WebSocket 执行请求与 HTTP 批量执行共用，返回 (effective, selected, err)：
     - err 非空表示失败，selected 为 None；
@@ -438,39 +547,23 @@ def resolve_and_select(
     if not actuators:
         return None, None, "没有可用的执行器，请先启动执行器服务"
 
-    # 首选执行器的能力作为运行时默认值来源；不在线则直接报错
-    preferred_cap = None
     if preferred_actuator_id:
-        preferred_cap = next(
+        selected = next(
             (cap for cap in actuators if cap.get("id") == preferred_actuator_id),
             None,
         )
-        if preferred_cap is None:
+        if selected is None:
             return None, None, f"执行器 {preferred_actuator_id} 不在线"
+    else:
+        selected = actuators[0]
 
-    effective = resolve_from_env_and_actuator(
-        env=env,
-        actuator_info=preferred_cap,
-        run_options=run_options,
-        actuator_id=preferred_actuator_id,
-        source_mode="backend_resolve",
-    )
-
-    selected, err = select_actuator(
-        actuators, effective, preferred_id=preferred_actuator_id
-    )
-    if err:
-        return None, None, err
-    if selected is None:
-        return None, None, "没有匹配能力的在线执行器"
-
-    # 以选中执行器的能力重新解析，确保 actuator_id/actuator_name 等字段准确
-    effective = resolve_from_env_and_actuator(
-        env=env,
-        actuator_info=selected,
-        run_options=run_options,
-        actuator_id=selected["id"],
-        source_mode="backend_resolve",
-    )
+    # master-ce 无 runtime_config，直接以选中执行器的能力生成简化 effective_runtime
+    effective = {
+        "actuator_id": selected["id"],
+        "actuator_name": selected.get("name"),
+        "browser_type": selected.get("default_browser"),
+        "headless": not bool(selected.get("supports_headed", True)),
+        "source_mode": "backend_resolve",
+    }
     return effective, selected, ""
 
