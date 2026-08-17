@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+import time
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Iterable
@@ -45,6 +46,9 @@ IMPORT_FORMATS = {
     "eolink",
 }
 MAX_REMOTE_DOCUMENT_BYTES = 10 * 1024 * 1024
+REMOTE_FETCH_CONNECT_TIMEOUT_SECONDS = 10.0
+REMOTE_FETCH_READ_TIMEOUT_SECONDS = 60.0
+_CHUNK_SIZE = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -147,7 +151,12 @@ def parse_api_document(
 
 
 def fetch_api_document(source_url: str) -> tuple[bytes, str]:
-    """Fetch a remote Swagger/OpenAPI document with bounded time and memory use."""
+    """Fetch a remote Swagger/OpenAPI document with bounded time and memory use.
+
+    The whole download (connect + read) is capped by an overall deadline so a slow
+    remote server cannot hold the request open indefinitely. The document is read in
+    chunks and capped by ``MAX_REMOTE_DOCUMENT_BYTES``.
+    """
     parsed = urlparse(str(source_url or "").strip())
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise OpenAPIError("Swagger URL must be a valid HTTP or HTTPS URL.")
@@ -156,20 +165,68 @@ def fetch_api_document(source_url: str) -> tuple[bytes, str]:
         parsed.geturl(),
         headers={"Accept": "application/json, application/yaml, text/yaml, */*"},
     )
+    deadline = time.monotonic() + REMOTE_FETCH_READ_TIMEOUT_SECONDS
     try:
-        with urlopen(request, timeout=10) as response:
+        with urlopen(
+            request,
+            timeout=REMOTE_FETCH_CONNECT_TIMEOUT_SECONDS,
+        ) as response:
             declared_size = response.headers.get("Content-Length")
-            if declared_size and int(declared_size) > MAX_REMOTE_DOCUMENT_BYTES:
-                raise OpenAPIError("The remote API document exceeds the 10 MB limit.")
-            content = response.read(MAX_REMOTE_DOCUMENT_BYTES + 1)
+            if declared_size:
+                try:
+                    declared_size = int(declared_size)
+                except ValueError:
+                    declared_size = None
+                if declared_size is not None and declared_size > MAX_REMOTE_DOCUMENT_BYTES:
+                    raise OpenAPIError(
+                        f"The remote API document is too large "
+                        f"({declared_size} bytes, limit {MAX_REMOTE_DOCUMENT_BYTES} bytes). "
+                        "Download the document and import it as a file instead."
+                    )
+
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise OpenAPIError(
+                        f"Fetching the Swagger URL timed out after "
+                        f"{int(REMOTE_FETCH_READ_TIMEOUT_SECONDS)} seconds. "
+                        "The remote server may be generating a large document on demand. "
+                        "Try importing a downloaded copy of the document as a file instead."
+                    )
+                chunk = response.read(_CHUNK_SIZE)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_REMOTE_DOCUMENT_BYTES:
+                    raise OpenAPIError(
+                        f"The remote API document is too large "
+                        f"(exceeds {MAX_REMOTE_DOCUMENT_BYTES} bytes). "
+                        "Download the document and import it as a file instead."
+                    )
+                chunks.append(chunk)
+
+            content = b"".join(chunks)
             final_url = response.geturl()
     except OpenAPIError:
         raise
-    except (HTTPError, URLError, TimeoutError, ValueError) as exc:
+    except TimeoutError as exc:
+        raise OpenAPIError(
+            f"Fetching the Swagger URL timed out after "
+            f"{int(REMOTE_FETCH_READ_TIMEOUT_SECONDS)} seconds. "
+            "The remote server may be slow or unresponsive. "
+            "Try importing a downloaded copy of the document as a file instead."
+        ) from exc
+    except (HTTPError, URLError, OSError, ValueError) as exc:
         raise OpenAPIError(f"Unable to fetch Swagger URL: {exc}") from exc
 
     if len(content) > MAX_REMOTE_DOCUMENT_BYTES:
-        raise OpenAPIError("The remote API document exceeds the 10 MB limit.")
+        raise OpenAPIError(
+            f"The remote API document is too large "
+            f"({len(content)} bytes, limit {MAX_REMOTE_DOCUMENT_BYTES} bytes). "
+            "Download the document and import it as a file instead."
+        )
     filename = urlparse(final_url).path.rsplit("/", 1)[-1] or "openapi.json"
     return content, filename
 
