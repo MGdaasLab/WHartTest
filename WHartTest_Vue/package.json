@@ -1,9 +1,9 @@
 {
   "name": "wharttest_vue",
   "private": false,
-  "version": "2.6.0",
+  "version": "2.7.1",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "WHartTest Team",
   "description": "A Vue.js based test automation management system",
   "keywords": [

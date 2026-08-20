@@ -2,7 +2,6 @@
 import { ref, watch, onMounted, computed } from 'vue';
 import { Message } from '@arco-design/web-vue';
 import { getDatabaseConfigs, type DatabaseConfig } from '../../services/databaseConfigService';
-import { toArray } from '../../services/responseHelpers';
 import { useProjectStore } from '@/store/projectStore';
 
 interface Props {
@@ -37,7 +36,16 @@ const loadDbConfigs = async () => {
     loading.value = true;
     const response = await getDatabaseConfigs(Number(projectStore.currentProjectId));
     
-    dbConfigs.value = toArray<DatabaseConfig>(response.data?.results ?? response.data);
+    if (response.data && Array.isArray(response.data.results)) {
+      dbConfigs.value = response.data.results;
+    } else if (response.data && Array.isArray(response.data.data)) {
+      dbConfigs.value = response.data.data;
+    } else if (Array.isArray(response.data)) {
+      dbConfigs.value = response.data;
+    } else {
+      console.warn('获取数据库配置返回格式异常:', response);
+      dbConfigs.value = [];
+    }
     
     if (dbConfigs.value.length > 0) {
       selectedDbConfigRef.value = String(dbConfigs.value[0].id);
@@ -219,23 +227,34 @@ const initForm = () => {
         console.log('直接传入的SQL对象:', jsonObj);
         sqlContentRef.value = jsonObj.sql || '';
         varNameRef.value = jsonObj.var_name || '';
-        
+
+        // 优先回显已保存的自定义名称，没有时才回退到生成名
+        if (jsonObj.name) {
+          sqlNameRef.value = jsonObj.name;
+        } else if (jsonObj.var_name) {
+          sqlNameRef.value = jsonObj.var_name;
+        }
+
         // 优先使用db_id来匹配数据库配置
         if (jsonObj.db_id) {
           console.log('使用db_id匹配数据库配置:', jsonObj.db_id);
           selectedDbConfigRef.value = String(jsonObj.db_id);
-          sqlNameRef.value = `SQL查询_ID${jsonObj.db_id}`;
-        } 
+          if (!sqlNameRef.value) {
+            sqlNameRef.value = `SQL查询_ID${jsonObj.db_id}`;
+          }
+        }
         // 向后兼容，尝试使用db_key来匹配
         else if (jsonObj.db_key) {
           console.log('使用db_key匹配数据库配置:', jsonObj.db_key);
-          sqlNameRef.value = `SQL查询_${jsonObj.db_key}`;
-          
+          if (!sqlNameRef.value) {
+            sqlNameRef.value = `SQL查询_${jsonObj.db_key}`;
+          }
+
           // 查找匹配的数据库配置
-          const matchedConfig = dbConfigs.value.find(config => 
+          const matchedConfig = dbConfigs.value.find(config =>
             config.database === jsonObj.db_key || config.name === jsonObj.db_key
           );
-          
+
           if (matchedConfig) {
             selectedDbConfigRef.value = String(matchedConfig.id);
           } else if (dbConfigs.value.length > 0) {
@@ -243,12 +262,14 @@ const initForm = () => {
           }
         } else {
           // 没有提供db_id和db_key，使用默认值
-          sqlNameRef.value = `SQL查询`;
+          if (!sqlNameRef.value) {
+            sqlNameRef.value = `SQL查询`;
+          }
           if (dbConfigs.value.length > 0) {
             selectedDbConfigRef.value = String(dbConfigs.value[0].id);
           }
         }
-        
+
         return;
       }
     } catch (e) {
@@ -265,23 +286,34 @@ const initForm = () => {
         if (jsonObj && jsonObj.type === 'sql') {
           sqlContentRef.value = jsonObj.sql || '';
           varNameRef.value = jsonObj.var_name || '';
-          
+
+          // 优先回显已保存的自定义名称，没有时才回退到生成名
+          if (jsonObj.name) {
+            sqlNameRef.value = jsonObj.name;
+          } else if (jsonObj.var_name) {
+            sqlNameRef.value = jsonObj.var_name;
+          }
+
           // 优先使用db_id来匹配数据库配置
           if (jsonObj.db_id) {
             console.log('使用db_id匹配数据库配置:', jsonObj.db_id);
             selectedDbConfigRef.value = String(jsonObj.db_id);
-            sqlNameRef.value = `SQL查询_ID${jsonObj.db_id}`;
-          } 
+            if (!sqlNameRef.value) {
+              sqlNameRef.value = `SQL查询_ID${jsonObj.db_id}`;
+            }
+          }
           // 向后兼容，尝试使用db_key来匹配
           else if (jsonObj.db_key) {
             console.log('使用db_key匹配数据库配置:', jsonObj.db_key);
-            sqlNameRef.value = `SQL查询_${jsonObj.db_key}`;
-            
+            if (!sqlNameRef.value) {
+              sqlNameRef.value = `SQL查询_${jsonObj.db_key}`;
+            }
+
             // 查找匹配的数据库配置
-            const matchedConfig = dbConfigs.value.find(config => 
+            const matchedConfig = dbConfigs.value.find(config =>
               config.database === jsonObj.db_key || config.name === jsonObj.db_key
             );
-            
+
             if (matchedConfig) {
               selectedDbConfigRef.value = String(matchedConfig.id);
             } else if (dbConfigs.value.length > 0) {
@@ -289,12 +321,14 @@ const initForm = () => {
             }
           } else {
             // 没有提供db_id和db_key，使用默认值
-            sqlNameRef.value = `SQL查询`;
+            if (!sqlNameRef.value) {
+              sqlNameRef.value = `SQL查询`;
+            }
             if (dbConfigs.value.length > 0) {
               selectedDbConfigRef.value = String(dbConfigs.value[0].id);
             }
           }
-          
+
           return;
         }
       } catch (e) {
@@ -440,7 +474,9 @@ const handleSubmit = () => {
     type: 'sql',
     db_id: Number(selectedDbConfigRef.value),
     sql: sqlContentRef.value,
-    var_name: varNameRef.value || undefined
+    var_name: varNameRef.value || undefined,
+    // 保存用户自定义的SQL名称，便于回显展示
+    name: sqlNameRef.value?.trim() || undefined
   };
   
   // 生成JSON字符串作为最终输出

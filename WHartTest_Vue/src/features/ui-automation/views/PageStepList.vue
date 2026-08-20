@@ -59,7 +59,7 @@
         <a-space :size="4">
           <a-button type="text" size="mini" @click="viewStepDetails(record)">
             <template #icon><icon-settings /></template>
-            {{ pageText.manageStepDetails }}
+            {{ pageText.stepDetails }}
           </a-button>
           <a-button type="text" size="mini" @click="editPageStep(record)">
             <template #icon><icon-edit /></template>
@@ -163,11 +163,10 @@ const pageText = computed(() => (
         selectPage: 'Select page',
         searchStepName: 'Search step name',
         addStep: 'Add step',
-        manageStepDetails: 'Add step',
         edit: 'Edit',
         delete: 'Delete',
         copy: 'Copy',
-        deleteStepConfirm: 'Delete this step?',
+        deleteStepConfirm: 'Delete this step? Steps referenced by test cases cannot be deleted. Delete the referencing test cases first.',
         editPageStep: 'Edit page step',
         addPageStep: 'Create page step',
         module: 'Module',
@@ -177,7 +176,7 @@ const pageText = computed(() => (
         enterStepName: 'Enter step name',
         description: 'Description',
         enterDescription: 'Enter description',
-        stepDetails: 'Step details',
+        stepDetails: 'Step Details',
         status: 'Status',
         actionCount: 'Action count',
         createdBy: 'Created by',
@@ -203,11 +202,10 @@ const pageText = computed(() => (
         selectPage: '选择页面',
         searchStepName: '搜索步骤名称',
         addStep: '新增步骤',
-        manageStepDetails: '添加步骤',
         edit: '编辑',
         delete: '删除',
         copy: '复制',
-        deleteStepConfirm: '确定删除该步骤？',
+        deleteStepConfirm: '确定删除该步骤？若被测试用例引用则无法删除，请先删除相关用例。',
         editPageStep: '编辑页面步骤',
         addPageStep: '新增页面步骤',
         module: '所属模块',
@@ -459,7 +457,7 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
         .join('\n')
       Message.error({ content: messages, duration: 5000 })
     } else {
-      Message.error(err?.error || (isEdit.value ? pageText.value.updateFailed : pageText.value.createFailed))
+      Message.error(err?.error ? tl(err.error) : (isEdit.value ? pageText.value.updateFailed : pageText.value.createFailed))
     }
     done(false)
   } finally {
@@ -492,7 +490,7 @@ const deletePageStep = async (record: UiPageSteps) => {
     fetchPageSteps()
   } catch (error: unknown) {
     const err = error as { error?: string }
-    Message.error(err?.error || pageText.value.deleteBlocked)
+    Message.error(err?.error ? tl(err.error) : pageText.value.deleteBlocked)
   }
 }
 

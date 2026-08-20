@@ -132,6 +132,7 @@
                   size="mini"
                   class="step-table"
                 >
+                  <template #step_no="{ rowIndex }">{{ rowIndex + 1 }}</template>
                   <template #step_status="{ record: step }">
                     <a-tag :color="step.status === 'success' ? 'green' : step.status === 'failed' ? 'red' : 'orange'" size="small">
                       {{ step.status === 'success' ? '成功' : step.status === 'failed' ? '失败' : '跳过' }}
@@ -226,7 +227,7 @@ const detailColumns = [
 ]
 
 const stepColumns = [
-  { title: '步骤', dataIndex: 'step_id', width: 60 },
+  { title: '步骤', slotName: 'step_no', width: 60, align: 'center' as const },
   { title: '描述', dataIndex: 'description', ellipsis: true },
   { title: '状态', slotName: 'step_status', width: 70 },
   { title: '时长', slotName: 'step_duration', width: 70 },

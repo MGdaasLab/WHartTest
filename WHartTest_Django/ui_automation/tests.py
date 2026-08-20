@@ -1,9 +1,8 @@
 from django.contrib.auth.models import User
 from django.core.files.base import ContentFile
 from django.test import TestCase
-from rest_framework import status
 from rest_framework.test import APIClient
-
+from rest_framework import status
 from projects.models import Project, ProjectMember
 from ui_automation.models import (
     UiCaseStepsDetailed,
@@ -247,126 +246,91 @@ class UiPageStepsExecuteDataTests(TestCase):
 
 class UiModuleSortingTests(TestCase):
     def setUp(self):
-        self.user = User.objects.create_superuser(
-            username='testuser',
-            password='password',
-            email='test@example.com',
-        )
+        self.user = User.objects.create_superuser(username='testuser', password='password', email='test@example.com')
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
-
-        self.project = Project.objects.create(
-            name='Test Project',
-            description='Test Description',
-            creator=self.user,
-        )
+        
+        self.project = Project.objects.create(name='Test Project', description='Test Description', creator=self.user)
         ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
-
-        self.root1 = UiModule.objects.create(
-            project=self.project,
-            name='Root 1',
-            creator=self.user,
-            order=1,
-        )
-        self.child1_1 = UiModule.objects.create(
-            project=self.project,
-            name='Child 1-1',
-            parent=self.root1,
-            creator=self.user,
-            order=1,
-        )
-        self.child1_1_1 = UiModule.objects.create(
-            project=self.project,
-            name='Child 1-1-1',
-            parent=self.child1_1,
-            creator=self.user,
-            order=1,
-        )
-        self.child1_2 = UiModule.objects.create(
-            project=self.project,
-            name='Child 1-2',
-            parent=self.root1,
-            creator=self.user,
-            order=2,
-        )
-        self.root2 = UiModule.objects.create(
-            project=self.project,
-            name='Root 2',
-            creator=self.user,
-            order=2,
-        )
+        
+        # Create hierarchy:
+        # root1
+        #   - child1_1 (order=1)
+        #     - child1_1_1
+        #   - child1_2 (order=2)
+        # root2
+        self.root1 = UiModule.objects.create(project=self.project, name='Root 1', creator=self.user, order=1)
+        self.child1_1 = UiModule.objects.create(project=self.project, name='Child 1-1', parent=self.root1, creator=self.user, order=1)
+        self.child1_1_1 = UiModule.objects.create(project=self.project, name='Child 1-1-1', parent=self.child1_1, creator=self.user, order=1)
+        self.child1_2 = UiModule.objects.create(project=self.project, name='Child 1-2', parent=self.root1, creator=self.user, order=2)
+        self.root2 = UiModule.objects.create(project=self.project, name='Root 2', creator=self.user, order=2)
 
     def test_get_max_depth(self):
+        """测试模块子树的最大深度"""
         self.assertEqual(self.root1.get_max_depth(), 3)
         self.assertEqual(self.child1_1.get_max_depth(), 2)
         self.assertEqual(self.child1_1_1.get_max_depth(), 1)
 
     def test_move_api_sibling_reorder_before(self):
+        """测试通过 API 移动模块到同级模块之前"""
         url = f'/api/ui-automation/modules/{self.child1_2.id}/move/'
         data = {
             'target_id': self.child1_1.id,
-            'drop_position': -1,
+            'drop_position': -1 # before child1_1
         }
-
+        
         response = self.client.post(url, data, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-
+        
         self.child1_1.refresh_from_db()
         self.child1_2.refresh_from_db()
-
+        
         self.assertEqual(self.child1_2.order, 1)
         self.assertEqual(self.child1_1.order, 2)
         self.assertEqual(self.child1_2.parent, self.root1)
         self.assertEqual(self.child1_1.parent, self.root1)
 
     def test_move_api_into_parent(self):
+        """测试通过 API 移动模块到其他父模块下"""
         url = f'/api/ui-automation/modules/{self.child1_2.id}/move/'
         data = {
             'target_id': self.root2.id,
-            'drop_position': 0,
+            'drop_position': 0 # inside root2
         }
-
+        
         response = self.client.post(url, data, format='json')
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-
+        
         self.child1_2.refresh_from_db()
         self.assertEqual(self.child1_2.parent, self.root2)
         self.assertEqual(self.child1_2.level, 2)
 
     def test_move_api_circular_reference_protection(self):
+        """测试循环引用保护：禁止移动到自己的子模块下"""
         url = f'/api/ui-automation/modules/{self.root1.id}/move/'
         data = {
             'target_id': self.child1_1_1.id,
-            'drop_position': 0,
+            'drop_position': 0
         }
-
+        
         response = self.client.post(url, data, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('无法移动模块到自身或其子模块下', response.data['error'])
+        self.assertIn("无法移动模块到自身或其子模块下", response.data['error'])
 
     def test_move_api_depth_limit_protection(self):
-        child4 = UiModule.objects.create(
-            project=self.project,
-            name='Child 4',
-            parent=self.child1_1_1,
-            creator=self.user,
-        )
-        UiModule.objects.create(
-            project=self.project,
-            name='Child 5',
-            parent=child4,
-            creator=self.user,
-        )
-
+        """测试5级深度保护"""
+        child4 = UiModule.objects.create(project=self.project, name='Child 4', parent=self.child1_1_1, creator=self.user) # level 4
+        child5 = UiModule.objects.create(project=self.project, name='Child 5', parent=child4, creator=self.user) # level 5
+        
         url = f'/api/ui-automation/modules/{self.root1.id}/move/'
         data = {
             'target_id': self.root2.id,
-            'drop_position': 0,
+            'drop_position': 0
         }
-
+        
         response = self.client.post(url, data, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('超过5级限制', response.data['error'])
+        self.assertIn("超过5级限制", response.data['error'])
 
 
 class UiStepBatchUpdatePreservesOverrideTests(TestCase):
@@ -569,3 +533,96 @@ class UiStepBatchUpdatePreservesOverrideTests(TestCase):
         self.assertEqual(self.case_step.case_sort, 1)
         self.assertEqual(self.other_case_step.case_sort, 0)
         self.assertEqual(self.case_step.case_data, expected_case_data)
+
+
+class UiDeletionRestrictionTests(TestCase):
+    """删除引用限制：删除顺序 测试用例 -> 步骤 -> 页面（元素）"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='restrict_tester', password='secret')
+        self.project = Project.objects.create(name='Deletion Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='Module D', creator=self.user)
+
+        self.page_a = UiPage.objects.create(project=self.project, module=self.module, name='Page A', creator=self.user)
+        self.element_a = UiElement.objects.create(
+            page=self.page_a, name='Element A', locator_type='css',
+            locator_value='#a', creator=self.user,
+        )
+        self.page_step_a = UiPageSteps.objects.create(
+            project=self.project, page=self.page_a, module=self.module, name='Step A', creator=self.user,
+        )
+        UiPageStepsDetailed.objects.create(
+            page_step=self.page_step_a, element=self.element_a, ope_key='click', step_sort=0,
+        )
+
+        # 跨页引用：页面 B 的元素被页面 A 下的另一个步骤引用
+        self.page_b = UiPage.objects.create(project=self.project, module=self.module, name='Page B', creator=self.user)
+        self.element_b = UiElement.objects.create(
+            page=self.page_b, name='Element B', locator_type='css',
+            locator_value='#b', creator=self.user,
+        )
+        self.page_step_a2 = UiPageSteps.objects.create(
+            project=self.project, page=self.page_a, module=self.module, name='Step A2', creator=self.user,
+        )
+        UiPageStepsDetailed.objects.create(
+            page_step=self.page_step_a2, element=self.element_b, ope_key='click', step_sort=0,
+        )
+
+        # 测试用例引用步骤 A
+        self.test_case = UiTestCase.objects.create(project=self.project, module=self.module, name='Case 1', creator=self.user)
+        self.case_step = UiCaseStepsDetailed.objects.create(
+            test_case=self.test_case, page_step=self.page_step_a, case_sort=0,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_delete_case_referenced_step_is_rejected(self):
+        response = self.client.delete(f'/api/ui-automation/page-steps/{self.page_step_a.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('步骤已被 1 个测试用例引用', response.data['error'])
+        self.assertTrue(UiPageSteps.objects.filter(id=self.page_step_a.id).exists())
+
+    def test_delete_unreferenced_step_succeeds(self):
+        page_c = UiPage.objects.create(project=self.project, module=self.module, name='Page C', creator=self.user)
+        page_step_c = UiPageSteps.objects.create(
+            project=self.project, page=page_c, module=self.module, name='Step C', creator=self.user,
+        )
+        response = self.client.delete(f'/api/ui-automation/page-steps/{page_step_c.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        self.assertFalse(UiPageSteps.objects.filter(id=page_step_c.id).exists())
+
+    def test_delete_page_with_steps_is_rejected(self):
+        response = self.client.delete(f'/api/ui-automation/pages/{self.page_a.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('页面下存在 2 个页面步骤', response.data['error'])
+        self.assertTrue(UiPage.objects.filter(id=self.page_a.id).exists())
+
+    def test_delete_page_with_cross_page_referenced_element_is_rejected(self):
+        # 页面 B 无步骤集合，但元素被页面 A 的步骤引用，仍不允许删除
+        response = self.client.delete(f'/api/ui-automation/pages/{self.page_b.id}/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('页面下的元素已被 1 个页面步骤引用', response.data['error'])
+        self.assertTrue(UiPage.objects.filter(id=self.page_b.id).exists())
+
+    def test_full_deletion_order_succeeds(self):
+        """按顺序删除：用例 -> 步骤 -> 页面，最终可全部删除"""
+        # 1. 删除用例步骤引用，再删除用例
+        response = self.client.delete(f'/api/ui-automation/case-steps/{self.case_step.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        response = self.client.delete(f'/api/ui-automation/testcases/{self.test_case.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+
+        # 2. 删除步骤（级联删除步骤详情）
+        response = self.client.delete(f'/api/ui-automation/page-steps/{self.page_step_a.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        response = self.client.delete(f'/api/ui-automation/page-steps/{self.page_step_a2.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+
+        # 3. 删除页面（级联删除元素）
+        response = self.client.delete(f'/api/ui-automation/pages/{self.page_a.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        response = self.client.delete(f'/api/ui-automation/pages/{self.page_b.id}/')
+        self.assertIn(response.status_code, (status.HTTP_200_OK, status.HTTP_204_NO_CONTENT))
+        self.assertFalse(UiPage.objects.filter(id__in=[self.page_a.id, self.page_b.id]).exists())

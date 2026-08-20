@@ -1,6 +1,6 @@
 import type { UserBrief } from './common';
 
-export type DatabaseType = 'mysql' | 'postgresql' | 'sqlite' | 'oracle' | 'sqlserver';
+export type DatabaseType = 'mysql' | 'postgresql' | 'oracle';
 
 export interface ApiDatabaseConfig {
   id: number;

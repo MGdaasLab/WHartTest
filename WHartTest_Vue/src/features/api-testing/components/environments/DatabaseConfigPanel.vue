@@ -16,7 +16,6 @@ import {
   type UpdateDatabaseConfigData,
   type TestConnectionData
 } from '../../services/databaseConfigService'
-import { toArray } from '../../services/responseHelpers'
 import {
   IconPlus,
   IconEdit,
@@ -29,7 +28,7 @@ import {
 
 const projectStore = useProjectStore()
 const themeStore = useThemeStore()
-const { isEnglish } = useAppI18n()
+const { isEnglish, tl } = useAppI18n()
 const isDarkTheme = computed(() => themeStore.isBlack)
 const databaseConfigs = ref<DatabaseConfig[]>([])
 const loading = ref(false)
@@ -57,6 +56,40 @@ const panelText = computed(() => isEnglish.value
       description: 'Description',
       noDatabaseConfigs: 'No database configs yet',
       noDatabaseDescription: 'Add database configs for use in test cases',
+      createModalTitle: 'Add Database Config',
+      editModalTitle: 'Edit Database Config',
+      create: 'Create',
+      save: 'Save',
+      cancel: 'Cancel',
+      configNameLabel: 'Config Name',
+      configNamePlaceholder: 'Enter config name, e.g. Development Database',
+      databaseTypeLabel: 'Database Type',
+      selectDatabaseType: 'Select a database type',
+      hostLabel: 'Host',
+      hostPlaceholder: 'e.g. localhost or 192.168.1.1',
+      portLabel: 'Port',
+      databaseNameLabel: 'Database Name',
+      databaseNamePlaceholder: 'Enter database name',
+      usernameLabel: 'Username',
+      usernamePlaceholder: 'Enter database username',
+      passwordLabel: 'Password',
+      passwordPlaceholder: 'Enter database password',
+      editPasswordLabel: 'Password (leave blank to keep the current password)',
+      descriptionPlaceholder: 'Enter description',
+      enableConfig: 'Enable this config',
+      fetchDatabaseConfigsFailed: 'Failed to load database configs',
+      createDatabaseConfigSuccess: 'Database config created successfully',
+      createDatabaseConfigFailed: 'Failed to create database config',
+      updateDatabaseConfigSuccess: 'Database config updated successfully',
+      updateDatabaseConfigFailed: 'Failed to update database config',
+      deleteDatabaseConfigSuccess: 'Database config deleted successfully',
+      deleteDatabaseConfigFailed: 'Failed to delete database config',
+      testConnectionSuccess: 'Database connection test succeeded',
+      testConnectionFailed: 'Database connection test failed',
+      connectionFailed: (detail: string) => `Database connection failed: ${detail}`,
+      confirmDeleteTitle: 'Confirm deletion',
+      confirmDeleteContent: (name: string) => `Delete database config "${name}"?`,
+      confirmDeleteAction: 'Delete',
     }
   : {
       infoLine1: '数据库配置用于存储项目中使用的数据库连接信息',
@@ -74,7 +107,45 @@ const panelText = computed(() => isEnglish.value
       description: '描述',
       noDatabaseConfigs: '暂无数据库配置',
       noDatabaseDescription: '您可以添加数据库配置，在测试用例中使用这些数据库连接',
+      createModalTitle: '添加数据库配置',
+      editModalTitle: '编辑数据库配置',
+      create: '创建',
+      save: '保存',
+      cancel: '取消',
+      configNameLabel: '配置名称',
+      configNamePlaceholder: '请输入配置名称，如：开发环境数据库',
+      databaseTypeLabel: '数据库类型',
+      selectDatabaseType: '请选择数据库类型',
+      hostLabel: '主机地址',
+      hostPlaceholder: '如：localhost 或 192.168.1.1',
+      portLabel: '端口',
+      databaseNameLabel: '数据库名称',
+      databaseNamePlaceholder: '请输入数据库名称',
+      usernameLabel: '用户名',
+      usernamePlaceholder: '请输入数据库用户名',
+      passwordLabel: '密码',
+      passwordPlaceholder: '请输入数据库密码',
+      editPasswordLabel: '密码（不填则保持原密码）',
+      descriptionPlaceholder: '请输入描述信息',
+      enableConfig: '启用该配置',
+      fetchDatabaseConfigsFailed: '获取数据库配置列表失败',
+      createDatabaseConfigSuccess: '创建数据库配置成功',
+      createDatabaseConfigFailed: '创建数据库配置失败',
+      updateDatabaseConfigSuccess: '更新数据库配置成功',
+      updateDatabaseConfigFailed: '更新数据库配置失败',
+      deleteDatabaseConfigSuccess: '删除数据库配置成功',
+      deleteDatabaseConfigFailed: '删除数据库配置失败',
+      testConnectionSuccess: '数据库连接测试成功',
+      testConnectionFailed: '数据库连接测试失败',
+      connectionFailed: (detail: string) => `数据库连接失败: ${detail}`,
+      confirmDeleteTitle: '确认删除',
+      confirmDeleteContent: (name: string) => `确定要删除数据库配置 "${name}" 吗？`,
+      confirmDeleteAction: '删除',
     }
+)
+
+const translateErrorMessage = (message: unknown) => (
+  typeof message === 'string' && message.trim() ? tl(message) : null
 )
 
 // 表单数据
@@ -213,6 +284,16 @@ const applyCalculatedWidths = () => {
         valueEl.style.maxWidth = `${sizes.expectedValueWidth}px`
         valueEl.style.minWidth = `0px`
       }
+      
+      // 类型标签自适应：按标签内容实际宽度撑开类型列，保证完整包裹数据库类型文字
+      const card = configCardRef.value[index]
+      const tag = card?.querySelector('.type-tag')
+      const typeCol = card?.querySelector('.col-type')
+      if (tag && typeCol) {
+        // offsetWidth 含 padding；scrollWidth 为内容宽度，取较大者保证完整包裹类型文字
+        const tagWidth = Math.max(tag.offsetWidth, tag.scrollWidth + 12) // 12px = 标签左右 padding
+        typeCol.style.minWidth = `${tagWidth + 8}px` // 8px = 列右侧间距
+      }
     })
   })
 }
@@ -259,12 +340,31 @@ const fetchDatabaseConfigs = async () => {
     loading.value = true
     const response = await getDatabaseConfigs(Number(projectStore.currentProjectId))
     console.log('数据库配置返回数据:', response)
-    databaseConfigs.value = toArray<DatabaseConfig>(response.data?.results ?? response.data)
+    
+    // 修复：正确处理分页格式的返回数据
+    if (response.data && Array.isArray(response.data.results)) {
+      // 常见的分页格式 { count, next, previous, results: [] }
+      databaseConfigs.value = response.data.results
+    } else if (response.data && Array.isArray(response.data.data)) {
+      // 如果返回的是 { data: [] } 格式
+      databaseConfigs.value = response.data.data
+    } else if (Array.isArray(response.data)) {
+      // 如果直接返回数组
+      databaseConfigs.value = response.data
+    } else {
+      // 其他情况，确保是空数组
+      console.warn('获取数据库配置返回格式异常:', response)
+      databaseConfigs.value = []
+    }
     
     console.log('处理后的数据库配置列表:', databaseConfigs.value)
   } catch (error) {
     console.error('获取数据库配置列表失败:', error)
-    Message.error('获取数据库配置列表失败')
+    Message.error(
+      translateErrorMessage((error as any)?.response?.data?.message)
+      || translateErrorMessage((error as Error)?.message)
+      || panelText.value.fetchDatabaseConfigsFailed
+    )
     databaseConfigs.value = [] // 确保在出错时是空数组
   } finally {
     loading.value = false
@@ -309,18 +409,16 @@ const submitCreate = async () => {
     formLoading.value = true
     const response = await createDatabaseConfig(formData.value)
     console.log('创建数据库配置返回:', response)
-    Message.success('创建数据库配置成功')
+    Message.success(panelText.value.createDatabaseConfigSuccess)
     showCreateModal.value = false
     await fetchDatabaseConfigs()
   } catch (error: any) {
     console.error('创建数据库配置失败:', error)
-    let errorMessage = '创建数据库配置失败'
-    if (error.response?.data?.message) {
-      errorMessage = error.response.data.message
-    } else if (error.message) {
-      errorMessage = error.message
-    }
-    Message.error(errorMessage)
+    Message.error(
+      translateErrorMessage(error.response?.data?.message)
+      || translateErrorMessage(error.message)
+      || panelText.value.createDatabaseConfigFailed
+    )
   } finally {
     formLoading.value = false
   }
@@ -376,18 +474,16 @@ const submitEdit = async () => {
     
     const response = await updateDatabaseConfig(currentConfig.value.id, updateData)
     console.log('更新数据库配置返回:', response)
-    Message.success('更新数据库配置成功')
+    Message.success(panelText.value.updateDatabaseConfigSuccess)
     showEditModal.value = false
     await fetchDatabaseConfigs()
   } catch (error: any) {
     console.error('更新数据库配置失败:', error)
-    let errorMessage = '更新数据库配置失败'
-    if (error.response?.data?.message) {
-      errorMessage = error.response.data.message
-    } else if (error.message) {
-      errorMessage = error.message
-    }
-    Message.error(errorMessage)
+    Message.error(
+      translateErrorMessage(error.response?.data?.message)
+      || translateErrorMessage(error.message)
+      || panelText.value.updateDatabaseConfigFailed
+    )
   } finally {
     formLoading.value = false
   }
@@ -398,26 +494,24 @@ const handleDelete = (config: DatabaseConfig) => {
   activeButtonType.value = 'delete'
   activeConfigId.value = config.id
   Modal.warning({
-    title: '确认删除',
-    content: `确定要删除数据库配置 "${config.name}" 吗？`,
-    okText: '删除',
-    cancelText: '取消',
+    title: panelText.value.confirmDeleteTitle,
+    content: panelText.value.confirmDeleteContent(config.name),
+    okText: panelText.value.confirmDeleteAction,
+    cancelText: panelText.value.cancel,
     onOk: async () => {
       try {
         loading.value = true
         const response = await deleteDatabaseConfig(config.id)
         console.log('删除数据库配置返回:', response)
-        Message.success('删除数据库配置成功')
+        Message.success(panelText.value.deleteDatabaseConfigSuccess)
         await fetchDatabaseConfigs()
       } catch (error: any) {
         console.error('删除数据库配置失败:', error)
-        let errorMessage = '删除数据库配置失败'
-        if (error.response?.data?.message) {
-          errorMessage = error.response.data.message
-        } else if (error.message) {
-          errorMessage = error.message
-        }
-        Message.error(errorMessage)
+        Message.error(
+          translateErrorMessage(error.response?.data?.message)
+          || translateErrorMessage(error.message)
+          || panelText.value.deleteDatabaseConfigFailed
+        )
       } finally {
         loading.value = false
       }
@@ -432,21 +526,19 @@ const handleTestConnection = async (config: DatabaseConfig) => {
   try {
     testingConnection.value = true
     const response = await testDatabaseConnection(config.id)
-    Message.success('数据库连接测试成功')
+    Message.success(panelText.value.testConnectionSuccess)
     console.log('测试结果:', response.data.test_result)
   } catch (error: any) {
     console.error('数据库连接测试失败:', error)
-    // 从错误信息中提取实际的数据库错误
-    let errorMessage = '数据库连接测试失败'
     if (error.response?.data?.errors?.connection) {
-      // 提取实际的数据库错误信息
-      errorMessage = `数据库连接失败: ${error.response.data.errors.connection[0]}`
-    } else if (error.response?.data?.message) {
-      errorMessage = error.response.data.message
-    } else if (error.message) {
-      errorMessage = error.message
+      Message.error(panelText.value.connectionFailed(tl(error.response.data.errors.connection[0])))
+      return
     }
-    Message.error(errorMessage)
+    Message.error(
+      translateErrorMessage(error.response?.data?.message)
+      || translateErrorMessage(error.message)
+      || panelText.value.testConnectionFailed
+    )
   } finally {
     testingConnection.value = false
     setTimeout(() => {
@@ -471,31 +563,27 @@ const handleTestFormConnection = async () => {
   try {
     testingConnection.value = true
     const response = await testConnection(testConnectionForm.value)
-    Message.success('数据库连接测试成功')
+    Message.success(panelText.value.testConnectionSuccess)
     console.log('测试结果:', response.data.test_result)
   } catch (error: any) {
     console.error('数据库连接测试失败:', error)
-    // 从错误信息中提取实际的数据库错误
-    let errorMessage = '数据库连接测试失败'
     if (error.response?.data?.errors?.connection) {
-      // 提取实际的数据库错误信息，去掉状态码前缀
       const connectionError = error.response.data.errors.connection[0]
-      // 如果是MySQL错误格式，尝试提取更友好的错误信息
       const mysqlErrorMatch = connectionError.match(/\((\d+),\s*"(.+)"\)/)
       if (mysqlErrorMatch) {
-        errorMessage = `数据库连接失败: ${mysqlErrorMatch[2]}`
+        Message.error(panelText.value.connectionFailed(tl(mysqlErrorMatch[2])))
       } else {
-        errorMessage = `数据库连接失败: ${connectionError}`
+        Message.error(panelText.value.connectionFailed(tl(connectionError)))
       }
-    } else if (error.response?.data?.message) {
-      // 如果消息中包含状态码，尝试只展示实际错误信息
+      return
+    }
+    if (error.response?.data?.message) {
       const message = error.response.data.message
       const statusCodeMatch = message.match(/^\d+,\s*(.+)$/)
-      errorMessage = statusCodeMatch ? statusCodeMatch[1] : message
-    } else if (error.message) {
-      errorMessage = error.message
+      Message.error(translateErrorMessage(statusCodeMatch ? statusCodeMatch[1] : message) || panelText.value.testConnectionFailed)
+      return
     }
-    Message.error(errorMessage)
+    Message.error(translateErrorMessage(error.message) || panelText.value.testConnectionFailed)
   } finally {
     testingConnection.value = false
   }
@@ -507,7 +595,6 @@ const updateDefaultPort = () => {
     mysql: 3306,
     postgresql: 5432,
     oracle: 1521,
-    sqlserver: 1433
   }
   
   if (formData.value.type && portMap[formData.value.type]) {
@@ -515,10 +602,10 @@ const updateDefaultPort = () => {
   }
 }
 
-// 监听数据库类型变化
-watch(() => formData.value.type, () => {
+// 仅在用户主动切换数据库类型时更新默认端口（编辑加载记录时不触发，避免覆盖自定义端口）
+const handleTypeChange = () => {
   updateDefaultPort()
-})
+}
 
 onMounted(() => {
   fetchDatabaseConfigs().then(() => {
@@ -643,7 +730,7 @@ defineExpose({
                   </div>
                   
                   <!-- 第二列：类型 (减小宽度) -->
-                  <div class="overflow-hidden whitespace-nowrap col-type">
+                  <div class="overflow-visible whitespace-nowrap col-type">
                     <span class="type-tag">{{ config.type }}</span>
                   </div>
                   
@@ -744,74 +831,72 @@ defineExpose({
     <!-- 创建数据库配置弹窗 -->
     <a-modal
       v-model:visible="showCreateModal"
-      title="添加数据库配置"
+      :title="panelText.createModalTitle"
       @cancel="showCreateModal = false"
       @ok="submitCreate"
       :ok-loading="formLoading"
-      ok-text="创建"
-      cancel-text="取消"
+      :ok-text="panelText.create"
+      :cancel-text="panelText.cancel"
       :mask-closable="false"
       :unmount-on-close="false"
       modal-class="config-modal"
       :width="650"
     >
       <a-form :model="formData" layout="vertical">
-        <a-form-item field="name" label="配置名称" required>
-          <a-input v-model="formData.name" placeholder="请输入配置名称，如：开发环境数据库" allow-clear />
+        <a-form-item field="name" :label="panelText.configNameLabel" required>
+          <a-input v-model="formData.name" :placeholder="panelText.configNamePlaceholder" allow-clear />
         </a-form-item>
         
-        <a-form-item field="type" label="数据库类型" required>
-          <a-select v-model="formData.type" placeholder="请选择数据库类型">
+        <a-form-item field="type" :label="panelText.databaseTypeLabel" required>
+          <a-select v-model="formData.type" :placeholder="panelText.selectDatabaseType" @change="handleTypeChange">
             <a-option value="mysql">MySQL</a-option>
             <a-option value="postgresql">PostgreSQL</a-option>
-            <a-option value="sqlite">SQLite</a-option>
             <a-option value="oracle">Oracle</a-option>
-            <a-option value="sqlserver">SQL Server</a-option>
           </a-select>
         </a-form-item>
         
         <div class="grid grid-cols-2 gap-4">
-          <a-form-item field="host" label="主机地址" required>
-            <a-input v-model="formData.host" placeholder="如：localhost 或 192.168.1.1" allow-clear />
+          <a-form-item field="host" :label="panelText.hostLabel" required>
+            <a-input v-model="formData.host" :placeholder="panelText.hostPlaceholder" allow-clear />
           </a-form-item>
           
-          <a-form-item field="port" label="端口">
-            <a-input-number v-model="formData.port" placeholder="端口" :min="1" :max="65535" />
+          <a-form-item field="port" :label="panelText.portLabel">
+            <a-input-number v-model="formData.port" :placeholder="panelText.portLabel" :min="1" :max="65535" />
           </a-form-item>
         </div>
         
-        <a-form-item field="database" label="数据库名称" required>
-          <a-input v-model="formData.database" placeholder="请输入数据库名称" allow-clear />
+        <a-form-item field="database" :label="panelText.databaseNameLabel" required>
+          <a-input v-model="formData.database" :placeholder="panelText.databaseNamePlaceholder" allow-clear />
         </a-form-item>
         
         <div class="grid grid-cols-2 gap-4">
-          <a-form-item field="username" label="用户名" required>
-            <a-input v-model="formData.username" placeholder="请输入数据库用户名" allow-clear />
+          <a-form-item field="username" :label="panelText.usernameLabel" required>
+            <a-input v-model="formData.username" :placeholder="panelText.usernamePlaceholder" allow-clear />
           </a-form-item>
           
-          <a-form-item field="password" label="密码" required>
+          <a-form-item field="password" :label="panelText.passwordLabel" required>
             <a-input-password
               v-model="formData.password"
-              placeholder="请输入数据库密码"
+              :placeholder="panelText.passwordPlaceholder"
               allow-clear
               :hide-footer="false"
             />
           </a-form-item>
         </div>
         
-        <a-form-item field="description" label="描述">
-          <a-textarea v-model="formData.description" placeholder="请输入描述信息" />
+        <a-form-item field="description" :label="panelText.description">
+          <a-textarea v-model="formData.description" :placeholder="panelText.descriptionPlaceholder" />
         </a-form-item>
         
         <a-form-item field="is_active">
           <a-space>
-            <a-checkbox v-model="formData.is_active">启用该配置</a-checkbox>
+            <a-checkbox v-model="formData.is_active">{{ panelText.enableConfig }}</a-checkbox>
           </a-space>
         </a-form-item>
         
         <div class="text-right">
           <a-button type="text" @click="handleTestFormConnection" :loading="testingConnection">
-            测试连接
+            {{ panelText.testConnection }}
           </a-button>
         </div>
       </a-form>
@@ -820,74 +905,72 @@ defineExpose({
     <!-- 编辑数据库配置弹窗 -->
     <a-modal
       v-model:visible="showEditModal"
-      title="编辑数据库配置"
+      :title="panelText.editModalTitle"
       @cancel="showEditModal = false"
       @ok="submitEdit"
       :ok-loading="formLoading"
-      ok-text="保存"
-      cancel-text="取消"
+      :ok-text="panelText.save"
+      :cancel-text="panelText.cancel"
       :mask-closable="false"
       :unmount-on-close="false"
       modal-class="config-modal"
       :width="650"
     >
       <a-form :model="formData" layout="vertical">
-        <a-form-item field="name" label="配置名称" required>
-          <a-input v-model="formData.name" placeholder="请输入配置名称，如：开发环境数据库" allow-clear />
+        <a-form-item field="name" :label="panelText.configNameLabel" required>
+          <a-input v-model="formData.name" :placeholder="panelText.configNamePlaceholder" allow-clear />
         </a-form-item>
         
-        <a-form-item field="type" label="数据库类型" required>
-          <a-select v-model="formData.type" placeholder="请选择数据库类型">
+        <a-form-item field="type" :label="panelText.databaseTypeLabel" required>
+          <a-select v-model="formData.type" :placeholder="panelText.selectDatabaseType" @change="handleTypeChange">
             <a-option value="mysql">MySQL</a-option>
             <a-option value="postgresql">PostgreSQL</a-option>
-            <a-option value="sqlite">SQLite</a-option>
             <a-option value="oracle">Oracle</a-option>
-            <a-option value="sqlserver">SQL Server</a-option>
           </a-select>
         </a-form-item>
         
         <div class="grid grid-cols-2 gap-4">
-          <a-form-item field="host" label="主机地址" required>
-            <a-input v-model="formData.host" placeholder="如：localhost 或 192.168.1.1" allow-clear />
+          <a-form-item field="host" :label="panelText.hostLabel" required>
+            <a-input v-model="formData.host" :placeholder="panelText.hostPlaceholder" allow-clear />
           </a-form-item>
           
-          <a-form-item field="port" label="端口">
-            <a-input-number v-model="formData.port" placeholder="端口" :min="1" :max="65535" />
+          <a-form-item field="port" :label="panelText.portLabel">
+            <a-input-number v-model="formData.port" :placeholder="panelText.portLabel" :min="1" :max="65535" />
           </a-form-item>
         </div>
         
-        <a-form-item field="database" label="数据库名称" required>
-          <a-input v-model="formData.database" placeholder="请输入数据库名称" allow-clear />
+        <a-form-item field="database" :label="panelText.databaseNameLabel" required>
+          <a-input v-model="formData.database" :placeholder="panelText.databaseNamePlaceholder" allow-clear />
         </a-form-item>
         
         <div class="grid grid-cols-2 gap-4">
-          <a-form-item field="username" label="用户名" required>
-            <a-input v-model="formData.username" placeholder="请输入数据库用户名" allow-clear />
+          <a-form-item field="username" :label="panelText.usernameLabel" required>
+            <a-input v-model="formData.username" :placeholder="panelText.usernamePlaceholder" allow-clear />
           </a-form-item>
           
-          <a-form-item field="password" label="密码（不填则保持原密码）">
+          <a-form-item field="password" :label="panelText.editPasswordLabel">
             <a-input-password
               v-model="formData.password"
-              placeholder="请输入数据库密码"
+              :placeholder="panelText.passwordPlaceholder"
               allow-clear
               :hide-footer="false"
             />
           </a-form-item>
         </div>
         
-        <a-form-item field="description" label="描述">
-          <a-textarea v-model="formData.description" placeholder="请输入描述信息" />
+        <a-form-item field="description" :label="panelText.description">
+          <a-textarea v-model="formData.description" :placeholder="panelText.descriptionPlaceholder" />
         </a-form-item>
         
         <a-form-item field="is_active">
           <a-space>
-            <a-checkbox v-model="formData.is_active">启用该配置</a-checkbox>
+            <a-checkbox v-model="formData.is_active">{{ panelText.enableConfig }}</a-checkbox>
           </a-space>
         </a-form-item>
         
         <div class="text-right">
           <a-button type="text" @click="handleTestFormConnection" :loading="testingConnection">
-            测试连接
+            {{ panelText.testConnection }}
           </a-button>
         </div>
       </a-form>
@@ -989,21 +1072,37 @@ defineExpose({
   
   /* 调整列宽度比例和间距 */
   .custom-grid {
-    grid-template-columns: 120px 70px 1fr 1fr 1fr !important;
+    /* 名称/类型列 auto 自适应（类型列宽度由 JS 按标签内容动态撑开） */
+    grid-template-columns: auto auto minmax(140px, 1fr) minmax(0, 1fr) minmax(0, 1fr) !important;
     column-gap: 0 !important;
+  }
+  
+  /* 数据库/用户名列允许收缩（配合省略号截断），避免挤压名称与类型列 */
+  .custom-grid > div:nth-child(4),
+  .custom-grid > div:nth-child(5) {
+    min-width: 0 !important;
   }
   
   .col-name {
     min-width: 0 !important;
-    max-width: 120px !important;
+    max-width: none !important;
     padding-right: 0 !important;
     margin-right: 0 !important;
+    /* 名称过长时截断为省略号，避免溢出覆盖类型标签 */
+    overflow: hidden !important;
+  }
+  
+  .col-name .config-name {
+    display: inline-block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    /* 不设置 max-width: 100%（会干扰 grid 轨道 max-content 计算） */
   }
   
   .col-type {
-    width: 70px !important;
-    min-width: 70px !important;
-    max-width: 70px !important;
+    width: auto !important;
+    max-width: none !important;
     padding-left: 0 !important;
     padding-right: 8px !important;
     margin-left: 0 !important;
@@ -1020,8 +1119,8 @@ defineExpose({
     align-items: center;
     width: 100%;
     
-    /* 图标容器固定宽度 */
-    > :first-child {
+    /* 图标容器固定宽度（用精确类名，避免误匹配其他 first-child 元素） */
+    .config-icon-shell {
       flex: 0 0 auto;
       width: 32px; /* 确保图标容器有固定宽度 */
     }
@@ -1043,7 +1142,7 @@ defineExpose({
       /* 五列不等宽网格布局 */
       .grid.grid-cols-5 {
         display: grid;
-        grid-template-columns: 120px 70px 1fr 1fr 1fr;
+        grid-template-columns: auto auto minmax(140px, 1fr) minmax(0, 1fr) minmax(0, 1fr);
         gap: 0.5rem;
         width: 100%;
         
@@ -1104,8 +1203,8 @@ defineExpose({
       }
     }
     
-    /* 按钮组固定宽度 */
-    > :last-child {
+    /* 按钮组固定宽度（用精确类名，避免误匹配其他 last-child 元素） */
+    .button-group {
       flex: 0 0 auto;
       white-space: nowrap;
     }
@@ -1277,6 +1376,9 @@ defineExpose({
   justify-content: center;
   letter-spacing: 0.05em;
   height: 18px;
+  /* 强制标签按内容宽度展开，完整包裹数据库类型文字 */
+  width: max-content;
+  flex-shrink: 0;
 }
 
 /* 图标大小和对齐方式调整 */
