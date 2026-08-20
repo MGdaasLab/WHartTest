@@ -3,7 +3,6 @@ import { computed, ref, watch, inject } from 'vue'
 import type { Ref } from 'vue'
 import type { ApiModule, ApiInterface } from '../../services/interfaceService'
 import { getInterfaces, getInterfaceById } from '../../services/interfaceService'
-import { toArray } from '../../services/responseHelpers'
 import {
   IconPlus,
   IconDelete,
@@ -50,10 +49,6 @@ const emit = defineEmits<{
 const interfaces = ref<ApiInterface[]>([])
 const interfaceLoading = ref(false)
 
-const toInterfaceList = (results: unknown): ApiInterface[] => {
-  return toArray<ApiInterface>(results)
-}
-
 // 获取接口列表
 const fetchInterfaces = async (moduleId: number) => {
   try {
@@ -63,7 +58,7 @@ const fetchInterfaces = async (moduleId: number) => {
       project_id: props.module.project,
       page_size: 1000
     })
-    interfaces.value = toInterfaceList(response.data?.results ?? response.data)
+    interfaces.value = response.data?.results || []
     console.log(`模块${props.module.name}获取到${interfaces.value.length}个接口`)
   } catch (error: any) {
     console.error('获取接口列表失败:', error)
@@ -94,11 +89,12 @@ const isSelected = computed(() => {
 })
 
 // 监听展开状态变化（仅在详情模式下加载接口）
+// immediate：挂载时若模块已处于展开态，也要立即拉取该模块下的接口，避免展开态下接口缺失
 watch(() => isExpanded.value, (newVal) => {
   if (newVal && props.module.id && props.displayMode === 'detail') {
     fetchInterfaces(props.module.id)
   }
-})
+}, { immediate: true })
 
 // 记录已加载详情的接口ID
 const loadedInterfaceIds = ref<Set<number>>(new Set())
@@ -147,9 +143,10 @@ const handleInterfaceSelect = async (api: ApiInterface) => {
 }
 
 const handleModuleSelect = () => {
-  if (props.module.id && props.displayMode === 'detail') {
-    fetchInterfaces(props.module.id)
-  }
+  // 切换展开/收起状态
+  emit('toggle-expand', props.module.id)
+
+  // 触发选择事件
   emit('select', props.module)
 }
 
@@ -274,10 +271,11 @@ const handleDrop = async (e: DragEvent) => {
         <div class="flex items-center gap-2">
           <div class="w-4 flex items-center justify-center">
             <a-button
-              v-if="(displayMode === 'detail' && (module.children?.length || interfaces.length)) || (displayMode === 'list' && module.children?.length)"
               type="text"
               size="mini"
               class="module-tree__toggle-btn !w-4 !h-4 !p-0 !min-w-0"
+              :disabled="displayMode === 'detail' ? !module.children?.length && !interfaces.length : !module.children?.length"
+              :class="{ 'module-tree__toggle-btn--disabled': displayMode === 'detail' ? !module.children?.length && !interfaces.length : !module.children?.length }"
               @click.stop="emit('toggle-expand', module.id)"
             >
               <template #icon>
@@ -285,7 +283,6 @@ const handleDrop = async (e: DragEvent) => {
                 <icon-down v-else class="!w-3 !h-3" />
               </template>
             </a-button>
-            <div v-else class="w-4"></div>
           </div>
           <a-spin :loading="interfaceLoading" dot>
             <span class="module-tree__name">{{ module.name }}</span>
@@ -432,6 +429,11 @@ const handleDrop = async (e: DragEvent) => {
 .module-tree__toggle-btn:hover,
 .module-tree__action-btn:hover {
   color: var(--module-action-hover) !important;
+}
+
+.module-tree__toggle-btn--disabled {
+  opacity: 0.3;
+  cursor: not-allowed !important;
 }
 
 .module-tree__interface-item {

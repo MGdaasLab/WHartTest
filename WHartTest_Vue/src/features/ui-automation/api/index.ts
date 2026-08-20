@@ -118,7 +118,7 @@ export const pageStepsDetailedApi = {
 
   delete: (id: number) => request.delete(`${BASE_URL}/page-steps-detailed/${id}/`),
 
-  batchUpdate: (pageStepId: number, steps: Omit<UiPageStepsDetailed, 'id' | 'page_step' | 'created_at' | 'updated_at'>[]) =>
+  batchUpdate: (pageStepId: number, steps: Omit<UiPageStepsDetailed, 'page_step' | 'created_at' | 'updated_at'>[]) =>
     request.post(`${BASE_URL}/page-steps-detailed/batch_update/`, { page_step: pageStepId, steps }),
 }
 
@@ -157,7 +157,7 @@ export const caseStepsApi = {
 
   delete: (id: number) => request.delete(`${BASE_URL}/case-steps/${id}/`),
 
-  batchUpdate: (testCaseId: number, steps: Omit<UiCaseStepsDetailed, 'id' | 'test_case' | 'status' | 'error_message' | 'result_data' | 'created_at' | 'updated_at'>[]) =>
+  batchUpdate: (testCaseId: number, steps: Omit<UiCaseStepsDetailed, 'test_case' | 'status' | 'error_message' | 'result_data' | 'created_at' | 'updated_at'>[]) =>
     request.post(`${BASE_URL}/case-steps/batch_update/`, { test_case: testCaseId, steps }),
 }
 
@@ -229,7 +229,52 @@ export interface ActuatorInfo {
   debug: boolean
   browser_type: string
   headless: boolean
+  supported_browsers?: string[]
+  default_browser?: string
+  supports_headed?: boolean
+  supports_headless?: boolean
+  max_slots?: number
+  busy_slots?: number
+  version?: string
+  os?: string
+  labels?: string[]
   connected_at: string
+  // 运行配置（编辑弹窗预填）
+  persistent?: boolean
+  launch_timeout?: number
+  action_timeout?: number
+  retry_count?: number
+  step_interval?: number
+  log_level?: string
+  trace_enabled?: boolean
+  trace_screenshots?: boolean
+  trace_snapshots?: boolean
+  trace_sources?: boolean
+  // 无头模式与视口（执行器维护）
+  viewport_width?: number
+  viewport_height?: number
+  // 是否容器（docker）部署
+  in_container?: boolean
+}
+
+/** 执行器可编辑配置 */
+export interface ActuatorConfigPayload {
+  name?: string
+  browser_type?: string
+  persistent?: boolean
+  launch_timeout?: number
+  action_timeout?: number
+  retry_count?: number
+  step_interval?: number
+  max_concurrent?: number
+  log_level?: string
+  trace_enabled?: boolean
+  trace_screenshots?: boolean
+  trace_snapshots?: boolean
+  trace_sources?: boolean
+  headless?: boolean
+  viewport_width?: number
+  viewport_height?: number
 }
 
 export interface ActuatorStatus {
@@ -243,6 +288,12 @@ export const actuatorApi = {
     request.get<{ count: number; items: ActuatorInfo[] }>(`${BASE_URL}/actuators/list_actuators/`),
 
   status: () => request.get<ActuatorStatus>(`${BASE_URL}/actuators/status/`),
+
+  updateConfig: (actuatorId: string, config: ActuatorConfigPayload) =>
+    request.post<ActuatorConfigPayload>(`${BASE_URL}/actuators/config/`, {
+      actuator_id: actuatorId,
+      config,
+    }),
 }
 
 

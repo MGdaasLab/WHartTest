@@ -456,19 +456,12 @@ class UiPublicData(models.Model):
 
 class UiEnvironmentConfig(models.Model):
     """环境配置"""
-    BROWSER_CHOICES = [('chromium', 'Chromium'), ('firefox', 'Firefox'), ('webkit', 'WebKit')]
-
     project = models.ForeignKey(
         Project, on_delete=models.CASCADE,
         related_name='ui_env_configs', verbose_name=_('所属项目')
     )
     name = models.CharField(_('环境名称'), max_length=64)
     base_url = models.URLField(_('基础 URL'), blank=True, null=True)
-    browser = models.CharField(_('浏览器'), max_length=20, choices=BROWSER_CHOICES, default='chromium')
-    headless = models.BooleanField(_('无头模式'), default=True)
-    viewport_width = models.IntegerField(_('视口宽度'), default=1280)
-    viewport_height = models.IntegerField(_('视口高度'), default=720)
-    timeout = models.IntegerField(_('默认超时（毫秒）'), default=30000)
     db_c_status = models.BooleanField(_('数据库新增状态'), default=False)
     db_rud_status = models.BooleanField(_('数据库查改删状态'), default=False)
     DB_TYPE_CHOICES = [('mysql', 'MySQL')]

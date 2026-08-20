@@ -166,14 +166,17 @@ class InterfaceRunner(HttpRunner):
             self._init_http_step()
 
     def _add_hooks_to_step(self, step_obj, hooks, hook_type='setup'):
-        """Add setup or teardown hooks to a step object."""
+        """Add setup or teardown hooks to a step object.
+
+        Hooks are passed through unchanged: dict hooks (e.g. SQL controllers)
+        stay as dicts so call_hooks can route them to execute_sql_hook, while
+        string hooks (e.g. function IDs / ${func()}) stay as strings. This
+        matches the testcase runner behaviour and avoids serialising SQL hooks
+        to JSON strings, which previously prevented them from ever executing.
+        """
         method_name = 'setup_hook' if hook_type == 'setup' else 'teardown_hook'
         for hook in hooks:
-            if isinstance(hook, dict):
-                hook_json = json.dumps(hook, ensure_ascii=False)
-                step_obj = getattr(step_obj, method_name)(hook_json)
-            else:
-                step_obj = getattr(step_obj, method_name)(hook)
+            step_obj = getattr(step_obj, method_name)(hook)
         return step_obj
 
     def _init_http_step(self):
@@ -362,6 +365,18 @@ class InterfaceRunner(HttpRunner):
 
         sql_method = self.interface_data.get('method', 'fetchone').lower()
         sql = self.interface_data.get('sql', '')
+        db_config = self.interface_data.get('db_config') or {}
+
+        if db_config:
+            step_obj = step_obj.with_db_config(
+                db_type=db_config.get('db_type'),
+                user=db_config.get('user'),
+                password=db_config.get('password'),
+                ip=db_config.get('ip'),
+                port=db_config.get('port'),
+                database=db_config.get('database'),
+                psm=db_config.get('psm'),
+            )
 
         # Setup hooks
         if self.interface_data.get('setup_hooks'):
@@ -491,7 +506,7 @@ class InterfaceRunner(HttpRunner):
                 db_config = environment['db_config']
                 if 'db_config' not in self.interface_data:
                     self.interface_data['db_config'] = {}
-                for key in ['user', 'password', 'ip', 'port', 'database']:
+                for key in ['db_type', 'user', 'password', 'ip', 'port', 'database', 'psm']:
                     if key in db_config and db_config[key]:
                         self.interface_data['db_config'][key] = db_config[key]
         except Exception as e:

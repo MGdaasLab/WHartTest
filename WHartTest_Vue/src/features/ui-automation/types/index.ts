@@ -351,11 +351,6 @@ export interface UiEnvironmentConfig extends TimeStampFields {
   project: number
   name: string
   base_url?: string
-  browser: BrowserType
-  headless: boolean
-  viewport_width: number
-  viewport_height: number
-  timeout: number
   db_c_status: boolean
   db_rud_status: boolean
   db_type: 'mysql'
