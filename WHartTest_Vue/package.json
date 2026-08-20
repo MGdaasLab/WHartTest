@@ -3,7 +3,7 @@
   "private": false,
   "version": "2.7.0",
   "type": "module",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "author": "WHartTest Team",
   "description": "A Vue.js based test automation management system",
   "keywords": [
