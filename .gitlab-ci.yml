@@ -1,0 +1,109 @@
+stages:
+  - install_deps
+  - scan
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+# 全局缓存
+cache:
+  paths:
+    - WHartTest_Django/.venv/
+    - WHartTest_Vue/node_modules/
+    - .scancode_venv/       # 缓存扫描工具环境，加速后续运行
+    - .cache/pip/
+  key: "${CI_COMMIT_REF_SLUG}"
+
+# ============================================
+# 1. 安装后端依赖
+# ============================================
+install_backend:
+  stage: install_deps
+  tags:
+    - wharttest
+  script:
+    - echo "Installing backend dependencies..."
+    - cd WHartTest_Django
+    - python3 -m venv .venv
+    - source .venv/bin/activate
+    - pip install -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+    - cd ..  # 👈 确保回到根目录，否则会影响后续步骤
+  artifacts:
+    paths:
+      - WHartTest_Django/.venv/
+    expire_in: 1 day
+  rules:
+    - when: always
+
+# ============================================
+# 2. 安装前端依赖
+# ============================================
+install_frontend:
+  stage: install_deps
+  tags:
+    - wharttest
+  script:
+    - echo "Installing frontend dependencies..."
+    - cd WHartTest_Vue
+    # 如果没有 package-lock.json，请把下一行改成 npm install
+    - npm ci --no-bin-links
+    - cd ..
+  artifacts:
+    paths:
+      - WHartTest_Vue/node_modules/
+    expire_in: 1 day
+  rules:
+    - when: always
+
+# ============================================
+# 3. ScanCode 代码扫描
+# ============================================
+scancode_scan:
+  stage: scan
+  tags:
+    - wharttest
+  timeout: 12 hours  # 👈 设置为2小时，防止下载大文件超时
+  before_script:
+    - echo "Preparing ScanCode environment..."
+    - |
+      if command -v python3.11 &> /dev/null; then
+        PYTHON_BIN=python3.11
+      else
+        echo "ERROR: python3.11 not found!"
+        exit 1
+      fi
+      echo "Using Python: $($PYTHON_BIN --version)"
+
+      if [ ! -d ".scancode_venv/bin" ]; then
+        echo "Creating new ScanCode venv..."
+        $PYTHON_BIN -m venv .scancode_venv
+        source .scancode_venv/bin/activate
+        # 【关键修改】升级 pip 并指定阿里云镜像源，解决下载超时问题
+        pip install --upgrade pip wheel setuptools -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+        # 安装 scancode-toolkit，同样使用镜像源
+        pip install --no-cache-dir scancode-toolkit -i https://mirrors.aliyun.com/pypi/simple/ --trusted-host mirrors.aliyun.com
+      else
+        echo "Restoring ScanCode venv from cache..."
+        source .scancode_venv/bin/activate
+      fi
+  script:
+    - echo "Running ScanCode scan..."
+    - mkdir -p scancode_reports
+    - scancode --csv scancode_reports/scancode_report_full.csv --license --copyright --package --processes 4 --ignore ".cache" --ignore "scancode_reports" --ignore ".scancode_venv" --ignore "*.pyc" --ignore "*.pyo" --ignore "__pycache__" --ignore "*.jpg" --ignore "*.jpeg" --ignore "*.png" --ignore "*.gif" --ignore "*.mp4" --ignore "*.mp3" --ignore "*.zip" --ignore "*.tar.gz" --ignore "*.log" --ignore "*.class" --ignore "*.jar" --ignore "*.war" --ignore "*.dll" --ignore "*.so" --ignore "*.exe" --ignore "*.bin" --ignore "*.dat" --ignore "*.db" --ignore "*.sqlite" --ignore "*.sqlite3" --ignore "*.woff" --ignore "*.woff2" --ignore "*.ttf" --ignore "*.eot" --ignore "*.svg" --ignore "*.ico" . || true
+    - echo "Filtering out allowed licenses..."
+    # 【修改】加上 set -e 和 set -x，强制显示脚本的执行过程，并在出错时立即停止
+    - set -x && set -e && /usr/bin/python3 filter_licenses.py
+
+  artifacts:
+    name: "scancode-report-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - scancode_reports/scancode_report_filtered.csv
+      - scancode_reports/scancode_report_full.csv
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+  needs:
+    - install_backend
+    - install_frontend
+  rules:
+    - when: always
