@@ -391,15 +391,15 @@ defineExpose({ getAssertRules })
 }
 
 :global(.arco-select-dropdown) {
-  background: #ffffff !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
+  background: var(--color-bg-popup, var(--color-bg-2)) !important;
+  border: 1px solid var(--color-border-2) !important;
   border-radius: 10px !important;
 
   .arco-select-option {
-    color: #334155 !important;
+    color: var(--color-text-1) !important;
 
     &:hover {
-      background: #f8fafc !important;
+      background: var(--color-fill-2) !important;
     }
 
     &.arco-select-option-active,
@@ -408,11 +408,6 @@ defineExpose({ getAssertRules })
       color: #2563eb !important;
     }
   }
-}
-
-:global(body.api-testing-theme .arco-select-dropdown) {
-  background: rgb(31, 41, 55) !important;
-  border-color: rgba(75, 85, 99, 0.4) !important;
 }
 
 :global(body.api-testing-theme .arco-select-dropdown .arco-select-option) {

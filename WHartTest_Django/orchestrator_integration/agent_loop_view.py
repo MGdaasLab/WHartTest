@@ -56,6 +56,7 @@ from langgraph_integration.views import (
     create_sse_data,
     get_effective_system_prompt_async,
     check_project_permission,
+    schedule_auto_summarize_session_title,
 )
 from projects.models import Project
 from prompts.models import UserPrompt
@@ -1441,16 +1442,13 @@ class AgentLoopStreamAPIView(View):
                 # AI 自动总结会话标题
                 if chat_session.title.startswith("新对话") and "llm" in locals() and llm:
                     try:
-                        from langgraph_integration.views import auto_summarize_session_title
-                        logger.info(f"AgentLoopStreamAPI: Triggering title auto-summarization for session {session_id}")
-                        import asyncio
-                        asyncio.create_task(
-                            auto_summarize_session_title(
-                                llm,
-                                chat_session,
-                                user_message,
-                            )
+                        scheduled = schedule_auto_summarize_session_title(
+                            llm,
+                            chat_session,
+                            user_message,
                         )
+                        if scheduled:
+                            logger.info(f"AgentLoopStreamAPI: Scheduled title auto-summarization for session {session_id}")
                     except Exception as summarize_err:
                         logger.error(f"AgentLoopStreamAPI: Failed to auto-summarize title: {summarize_err}", exc_info=True)
 

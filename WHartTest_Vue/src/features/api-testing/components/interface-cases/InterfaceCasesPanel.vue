@@ -132,9 +132,7 @@ const loadTreeData = async () => {
     interfaces.value = interfaceRes.success && interfaceRes.data
       ? (Array.isArray(interfaceRes.data) ? interfaceRes.data : (interfaceRes.data as any).results || [])
       : []
-    if (expandedModuleIds.value.length === 0) {
-      expandedModuleIds.value = modules.value.map(item => item.id)
-    }
+    // 默认不展开模块树，由用户点击展开后才加载对应模块下的接口
   } catch (error) {
     console.error('加载接口树失败:', error)
     Message.error(tl('加载接口列表失败'))
@@ -507,7 +505,11 @@ const handlePageSizeChange = (size: number) => {
 
 watch(() => projectStore.currentProjectId, async (projectId) => {
   if (!projectId) return
+  selectedModule.value = null
   selectedInterface.value = null
+  selectedNoModuleScope.value = false
+  // 切换项目时清空展开状态，保证新项目默认收起，由用户手动点击展开
+  expandedModuleIds.value = []
   await loadTreeData()
   await fetchInterfaceCases(1)
 }, { immediate: true })

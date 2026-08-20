@@ -80,6 +80,6 @@ class UiPublicDataAdmin(admin.ModelAdmin):
 
 @admin.register(UiEnvironmentConfig)
 class UiEnvironmentConfigAdmin(admin.ModelAdmin):
-    list_display = ('name', 'project', 'base_url', 'browser', 'headless', 'is_default')
-    list_filter = ('project', 'browser', 'headless', 'is_default')
+    list_display = ('name', 'project', 'base_url', 'is_default')
+    list_filter = ('project', 'is_default')
     search_fields = ('name', 'base_url')

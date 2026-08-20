@@ -47,9 +47,12 @@ export class SkillService {
   /**
    * 上传 Skill zip 文件
    */
-  static async uploadSkill(projectId: number, file: File): Promise<Skill[]> {
+  static async uploadSkill(projectId: number, file: File, apiKey?: string): Promise<Skill[]> {
     const formData = new FormData()
     formData.append('file', file)
+    if (apiKey) {
+      formData.append('api_key', apiKey)
+    }
 
     const response = await request<SkillUploadResponse>({
       url: `/projects/${projectId}/skills/upload/`,
@@ -70,11 +73,15 @@ export class SkillService {
   static async importFromGit(
     projectId: number,
     gitUrl: string,
-    branch?: string
+    branch?: string,
+    apiKey?: string
   ): Promise<Skill[]> {
-    const payload: { git_url: string; branch?: string } = { git_url: gitUrl }
+    const payload: { git_url: string; branch?: string; api_key?: string } = { git_url: gitUrl }
     if (branch) {
       payload.branch = branch
+    }
+    if (apiKey) {
+      payload.api_key = apiKey
     }
 
     const response = await request<SkillGitImportResponse>({
@@ -96,11 +103,15 @@ export class SkillService {
   static async importFromZipUrl(
     projectId: number,
     zipUrl: string,
-    sha256?: string
+    sha256?: string,
+    apiKey?: string
   ): Promise<Skill[]> {
-    const payload: { zip_url: string; sha256?: string } = { zip_url: zipUrl }
+    const payload: { zip_url: string; sha256?: string; api_key?: string } = { zip_url: zipUrl }
     if (sha256) {
       payload.sha256 = sha256
+    }
+    if (apiKey) {
+      payload.api_key = apiKey
     }
 
     const response = await request<SkillGitImportResponse>({

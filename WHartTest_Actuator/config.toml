@@ -1,12 +1,12 @@
 [server]
 ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
-api_url = "http://127.0.0.1:8000"
+api_url = "http://172.31.69.83:5173"
 use_gui = true
 api_username = "admin"
 api_password = "admin123456"
 
 [actuator]
-name = "WHartTest-001"
+name = "本地执行器111"
 
 [browser]
 browser_type = "chromium"
@@ -14,13 +14,15 @@ headless = false
 persistent = false
 user_data_dir = "./data/browser"
 launch_timeout = 30
-action_timeout = 10
+action_timeout = 5
+viewport_width = 1280
+viewport_height = 720
 
 [execution]
-retry_count = 3
+retry_count = 1
 step_interval = 100
 screenshot_dir = "./data/screenshots"
-max_concurrent = 3
+max_concurrent = 2
 
 [trace]
 enabled = true

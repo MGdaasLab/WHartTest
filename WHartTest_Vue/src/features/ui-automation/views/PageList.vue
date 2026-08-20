@@ -69,7 +69,7 @@
             复制
           </a-button>
           <a-popconfirm
-            content="确定删除该页面？关联的元素也会被删除。"
+            content="确定删除该页面？若页面下存在步骤或元素被步骤引用，将无法删除。"
             @ok="deletePage(record)"
           >
             <a-button type="text" status="danger" size="mini">

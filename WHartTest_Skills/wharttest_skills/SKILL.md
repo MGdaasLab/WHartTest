@@ -43,7 +43,7 @@ python whart_tools.py --action <action_name> [--参数名 参数值]
 | `upload_screenshot` | 上传单张截图 | `--project_id`, `--case_id`, `--file_path`, `--title`, `--description`, `--step_number`, `--page_url` |
 | `upload_screenshots` | 批量上传截图 | `--project_id`, `--case_id`, `--file_paths`(逗号分隔), `--title`, `--description`, `--step_number`, `--page_url` |
 
-**截图路径约定**：自动化技能（如 `playwright-skill`、`agent-browser-skill`）生成的截图应优先保存到 `SCREENSHOT_DIR` 环境变量指定的目录。上传时只需传入文件名（无需路径），系统会优先从 `SCREENSHOT_DIR` 查找；若未命中，会再回退到常见临时截图目录做兼容搜索。
+**截图路径约定**：自动化技能（如 `playwright-skill`、`browser-use`）生成的截图应优先保存到 `SCREENSHOT_DIR` 环境变量指定的目录。上传时只需传入文件名（无需路径），系统会优先从 `SCREENSHOT_DIR` 查找；若未命中，会再回退到常见临时截图目录做兼容搜索。
 
 **单张上传**：`--file_path "case_11_step1.png"`
 **批量上传**：`--file_paths "step1.png,step2.png,step3.png"`（最多10张，逗号分隔）

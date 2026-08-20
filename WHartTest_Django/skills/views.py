@@ -122,6 +122,7 @@ class SkillViewSet(BaseModelViewSet):
         serializer.is_valid(raise_exception=True)
 
         zip_file = serializer.validated_data['file']
+        api_key = (serializer.validated_data.get('api_key') or '').strip() or None
         project = self.get_project()
 
         try:
@@ -129,7 +130,8 @@ class SkillViewSet(BaseModelViewSet):
             skills = Skill.create_from_zip(
                 zip_file=zip_file,
                 project=project,
-                creator=request.user
+                creator=request.user,
+                api_key=api_key,
             )
             names = ', '.join(s.name for s in skills)
             return Response({
@@ -166,6 +168,7 @@ class SkillViewSet(BaseModelViewSet):
 
         git_url = serializer.validated_data['git_url']
         branch = serializer.validated_data.get('branch', 'main')
+        api_key = (serializer.validated_data.get('api_key') or '').strip() or None
         project = self.get_project()
 
         try:
@@ -173,7 +176,8 @@ class SkillViewSet(BaseModelViewSet):
                 git_url=git_url,
                 branch=branch,
                 project=project,
-                creator=request.user
+                creator=request.user,
+                api_key=api_key,
             )
             names = ', '.join(s.name for s in skills)
             return Response({
@@ -222,6 +226,7 @@ class SkillViewSet(BaseModelViewSet):
 
         zip_url = serializer.validated_data['zip_url']
         sha256 = serializer.validated_data.get('sha256') or None
+        api_key = (serializer.validated_data.get('api_key') or '').strip() or None
         project = self.get_project()
 
         try:
@@ -230,6 +235,7 @@ class SkillViewSet(BaseModelViewSet):
                 project=project,
                 creator=request.user,
                 expected_sha256=sha256,
+                api_key=api_key,
             )
             names = ', '.join(s.name for s in skills)
             return Response({

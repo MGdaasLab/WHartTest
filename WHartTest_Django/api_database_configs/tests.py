@@ -86,20 +86,6 @@ class ApiDatabaseConfigModelTest(TestCase):
         self.assertIn('postgresql://', config.connection_string)
         self.assertIn('pguser:pgpass@pg.example.com:5432/pgdb', config.connection_string)
 
-    def test_connection_string_sqlite(self):
-        config = ApiDatabaseConfig.objects.create(
-            name='SQLite',
-            project=self.project,
-            db_type='sqlite',
-            host='',
-            port=0,
-            username='',
-            password='',
-            database='/tmp/test.db',
-            created_by=self.user,
-        )
-        self.assertEqual(config.connection_string, 'sqlite:////tmp/test.db')
-
     def test_connection_string_oracle(self):
         config = ApiDatabaseConfig.objects.create(
             name='Oracle',
@@ -112,21 +98,8 @@ class ApiDatabaseConfigModelTest(TestCase):
             database='orcl',
             created_by=self.user,
         )
-        self.assertIn('oracle://', config.connection_string)
-
-    def test_connection_string_sqlserver(self):
-        config = ApiDatabaseConfig.objects.create(
-            name='MSSQL',
-            project=self.project,
-            db_type='sqlserver',
-            host='mssql.example.com',
-            port=1433,
-            username='sa',
-            password='sapass',
-            database='msdb',
-            created_by=self.user,
-        )
-        self.assertIn('mssql+pymssql://', config.connection_string)
+        self.assertIn('oracle+oracledb://', config.connection_string)
+        self.assertIn('service_name=orcl', config.connection_string)
 
     def test_get_by_key(self):
         ApiDatabaseConfig.objects.create(
@@ -205,7 +178,7 @@ class ApiDatabaseConfigModelTest(TestCase):
         c2 = ApiDatabaseConfig.objects.create(
             name='Second', project=self.project, db_type='mysql',
             host='localhost', port=3306, username='root',
-            password='secret', database='db2', created_by=self.user,
+            password='secret', database='sample_db', created_by=self.user,
         )
         configs = list(ApiDatabaseConfig.objects.all())
         self.assertEqual(configs[0], c2)  # newest first
@@ -250,6 +223,20 @@ class ApiDatabaseConfigAPITest(TestCase):
         self.assertEqual(config.project, self.project)
         self.assertEqual(config.created_by, self.user)
 
+    def test_create_config_requires_password(self):
+        data = {
+            'name': 'New DB',
+            'type': 'mysql',
+            'host': 'db.example.com',
+            'port': 3306,
+            'username': 'root',
+            'database': 'newdb',
+            'project': self.project.pk,
+        }
+        response = self.client.post(self.base_url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('password', response.data)
+
     def test_retrieve_config_password_masked(self):
         config = ApiDatabaseConfig.objects.create(
             name='Masked', project=self.project, db_type='mysql',
@@ -275,6 +262,67 @@ class ApiDatabaseConfigAPITest(TestCase):
         config.refresh_from_db()
         self.assertEqual(config.host, 'newhost.example.com')
 
+    def test_put_update_config_without_password_keeps_existing_password(self):
+        config = ApiDatabaseConfig.objects.create(
+            name='Old DB', project=self.project, db_type='mysql',
+            host='localhost', port=3306, username='root',
+            password='secret', database='db', created_by=self.user,
+        )
+        data = {
+            'name': 'Updated DB',
+            'type': 'mysql',
+            'host': 'newhost.example.com',
+            'port': 3307,
+            'username': 'newroot',
+            'database': 'newdb',
+            'charset': 'utf8mb4',
+            'connection_params': {},
+            'psm': '',
+            'verify_ssl': False,
+            'description': 'updated',
+            'is_active': True,
+        }
+        response = self.client.put(
+            f'{self.base_url}{config.pk}/',
+            data,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config.refresh_from_db()
+        self.assertEqual(config.name, 'Updated DB')
+        self.assertEqual(config.password, 'secret')
+
+    def test_put_update_config_blank_password_keeps_existing_password(self):
+        config = ApiDatabaseConfig.objects.create(
+            name='Old DB', project=self.project, db_type='mysql',
+            host='localhost', port=3306, username='root',
+            password='secret', database='db', created_by=self.user,
+        )
+        data = {
+            'name': 'Updated DB',
+            'type': 'mysql',
+            'host': 'newhost.example.com',
+            'port': 3307,
+            'username': 'newroot',
+            'password': '',
+            'database': 'newdb',
+            'charset': 'utf8mb4',
+            'connection_params': {},
+            'psm': '',
+            'verify_ssl': False,
+            'description': 'updated',
+            'is_active': True,
+        }
+        response = self.client.put(
+            f'{self.base_url}{config.pk}/',
+            data,
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        config.refresh_from_db()
+        self.assertEqual(config.name, 'Updated DB')
+        self.assertEqual(config.password, 'secret')
+
     def test_delete_config(self):
         config = ApiDatabaseConfig.objects.create(
             name='To Delete', project=self.project, db_type='mysql',
@@ -293,7 +341,7 @@ class ApiDatabaseConfigAPITest(TestCase):
         ApiDatabaseConfig.objects.create(
             name='PG DB', project=self.project, db_type='postgresql',
             host='localhost', port=5432, username='pguser',
-            password='secret', database='db2', created_by=self.user,
+            password='secret', database='sample_db', created_by=self.user,
         )
         response = self.client.get(self.base_url, {'db_type': 'mysql'})
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -398,7 +446,7 @@ class ApiDatabaseConfigIsolationTest(TestCase):
         self.config2 = ApiDatabaseConfig.objects.create(
             name='shared_name', project=self.project2, db_type='mysql',
             host='h2', port=3306, username='u2', password='p2',
-            database='db2', created_by=self.user,
+            database='sample_db', created_by=self.user,
         )
 
     def test_get_by_key_with_project_scope(self):

@@ -8,6 +8,7 @@ import gc
 import importlib
 import json
 import logging
+import os
 import time
 import traceback
 from pathlib import Path
@@ -15,11 +16,33 @@ from typing import Any, Optional, Union
 from dataclasses import dataclass, field
 from contextlib import asynccontextmanager
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, FrameLocator, Page, Playwright, expect
+from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright, expect, FrameLocator
 
 from models import StepResultModel, CaseResultModel
+from runtime_env import is_running_in_container
 
 logger = logging.getLogger('actuator')
+
+DEFAULT_STEALTH_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+STEALTH_INIT_SCRIPT = """
+try {
+    Object.defineProperty(navigator, 'webdriver', { get: () => false });
+} catch (_) {}
+
+for (const key of [
+    'cdc_adoQpoasnfa76pfcZLmcfl_Symbol',
+    'cdc_adoQpoasnfa76pfcZLmcfl_Promise',
+    'cdc_adoQpoasnfa76pfcZLmcfl_Array',
+]) {
+    try {
+        delete window[key];
+    } catch (_) {}
+}
+"""
 
 
 @dataclass
@@ -86,11 +109,17 @@ class PlaywrightExecutor:
         launch_timeout: int = 30000,
         action_timeout: int = 30000,
         screenshot_dir: str = './data/screenshots',
+        retry_count: int = 3,
+        step_interval: int = 500,
+        viewport_width: int = 1280,
+        viewport_height: int = 720,
         trace_enabled: bool = False,
         trace_dir: str = './data/traces',
         trace_screenshots: bool = True,
         trace_snapshots: bool = True,
         trace_sources: bool = False,
+        stealth_enabled: bool = True,
+        stealth_user_agent: Optional[str] = None,
     ):
         self.browser_type = browser_type
         self.headless = headless
@@ -99,6 +128,10 @@ class PlaywrightExecutor:
         self.launch_timeout = launch_timeout
         self.action_timeout = action_timeout
         self.screenshot_dir = screenshot_dir
+        self.retry_count = retry_count
+        self.step_interval = step_interval
+        # 节点默认视口（任务级 runtime 未指定视口时使用，由执行器配置维护）
+        self.default_viewport: dict = {"width": viewport_width, "height": viewport_height}
         
         # Trace 配置
         self.trace_enabled = trace_enabled
@@ -106,6 +139,8 @@ class PlaywrightExecutor:
         self.trace_screenshots = trace_screenshots
         self.trace_snapshots = trace_snapshots
         self.trace_sources = trace_sources
+        self.stealth_enabled = stealth_enabled
+        self.stealth_user_agent = stealth_user_agent
         
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
@@ -113,12 +148,141 @@ class PlaywrightExecutor:
         self._page: Optional[Page] = None
         self._stop_requested = False
         self._current_trace_path: Optional[str] = None
-        self._page_errors: list[str] = []
+        self._page_errors = []
         
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
         if self.trace_enabled:
             Path(self.trace_dir).mkdir(parents=True, exist_ok=True)
+
+    def apply_runtime_options(self, runtime: dict | None) -> dict:
+        """Apply per-task effective runtime without permanently mutating node defaults.
+
+        Returns the previous browser-related state for restore.
+        """
+        previous = {
+            "browser_type": self.browser_type,
+            "headless": self.headless,
+            "action_timeout": self.action_timeout,
+            "persistent": self.persistent,
+            "user_data_dir": self.user_data_dir,
+            "_runtime_viewport": getattr(self, "_runtime_viewport", None),
+            "_viewport_explicit": getattr(self, "_viewport_explicit", False),
+        }
+        if not runtime:
+            return previous
+
+        browser = runtime.get("browser") or runtime.get("browser_type")
+        if browser:
+            browser = str(browser).strip().lower()
+            if browser != self.browser_type:
+                # Switching browser cannot safely reuse persistent profile.
+                self.persistent = False
+            self.browser_type = browser
+
+        if runtime.get("headless") is not None:
+            self.headless = bool(runtime["headless"])
+
+        timeout = runtime.get("timeout")
+        if timeout is not None:
+            try:
+                self.action_timeout = int(timeout)
+            except (TypeError, ValueError):
+                pass
+
+        explicit = bool(runtime.get("viewport_explicit"))
+        vw = runtime.get("viewport_width")
+        vh = runtime.get("viewport_height")
+        if explicit and vw and vh:
+            self._runtime_viewport = {"width": int(vw), "height": int(vh)}
+            self._viewport_explicit = True
+        elif vw and vh and not self.stealth_enabled:
+            self._runtime_viewport = {"width": int(vw), "height": int(vh)}
+            self._viewport_explicit = True
+        else:
+            # Keep stealth default viewport=None unless explicitly requested.
+            self._runtime_viewport = None
+            self._viewport_explicit = explicit
+
+        return previous
+
+    def restore_runtime_options(self, previous: dict | None) -> None:
+        if not previous:
+            return
+        self.browser_type = previous.get("browser_type", self.browser_type)
+        self.headless = previous.get("headless", self.headless)
+        self.action_timeout = previous.get("action_timeout", self.action_timeout)
+        self.persistent = previous.get("persistent", self.persistent)
+        self.user_data_dir = previous.get("user_data_dir", self.user_data_dir)
+        self._runtime_viewport = previous.get("_runtime_viewport")
+        self._viewport_explicit = previous.get("_viewport_explicit", False)
+
+
+    def _build_browser_launch_options(self) -> dict:
+        """构建浏览器启动参数，兼容 Docker 无头场景。"""
+        launch_options = {
+            'headless': self.headless,
+            'timeout': self.launch_timeout,
+        }
+
+        launch_args: list[str] = []
+        if self.stealth_enabled and self.browser_type == 'chromium':
+            launch_args.extend([
+                '--disable-blink-features=AutomationControlled',
+                '--start-maximized',
+            ])
+
+        if is_running_in_container() and self.browser_type == 'chromium':
+            launch_args.append('--disable-dev-shm-usage')
+            if hasattr(os, 'geteuid') and os.geteuid() == 0:
+                launch_args.append('--no-sandbox')
+
+        if launch_args:
+            launch_options['args'] = list(dict.fromkeys(launch_args))
+
+        return launch_options
+
+    def _build_browser_context_options(self) -> dict:
+        """构建浏览器上下文参数。"""
+        context_options: dict = {}
+
+        runtime_viewport = getattr(self, "_runtime_viewport", None)
+        viewport_explicit = getattr(self, "_viewport_explicit", False)
+
+        # 任务级未指定视口时，回退到执行器节点默认视口（由平台编辑窗口维护），
+        # 默认 1280x720 与 Playwright 默认一致，不改变现有行为
+        if runtime_viewport is None:
+            runtime_viewport = dict(getattr(self, "default_viewport", None) or {}) or None
+            if runtime_viewport:
+                viewport_explicit = True
+
+        if not self.stealth_enabled:
+            if runtime_viewport:
+                context_options["viewport"] = runtime_viewport
+            return context_options
+
+        context_options["ignore_https_errors"] = True
+
+        if self.browser_type == "chromium":
+            if viewport_explicit and runtime_viewport:
+                context_options["viewport"] = runtime_viewport
+            else:
+                context_options["viewport"] = None
+            context_options["user_agent"] = (
+                self.stealth_user_agent or DEFAULT_STEALTH_USER_AGENT
+            )
+        else:
+            if viewport_explicit and runtime_viewport:
+                context_options["viewport"] = runtime_viewport
+            if self.stealth_user_agent:
+                context_options["user_agent"] = self.stealth_user_agent
+
+        return context_options
+
+    async def _apply_context_init_scripts(self, context: BrowserContext) -> None:
+        """注入上下文初始化脚本。"""
+        if self.stealth_enabled:
+            await context.add_init_script(STEALTH_INIT_SCRIPT)
     
     async def init_browser(self) -> None:
         """初始化浏览器"""
@@ -130,21 +294,24 @@ class PlaywrightExecutor:
             self._playwright = await async_playwright().start()
         
         browser_launcher = getattr(self._playwright, self.browser_type)
+        launch_options = self._build_browser_launch_options()
+        context_options = self._build_browser_context_options()
         
         if self.persistent:
             self._context = await browser_launcher.launch_persistent_context(
                 self.user_data_dir,
-                headless=self.headless,
-                timeout=self.launch_timeout,
+                **launch_options,
+                **context_options,
             )
+            await self._apply_context_init_scripts(self._context)
             pages = self._context.pages
             self._page = pages[0] if pages else await self._context.new_page()
         else:
             self._browser = await browser_launcher.launch(
-                headless=self.headless,
-                timeout=self.launch_timeout,
+                **launch_options,
             )
-            self._context = await self._browser.new_context()
+            self._context = await self._browser.new_context(**context_options)
+            await self._apply_context_init_scripts(self._context)
             self._page = await self._context.new_page()
         
         self._page.set_default_timeout(self.action_timeout)
@@ -246,7 +413,6 @@ class PlaywrightExecutor:
         self._browser = None
         self._playwright = None
         self._page_errors = []
-        self._current_trace_path = None
 
         # Prefer browser.close() which tears down contexts/pages; sequential
         # page->context->browser left orphans when an early close hung.
@@ -291,8 +457,8 @@ class PlaywrightExecutor:
         Returns:
             trace 文件路径（通过 self._current_trace_path 获取）
         """
-        await self.init_browser()
         self._current_trace_path = None
+        await self.init_browser()
         
         try:
             # 启动 Trace
@@ -548,6 +714,7 @@ class PlaywrightExecutor:
             cursorclass=pymysql.cursors.DictCursor,
         )
 
+
     def _execute_sql_step(
         self,
         step: StepConfig,
@@ -564,6 +731,7 @@ class PlaywrightExecutor:
         try:
             conn = self._connect_mysql(db_config)
             cursor = conn.cursor()
+
 
             self._execute_cursor(cursor, sql_config['sql'], sql_config['params'])
 
@@ -646,8 +814,14 @@ class PlaywrightExecutor:
         # 等待时间（仅当用户明确设置 > 0 时才等待，用于特殊场景）
         # 注意：Playwright 自带 Auto-waiting，一般不需要手动等待
         if step.wait_time > 0:
-            logger.debug(f"步骤 {step.step_id}: 强制等待 {step.wait_time}s（建议设为0让Playwright自动等待）")
-            await page.wait_for_timeout(int(step.wait_time * 1000))
+            wait_time = step.wait_time
+            # 防呆逻辑：如果设置的时间大于 60，极有可能是毫秒，自动除以 1000 转换为秒
+            if wait_time > 60:
+                logger.warning(f"步骤 {step.step_id}: wait_time ({wait_time}) 过大，已自动转换为秒 ({wait_time / 1000:.2f}s)")
+                wait_time = wait_time / 1000
+            
+            logger.debug(f"步骤 {step.step_id}: 强制等待 {wait_time}s（建议设为0让Playwright自动等待）")
+            await page.wait_for_timeout(int(wait_time * 1000))
         
         # 记录开始时间
         op_start = time.time()
@@ -696,11 +870,16 @@ class PlaywrightExecutor:
         
         # 页面操作（不需要定位器）
         def _parse_wait_timeout(value: str) -> int:
-            """解析等待时间（毫秒）"""
+            """解析等待时间（单位为秒，转换为毫秒。支持大于60的旧数据向下兼容）"""
             if not value:
                 return 1000  # 默认 1 秒
             try:
-                return int(float(value))
+                val = float(value)
+                # 向下兼容：如果大于 60，判定为历史毫秒数据，直接返回
+                if val > 60:
+                    return int(val)
+                # 正常情况：秒转换为毫秒
+                return int(val * 1000)
             except ValueError:
                 return 1000
 
@@ -724,74 +903,88 @@ class PlaywrightExecutor:
             return False, f"元素定位器为空，请在元素管理中配置定位表达式（步骤: {step.description or step.step_id}）", None
         
         locator_start = time.time()
-        target = page
+        
+        # iframe 自动切换支持
+        frame = page
         if step.is_iframe and step.iframe_locator:
             logger.info(f"切换至 iframe 上下文, 表达式: {step.iframe_locator}")
-            iframe_selectors = [step.iframe_locator]
+            
+            # 支持多层 iframe 嵌套，以 ">>>" 或 ">>" 分割
             if ">>>" in step.iframe_locator:
                 iframe_selectors = [s.strip() for s in step.iframe_locator.split(">>>") if s.strip()]
             elif ">>" in step.iframe_locator:
                 iframe_selectors = [s.strip() for s in step.iframe_locator.split(">>") if s.strip()]
-
+            else:
+                iframe_selectors = [step.iframe_locator]
+                
             for selector in iframe_selectors:
-                target = target.frame_locator(selector)
-
+                frame = frame.frame_locator(selector)
+        
+        # 构建所有可选的定位器序列进行依次尝试：(类型, 表达式, 下标)
         locators_to_try = [
-            (step.locator_type, step.locator_value, step.locator_index),
+            (step.locator_type, step.locator_value, getattr(step, 'locator_index', None))
         ]
-        if step.locator_type_2 and step.locator_value_2:
-            locators_to_try.append((step.locator_type_2, step.locator_value_2, step.locator_index_2))
-        if step.locator_type_3 and step.locator_value_3:
-            locators_to_try.append((step.locator_type_3, step.locator_value_3, step.locator_index_3))
+        if getattr(step, 'locator_type_2', None) and getattr(step, 'locator_value_2', None):
+            locators_to_try.append((step.locator_type_2, step.locator_value_2, getattr(step, 'locator_index_2', None)))
+        if getattr(step, 'locator_type_3', None) and getattr(step, 'locator_value_3', None):
+            locators_to_try.append((step.locator_type_3, step.locator_value_3, getattr(step, 'locator_index_3', None)))
 
         locator = None
-        locator_type_used = step.locator_type
-        locator_value_used = step.locator_value
-
-        for idx, (locator_type, locator_value, locator_index) in enumerate(locators_to_try, start=1):
-            if not locator_value or not locator_value.strip():
+        locator_type_used = None
+        locator_value_used = None
+        
+        for idx, (l_type, l_value, l_index) in enumerate(locators_to_try, start=1):
+            if not l_value or not l_value.strip():
                 continue
-
-            logger.info(
-                f"步骤 {step.step_id}: 尝试定位器 {idx} [{locator_type}={locator_value}]"
-                + (f" 下标 {locator_index}" if locator_index is not None else "")
-            )
-            candidate = self._get_locator(target, locator_type, locator_value)
-            if locator_index is not None:
-                candidate = candidate.nth(locator_index)
-
+            
+            logger.info(f"步骤 {step.step_id}: 尝试定位器 {idx} [{l_type}={l_value}]" + (f" 下标 {l_index}" if l_index is not None else ""))
+            
+            if step.is_iframe and step.iframe_locator:
+                locator_cand = self._get_locator(frame, l_type, l_value)
+            else:
+                locator_cand = self._get_locator(page, l_type, l_value)
+                
+            if l_index is not None:
+                locator_cand = locator_cand.nth(l_index)
+                
             try:
-                await candidate.wait_for(state="visible", timeout=5000 if idx == 1 else 2000)
-                locator = candidate
-                locator_type_used = locator_type
-                locator_value_used = locator_value
-                logger.info(f"步骤 {step.step_id}: 定位器 {idx} [{locator_type}={locator_value}] 可见并被成功选中")
+                # 给备用定位器更短的等待时间，以便快速进行尝试切换
+                wait_timeout = 5000 if idx == 1 else 2000
+                await locator_cand.wait_for(state="visible", timeout=wait_timeout)
+                # 成功找到并可见！使用该定位器并跳出循环
+                locator = locator_cand
+                locator_type_used = l_type
+                locator_value_used = l_value
+                logger.info(f"步骤 {step.step_id}: 定位器 {idx} [{l_type}={l_value}] 可见并被成功选中")
                 break
-            except Exception as exc:
-                logger.warning(f"步骤 {step.step_id}: 定位器 {idx} [{locator_type}={locator_value}] 尝试失败或不可见: {exc}")
+            except Exception as e:
+                logger.warning(f"步骤 {step.step_id}: 定位器 {idx} [{l_type}={l_value}] 尝试失败或不可见: {e}")
+                # 如果是最后一个定位器，不论成败都必须保留它，以便进行下一步操作或者抛出异常
                 if idx == len(locators_to_try):
-                    locator = candidate
-                    locator_type_used = locator_type
-                    locator_value_used = locator_value
+                    locator = locator_cand
+                    locator_type_used = l_type
+                    locator_value_used = l_value
 
         if locator is None:
             return False, f"所有定位器都失效（包含备用定位器，步骤: {step.description or step.step_id}）", None
 
         locator_time = time.time() - locator_start
-        logger.debug(
-            f"步骤 {step.step_id}: 定位元素 [{locator_type_used}={locator_value_used}] "
-            f"耗时 {locator_time:.2f}s (iframe={step.is_iframe})"
-        )
+        logger.debug(f"步骤 {step.step_id}: 定位元素 [{locator_type_used}={locator_value_used}] 耗时 {locator_time:.2f}s (iframe={step.is_iframe})")
         
+
+
         element_operations = {
             'click': lambda: locator.click(),
             'dblclick': lambda: locator.dblclick(),
+            'double_click': lambda: locator.dblclick(),
+            'right_click': lambda: locator.click(button="right"),
             'fill': lambda: locator.fill(step.input_value),
             'type': lambda: locator.type(step.input_value),
             'clear': lambda: locator.fill(""),
             'check': lambda: locator.check(),
             'uncheck': lambda: locator.uncheck(),
             'select': lambda: locator.select_option(step.input_value),
+            'select_option': lambda: locator.select_option(step.input_value),
             'hover': lambda: locator.hover(),
             'focus': lambda: locator.focus(),
             'press': lambda: locator.press(step.input_value),
@@ -825,6 +1018,7 @@ class PlaywrightExecutor:
                 'contain_text': lambda: expect(locator).to_contain_text(step.input_value),
                 'url': lambda: expect(page).to_have_url(step.input_value),
                 'title': lambda: expect(page).to_have_title(step.input_value),
+                'count': lambda: expect(locator).to_have_count(int(float(step.input_value)) if step.input_value else 0),
             }
             if assert_type in assert_operations:
                 await assert_operations[assert_type]()
@@ -832,7 +1026,47 @@ class PlaywrightExecutor:
                 return True, f"断言 {assert_type} 通过", None
         
         return False, f"未知操作类型: {operation}", None
-    
+
+    async def _execute_step_with_retry(
+        self,
+        page: Page,
+        step: StepConfig,
+        env_config: Optional[dict] = None,
+    ) -> tuple[bool, str, str | None]:
+        """执行单个步骤，支持失败重试（retry_count）与步骤间间隔（step_interval）。
+
+        最多执行 retry_count + 1 次，任一次成功即返回；全部失败返回最后一次结果。
+        Returns:
+            tuple: (成功与否, 消息, 截图路径(可选))
+        """
+        attempts = max(int(getattr(self, 'retry_count', 0)), 0) + 1
+        last_result: tuple[bool, str, str | None] = (False, "步骤执行失败", None)
+
+        for attempt in range(attempts):
+            if self._stop_requested:
+                return False, "用例被手动停止", None
+            try:
+                success, message, screenshot = await self._execute_step(page, step, env_config)
+            except Exception as e:
+                success, message, screenshot = False, str(e), None
+
+            if success:
+                # 步骤成功后的间隔等待（毫秒）
+                step_interval = max(int(getattr(self, 'step_interval', 0)), 0)
+                if step_interval > 0:
+                    await asyncio.sleep(step_interval / 1000)
+                return True, message, screenshot
+
+            last_result = (success, message, screenshot)
+            if attempt < attempts - 1:
+                logger.warning(
+                    f"步骤 {step.step_id} 第 {attempt + 1} 次执行失败，重试: {message}"
+                )
+                # 重试前短暂等待，避免立即重试同样失败
+                await asyncio.sleep(0.5)
+
+        return last_result
+
     async def execute_step(self, step: StepConfig, page_url: str = '') -> StepResultModel:
         """执行单个步骤（独立浏览器会话）"""
         start_time = time.time()
@@ -842,7 +1076,7 @@ class PlaywrightExecutor:
                 if page_url:
                     await page.goto(page_url)
                 
-                success, message, step_screenshot = await self._execute_step(page, step)
+                success, message, step_screenshot = await self._execute_step_with_retry(page, step)
                 duration = time.time() - start_time
                 
                 return StepResultModel(
@@ -930,7 +1164,7 @@ class PlaywrightExecutor:
                         
                         step_start = time.time()
                         try:
-                            success, message, step_screenshot = await self._execute_step(
+                            success, message, step_screenshot = await self._execute_step_with_retry(
                                 page,
                                 step,
                                 page_step.env_config or config.env_config,
@@ -997,7 +1231,7 @@ class PlaywrightExecutor:
                 duration = time.time() - start_time
                 status = 'success' if failed_steps == 0 else 'failed'
                 message = f"用例执行{'成功' if status == 'success' else '失败'}: 通过 {passed_steps}/{total_steps}"
-                if self._page_errors:
+                if hasattr(self, '_page_errors') and self._page_errors:
                     message += f" (捕获 {len(self._page_errors)} 个页面 JS 错误: {'; '.join(self._page_errors[:3])})"
                 logger.info(f"✅ {message}" if status == 'success' else f"❌ {message}")
                 
@@ -1062,7 +1296,7 @@ class PlaywrightExecutor:
                 for step in config.steps:
                     step_start = time.time()
                     try:
-                        success, message, step_screenshot = await self._execute_step(
+                        success, message, step_screenshot = await self._execute_step_with_retry(
                             page,
                             step,
                             config.env_config,
@@ -1258,7 +1492,7 @@ class PlaywrightExecutor:
             duration = time.time() - start_time
             status = 'success' if failed_steps == 0 else 'failed'
             message = f"用例执行{'成功' if status == 'success' else '失败'}: 通过 {passed_steps}/{total_steps}"
-            if self._page_errors:
+            if hasattr(self, '_page_errors') and self._page_errors:
                 message += f" (捕获 {len(self._page_errors)} 个页面 JS 错误: {'; '.join(self._page_errors[:3])})"
 
             # 保存 Trace
@@ -1337,9 +1571,10 @@ class PlaywrightExecutor:
             self._playwright = await async_playwright().start()
 
         browser_launcher = getattr(self._playwright, self.browser_type)
+        launch_options = self._build_browser_launch_options()
+        context_options = self._build_browser_context_options()
         browser = await browser_launcher.launch(
-            headless=self.headless,
-            timeout=self.launch_timeout,
+            **launch_options,
         )
 
         logger.info(f"[并发执行] 开始执行 {len(configs)} 个用例, 最大并发数: {max_concurrent}")
@@ -1347,7 +1582,8 @@ class PlaywrightExecutor:
         async def run_with_limit(config: TestCaseConfig):
             async with semaphore:
                 # 每个用例独立的浏览器上下文
-                context = await browser.new_context()
+                context = await browser.new_context(**context_options)
+                await self._apply_context_init_scripts(context)
                 try:
                     result = await self._execute_case_on_context(
                         context,

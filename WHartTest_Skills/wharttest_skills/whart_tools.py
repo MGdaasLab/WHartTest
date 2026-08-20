@@ -22,19 +22,36 @@ try:
 except ImportError:
     pass
 
-# 配置
-BASE_URL = os.environ.get("WHARTTEST_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
-API_KEY = os.environ.get("WHARTTEST_API_KEY", "wharttest-default-mcp-key-2025")
-HEADERS = {
-    "accept": "application/json, text/plain,*/*",
-    "X-API-Key": API_KEY
-}
+# 配置（运行时读取环境变量，避免 import 时固化导致父进程注入的 Key 失效）
+_DEFAULT_BASE_URL = "http://127.0.0.1:8000"
+_DEFAULT_API_KEY = "wharttest-default-mcp-key-2025"
 IMAGE_MIME_TYPES = {
     '.png': 'image/png',
     '.jpg': 'image/jpeg',
     '.jpeg': 'image/jpeg',
     '.gif': 'image/gif',
 }
+
+
+def _base_url() -> str:
+    return (os.environ.get("WHARTTEST_BACKEND_URL") or _DEFAULT_BASE_URL).rstrip("/")
+
+
+def _api_key() -> str:
+    return (os.environ.get("WHARTTEST_API_KEY") or _DEFAULT_API_KEY).strip()
+
+
+def _headers() -> dict:
+    return {
+        "accept": "application/json, text/plain,*/*",
+        "X-API-Key": _api_key(),
+    }
+
+
+# 兼容旧代码/测试中对模块级常量的引用
+BASE_URL = _base_url()
+API_KEY = _api_key()
+HEADERS = _headers()
 
 
 def _response_json(resp):
@@ -143,9 +160,9 @@ def _extract_tree(nodes_list, id_key, name_key):
 
 def get_projects():
     """获取项目列表"""
-    url = f"{BASE_URL}/api/projects/"
+    url = f"{_base_url()}/api/projects/"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return _extract_tree(data, "project_id", "project_name")
@@ -155,9 +172,9 @@ def get_projects():
 
 def get_modules(project_id: int):
     """获取项目下的模块"""
-    url = f"{BASE_URL}/api/projects/{project_id}/testcase-modules/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcase-modules/"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return _extract_tree(data, "module_id", "module_name")
@@ -167,14 +184,14 @@ def get_modules(project_id: int):
 
 def add_module(project_id: int, name: str, parent_id: int = None):
     """新增用例模块"""
-    url = f"{BASE_URL}/api/projects/{project_id}/testcase-modules/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcase-modules/"
     data = {
         "name": name,
     }
     if parent_id is not None:
         data["parent"] = parent_id
     try:
-        resp = requests.post(url, headers=HEADERS, json=data)
+        resp = requests.post(url, headers=_headers(), json=data)
         resp.raise_for_status()
         result = resp.json()
         if result.get("code") == 201:
@@ -191,9 +208,9 @@ def get_levels():
 
 def get_testcases(project_id: int, module_id: int):
     """获取用例列表"""
-    url = f"{BASE_URL}/api/projects/{project_id}/testcases/?page=1&page_size=1000&module_id={module_id}"
+    url = f"{_base_url()}/api/projects/{project_id}/testcases/?page=1&page_size=1000&module_id={module_id}"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         data = resp.json().get("data", [])
         return [{"case_id": i.get("id"), "case_name": i.get("name")} for i in data]
@@ -203,9 +220,9 @@ def get_testcases(project_id: int, module_id: int):
 
 def get_testcase_detail(project_id: int, case_id: int):
     """获取用例详情"""
-    url = f"{BASE_URL}/api/projects/{project_id}/testcases/{case_id}/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcases/{case_id}/"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         return resp.json().get("data", {})
     except Exception as e:
@@ -216,7 +233,7 @@ def add_testcase(project_id: int, module_id: int, name: str, level: str = "P1",
                  precondition: str = "无", steps: list = None, notes: str = "",
                  review_status: str = "pending_review", test_type: str = "functional"):
     """新增测试用例"""
-    url = f"{BASE_URL}/api/projects/{project_id}/testcases/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcases/"
     data = {
         "name": name,
         "precondition": precondition,
@@ -228,7 +245,7 @@ def add_testcase(project_id: int, module_id: int, name: str, level: str = "P1",
         "test_type": test_type
     }
     try:
-        resp = requests.post(url, headers=HEADERS, json=data)
+        resp = requests.post(url, headers=_headers(), json=data)
         resp.raise_for_status()
         result = resp.json()
         if result.get("code") == 201:
@@ -242,7 +259,7 @@ def edit_testcase(project_id: int, case_id: int, name: str = None, level: str = 
                   module_id: int = None, precondition: str = None, steps: list = None, notes: str = None,
                   review_status: str = None, test_type: str = None, is_optimization: bool = False):
     """编辑测试用例"""
-    url = f"{BASE_URL}/api/projects/{project_id}/testcases/{case_id}/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcases/{case_id}/"
     data = {}
     if name is not None: data["name"] = name
     if level is not None: data["level"] = level
@@ -259,7 +276,7 @@ def edit_testcase(project_id: int, case_id: int, name: str = None, level: str = 
         data["review_status"] = review_status
 
     try:
-        resp = requests.patch(url, headers=HEADERS, json=data)
+        resp = requests.patch(url, headers=_headers(), json=data)
         resp.raise_for_status()
         result = resp.json()
         if result.get("code") == 200:
@@ -404,7 +421,7 @@ def upload_screenshot(project_id: int, case_id: int, file_path: str, title: str,
     if not os.path.exists(file_path):
         return _build_missing_file_error(original_file_path, searched_dirs)
 
-    url = f"{BASE_URL}/api/projects/{project_id}/testcases/{case_id}/upload-screenshots/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcases/{case_id}/upload-screenshots/"
     ext = os.path.splitext(file_path)[1].lower()
     content_type = IMAGE_MIME_TYPES.get(ext, 'image/png')
 
@@ -416,7 +433,7 @@ def upload_screenshot(project_id: int, case_id: int, file_path: str, title: str,
             if step_number is not None: data['step_number'] = str(step_number)
             if page_url: data['page_url'] = page_url
 
-            resp = requests.post(url, headers=HEADERS, files=files, data=data)
+            resp = requests.post(url, headers=_headers(), files=files, data=data)
             resp.raise_for_status()
             return {"message": f"截图 '{title}' 上传成功"}
     except Exception as e:
@@ -439,7 +456,7 @@ def upload_screenshots(project_id: int, case_id: int, file_paths: str, title: st
             return _build_missing_file_error(fp, searched_dirs)
         resolved_paths.append(resolved_path)
 
-    url = f"{BASE_URL}/api/projects/{project_id}/testcases/{case_id}/upload-screenshots/"
+    url = f"{_base_url()}/api/projects/{project_id}/testcases/{case_id}/upload-screenshots/"
 
     try:
         files = []
@@ -456,7 +473,7 @@ def upload_screenshots(project_id: int, case_id: int, file_paths: str, title: st
         if step_number is not None: data['step_number'] = str(step_number)
         if page_url: data['page_url'] = page_url
 
-        resp = requests.post(url, headers=HEADERS, files=files, data=data)
+        resp = requests.post(url, headers=_headers(), files=files, data=data)
         resp.raise_for_status()
 
         for f in file_handles:
@@ -474,7 +491,7 @@ def list_files(project_id: int, page: int = 1, page_size: int = 20, search: str 
                status: str = None, extension: str = None, mime_type: str = None,
                ordering: str = "-created_at"):
     """获取项目文件列表"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/"
     params = {
         "page": page,
         "page_size": page_size,
@@ -490,7 +507,7 @@ def list_files(project_id: int, page: int = 1, page_size: int = 20, search: str 
     if ordering:
         params["ordering"] = ordering
     try:
-        resp = requests.get(url, headers=HEADERS, params=params)
+        resp = requests.get(url, headers=_headers(), params=params)
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -499,9 +516,9 @@ def list_files(project_id: int, page: int = 1, page_size: int = 20, search: str 
 
 def get_file_detail(project_id: int, file_id: int):
     """获取文件详情"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/{file_id}/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/{file_id}/"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -523,7 +540,7 @@ def upload_files(project_id: int, file_paths: str):
             return {"error": f"不是有效文件: {fp}"}
         resolved_paths.append(resolved_path)
 
-    url = f"{BASE_URL}/api/projects/{project_id}/files/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/"
     file_handles = []
     try:
         files = []
@@ -533,7 +550,7 @@ def upload_files(project_id: int, file_paths: str):
             file_handles.append(f)
             files.append(('files', (os.path.basename(fp), f, content_type)))
 
-        resp = requests.post(url, headers=HEADERS, files=files)
+        resp = requests.post(url, headers=_headers(), files=files)
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -552,9 +569,9 @@ def validate_files(project_id: int, file_ids):
         parsed_ids = _parse_csv_ints(file_ids, "file_ids")
     except ValueError as e:
         return {"error": str(e)}
-    url = f"{BASE_URL}/api/projects/{project_id}/files/validate/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/validate/"
     try:
-        resp = requests.post(url, headers=HEADERS, json={"file_ids": parsed_ids})
+        resp = requests.post(url, headers=_headers(), json={"file_ids": parsed_ids})
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -563,9 +580,9 @@ def validate_files(project_id: int, file_ids):
 
 def get_file_references(project_id: int, file_id: int):
     """获取文件引用详情"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/{file_id}/references/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/{file_id}/references/"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -574,9 +591,9 @@ def get_file_references(project_id: int, file_id: int):
 
 def delete_file(project_id: int, file_id: int):
     """删除项目文件；被引用文件由后端执行软删除"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/{file_id}/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/{file_id}/"
     try:
-        resp = requests.delete(url, headers=HEADERS)
+        resp = requests.delete(url, headers=_headers())
         resp.raise_for_status()
         if getattr(resp, 'status_code', None) == 204:
             return {"success": True, "message": f"文件ID {file_id} 删除成功"}
@@ -590,9 +607,9 @@ def delete_file(project_id: int, file_id: int):
 
 def get_file_settings(project_id: int):
     """获取项目文件管理设置"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/settings/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/settings/"
     try:
-        resp = requests.get(url, headers=HEADERS)
+        resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -615,9 +632,9 @@ def update_file_settings(project_id: int, auto_delete_on_unbind=None, auto_delet
     if not data:
         return {"error": "至少需要提供 auto_delete_on_unbind 或 auto_delete_zero_refs"}
 
-    url = f"{BASE_URL}/api/projects/{project_id}/files/settings/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/settings/"
     try:
-        resp = requests.post(url, headers=HEADERS, json=data)
+        resp = requests.post(url, headers=_headers(), json=data)
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -626,9 +643,9 @@ def update_file_settings(project_id: int, auto_delete_on_unbind=None, auto_delet
 
 def cleanup_unreferenced_files(project_id: int):
     """清理项目内无引用文件"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/cleanup-unreferenced/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/cleanup-unreferenced/"
     try:
-        resp = requests.post(url, headers=HEADERS)
+        resp = requests.post(url, headers=_headers())
         resp.raise_for_status()
         return _response_json(resp)
     except Exception as e:
@@ -637,9 +654,9 @@ def cleanup_unreferenced_files(project_id: int):
 
 def download_file(project_id: int, file_id: int, output_path: str = None, output_dir: str = None):
     """下载文件到本地"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/{file_id}/download/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/{file_id}/download/"
     try:
-        resp = requests.get(url, headers=HEADERS, stream=True)
+        resp = requests.get(url, headers=_headers(), stream=True)
         resp.raise_for_status()
         filename = _extract_filename_from_content_disposition(
             getattr(resp, 'headers', {}).get('Content-Disposition', '')
@@ -659,9 +676,9 @@ def download_file(project_id: int, file_id: int, output_path: str = None, output
 
 def preview_file(project_id: int, file_id: int, output_path: str = None):
     """预览文件；文本直接返回，二进制可保存到 output_path"""
-    url = f"{BASE_URL}/api/projects/{project_id}/files/{file_id}/preview/"
+    url = f"{_base_url()}/api/projects/{project_id}/files/{file_id}/preview/"
     try:
-        resp = requests.get(url, headers=HEADERS, stream=bool(output_path))
+        resp = requests.get(url, headers=_headers(), stream=bool(output_path))
         resp.raise_for_status()
         content_type = getattr(resp, 'headers', {}).get('Content-Type', '')
         if output_path:

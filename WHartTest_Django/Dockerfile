@@ -105,6 +105,8 @@ ARG APT_BASE_URL=http://deb.debian.org
 ARG HF_ENDPOINT=https://huggingface.co
 ARG NPM_REGISTRY=https://registry.npmjs.org
 ARG PLAYWRIGHT_DOWNLOAD_HOST=
+ARG PIP_INDEX_URL=https://pypi.org/simple
+ARG PIP_INDEX_FALLBACKS=
 
 WORKDIR /app
 
@@ -177,7 +179,7 @@ RUN set -eux; \
       exit 1; \
     fi
 
-# 收集第三方许可证文件（Playwright/Pillow/Chromium/FFmpeg）
+# 收集第三方许可证文件（Playwright/Pillow/Chromium/FFmpeg/NLTK）
 RUN set -eux; \
     mkdir -p /app/third_party_licenses/python /app/third_party_licenses/playwright-browsers; \
     cp /app/THIRD_PARTY_NOTICES.md /app/third_party_licenses/THIRD_PARTY_NOTICES.md; \
@@ -188,9 +190,9 @@ RUN set -eux; \
       depth="$3"; \
       [ -d "$src" ] || return 0; \
       mkdir -p "$dst"; \
-      find "$src" -maxdepth "$depth" -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" \) -exec cp -f {} "$dst"/ \; ; \
+      find "$src" -maxdepth "$depth" -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" -o -name "AUTHORS*" \) -exec cp -f {} "$dst"/ \; ; \
     }; \
-    for pattern in "playwright-*.dist-info" "pillow-*.dist-info" "Pillow-*.dist-info"; do \
+    for pattern in "playwright-*.dist-info" "pillow-*.dist-info" "Pillow-*.dist-info" "nltk-*.dist-info"; do \
       for dir in "$site_pkgs"/$pattern; do \
         [ -d "$dir" ] || continue; \
         copy_python_licenses "$dir" "/app/third_party_licenses/python/$(basename "$dir")" 2; \
@@ -205,11 +207,32 @@ RUN set -eux; \
       find "$browser_root" -maxdepth 4 -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" -o -name "ABOUT" \) -exec cp --parents -f {} /app/third_party_licenses/playwright-browsers/ \; ; \
     fi
 
-# 安装 agent-browser CLI 工具及其浏览器
-# agent-browser 是 AI Agent 专用的浏览器自动化工具
-RUN npm config set registry "${NPM_REGISTRY}" && \
-    npm install -g agent-browser && \
-    agent-browser install
+# 安装 browser-use CLI（Agent 浏览器 skill 驱动，替代 agent-browser）
+# 使用独立 venv，避免 browser-use 钉死依赖污染 Django 主环境。
+# Chromium 已由上方 playwright install 预装到 PLAYWRIGHT_BROWSERS_PATH，
+# browser-use 会复用该 Chromium；部署后无需再下载浏览器即可直接使用 skill。
+# LLM_BROWSER_AUTO_CHROME=1：容器内无桌面 Chrome 时自动拉起托管 Chromium。
+ARG PIP_INDEX_URL
+ARG PIP_INDEX_FALLBACKS
+# PATH 必须优先 /opt/venv（Django），再挂 browser-use CLI，避免 python 落到 browser-use venv
+ENV LLM_BROWSER_AUTO_CHROME=1 \
+    PATH="/opt/venv/bin:/opt/browser-use/bin:${PATH}"
+RUN set -eux; \
+    python -m venv /opt/browser-use; \
+    install_browser_use() { \
+      for index in "${PIP_INDEX_URL}" ${PIP_INDEX_FALLBACKS}; do \
+        [ -n "$index" ] || continue; \
+        echo "pip install browser-use via $index"; \
+        if /opt/browser-use/bin/pip install --no-cache-dir --retries 5 --timeout 60 -i "$index" "browser-use>=0.13.6"; then \
+          return 0; \
+        fi; \
+        echo "pip install browser-use failed via $index, trying next index..." >&2; \
+      done; \
+      return 1; \
+    }; \
+    install_browser_use; \
+    /opt/browser-use/bin/browser-use --help >/dev/null; \
+    /opt/browser-use/bin/python -c "import browser_use, browser_harness; print('browser-use ready')"
 
 # 复制随仓库提交的 BM25 平铺模型目录（运行时通过 specific_model_path 离线加载）
 COPY bm25_model /app/bm25_model
