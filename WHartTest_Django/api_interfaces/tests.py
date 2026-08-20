@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
+from urllib.error import URLError
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
@@ -12,7 +13,11 @@ from rest_framework import status
 from projects.models import Project, ProjectMember
 from api_modules.models import ApiModule
 from .models import ApiInterface, ApiInterfaceResult
+from .serializers import ApiInterfaceSerializer
 from api_environments.models import ApiEnvironment, ApiEnvironmentVariable
+from .exchange import fetch_api_document
+from .openapi import OpenAPIError
+from rest_framework.exceptions import ValidationError as DRFValidationError
 
 
 def _grant_interface_perms(user):
@@ -1565,6 +1570,183 @@ class ApiInterfaceAPITest(TestCase):
         # 模块名应取 collection 的 info.name，而不是 http:
         self.assertEqual(interface.module.name, 'My Collection')
         self.assertNotIn('http', interface.module.name.lower())
+
+    def test_fetch_api_document_timeout_raises_clear_error(self):
+        """远端抓取超时应抛出带超时说明的 OpenAPIError，而不是后台 500。"""
+        with patch('api_interfaces.exchange.urlopen', side_effect=TimeoutError('connection timed out')):
+            with self.assertRaises(OpenAPIError) as ctx:
+                fetch_api_document('https://example.com/openapi.json')
+        self.assertIn('timed out', str(ctx.exception))
+        self.assertIn('slow or unresponsive', str(ctx.exception))
+
+    def test_fetch_api_document_network_error_reports_url(self):
+        """远端连接失败应给出可读的错误信息。"""
+        with patch('api_interfaces.exchange.urlopen', side_effect=URLError('Name or service not known')):
+            with self.assertRaises(OpenAPIError) as ctx:
+                fetch_api_document('https://example.com/openapi.json')
+        self.assertIn('Unable to fetch Swagger URL', str(ctx.exception))
+
+    def test_fetch_api_document_rejects_oversized_declaration(self):
+        """Content-Length 声明超过上限时应在下载前直接拒绝。"""
+        mock_response = MagicMock()
+        mock_response.headers = {'Content-Length': str(20 * 1024 * 1024)}
+        mock_response.geturl.return_value = 'https://example.com/openapi.json'
+        with patch('api_interfaces.exchange.urlopen', return_value=MagicMock(
+            __enter__=MagicMock(return_value=mock_response),
+            __exit__=MagicMock(return_value=False),
+        )):
+            with self.assertRaises(OpenAPIError) as ctx:
+                fetch_api_document('https://example.com/openapi.json')
+        self.assertIn('too large', str(ctx.exception))
+
+    def test_import_openapi_rolls_back_on_partial_failure(self):
+        """导入中途发生校验错误时，整个导入应回滚，不残留任何接口或模块。"""
+        document = {
+            'openapi': '3.0.3',
+            'info': {'title': 'Rollback API', 'version': '1.0.0'},
+            'paths': {
+                '/first': {
+                    'get': {
+                        'summary': 'First API',
+                        'tags': ['Rollback'],
+                        'responses': {'200': {'description': 'OK'}},
+                    },
+                },
+                '/second': {
+                    'get': {
+                        'summary': 'Second API',
+                        'tags': ['Rollback'],
+                        'responses': {'200': {'description': 'OK'}},
+                    },
+                },
+            },
+        }
+        uploaded = SimpleUploadedFile(
+            'openapi.json',
+            json.dumps(document).encode('utf-8'),
+            content_type='application/json',
+        )
+
+        # 让第二个接口（/second）保存时抛错，模拟导入中途失败
+        original_save = ApiInterfaceSerializer.save
+        calls = {'count': 0}
+
+        def failing_save(self, *args, **kwargs):
+            calls['count'] += 1
+            if calls['count'] >= 2:
+                raise DRFValidationError({'url': ['simulated failure']})
+            return original_save(self, *args, **kwargs)
+
+        with patch.object(ApiInterfaceSerializer, 'save', failing_save):
+            response = self.client.post(
+                f'{self.base_url}import-openapi/',
+                {'file': uploaded, 'source_type': 'swagger'},
+                format='multipart',
+            )
+
+        self.assertEqual(ApiInterface.objects.filter(project=self.project).count(), 0)
+        self.assertEqual(ApiModule.objects.filter(project=self.project).count(), 0)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_import_openapi_matches_existing_interface_without_duplication(self):
+        """此前已导入的接口按 method+url 匹配更新，不应重复创建。"""
+        module = ApiModule.objects.create(name='Auth', project=self.project, created_by=self.user)
+        ApiInterface.objects.create(
+            name='Login',
+            type='http',
+            method='POST',
+            url='/login',
+            project=self.project,
+            created_by=self.user,
+        )
+
+        document = {
+            'openapi': '3.0.3',
+            'info': {'title': 'Auth API', 'version': '1.0.0'},
+            'paths': {
+                '/login': {
+                    'post': {
+                        'summary': 'Login',
+                        'tags': ['Auth'],
+                        'responses': {'200': {'description': 'OK'}},
+                    },
+                },
+            },
+        }
+        uploaded = SimpleUploadedFile(
+            'openapi.json',
+            json.dumps(document).encode('utf-8'),
+            content_type='application/json',
+        )
+
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'file': uploaded, 'source_type': 'swagger'},
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['created_count'], 0)
+        self.assertEqual(response.data['updated_count'], 1)
+        self.assertEqual(ApiInterface.objects.filter(project=self.project).count(), 1)
+
+    def test_import_openapi_with_self_referencing_schema(self):
+        """自引用 schema（树形结构）导入不应触发无限递归。"""
+        document = {
+            'openapi': '3.0.3',
+            'info': {'title': 'Tree API', 'version': '1.0.0'},
+            'components': {
+                'schemas': {
+                    'TreeNode': {
+                        'type': 'object',
+                        'properties': {
+                            'id': {'type': 'integer'},
+                            'name': {'type': 'string'},
+                            'children': {
+                                'type': 'array',
+                                'items': {'$ref': '#/components/schemas/TreeNode'},
+                            },
+                            'parent': {'$ref': '#/components/schemas/TreeNode'},
+                        },
+                    },
+                },
+            },
+            'paths': {
+                '/tree': {
+                    'post': {
+                        'summary': 'Save Tree',
+                        'tags': ['Tree'],
+                        'requestBody': {
+                            'content': {
+                                'application/json': {
+                                    'schema': {'$ref': '#/components/schemas/TreeNode'},
+                                },
+                            },
+                        },
+                        'responses': {'200': {'description': 'OK'}},
+                    },
+                },
+            },
+        }
+        uploaded = SimpleUploadedFile(
+            'openapi.json',
+            json.dumps(document).encode('utf-8'),
+            content_type='application/json',
+        )
+
+        response = self.client.post(
+            f'{self.base_url}import-openapi/',
+            {'file': uploaded, 'source_type': 'swagger'},
+            format='multipart',
+        )
+
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        interface = ApiInterface.objects.get(project=self.project, method='POST', url='/tree')
+        body_content = interface.body.get('content') if isinstance(interface.body, dict) else None
+        # 自引用截断：children 应生成一层示例后停止，不再无限嵌套
+        self.assertIsInstance(body_content, dict)
+        self.assertIn('id', body_content)
+        self.assertIn('children', body_content)
 
     def test_export_native_formats_round_trip(self):
         """三种原生格式导出后应能由同一导入入口完整识别。"""

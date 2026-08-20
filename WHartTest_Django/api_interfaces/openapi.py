@@ -12,6 +12,7 @@ try:
 except ImportError:  # pragma: no cover - dependency is declared in requirements
     yaml = None
 
+from django.db import transaction
 from api_modules.models import ApiModule
 from api_environments.models import ApiEnvironment
 from projects.models import Project
@@ -88,73 +89,83 @@ def import_openapi_interfaces(
     create_environments: bool = False,
 ) -> dict[str, Any]:
     operations = _iter_operations(document, strip_base_url=strip_base_url)
-    module_cache: dict[str, ApiModule] = {}
+
     created_count = 0
     updated_count = 0
     skipped: list[dict[str, Any]] = []
     imported_ids: list[int] = []
 
-    for operation in operations:
-        method = operation["method"]
-        path = operation["path"]
+    # 整体在一个事务内执行:任一步失败(校验错误、数据库异常等)都全部回滚,
+    # 不会出现导入到一半留下部分接口的情况。
+    with transaction.atomic():
+        module_cache: dict[str, ApiModule] = _existing_module_cache(project)
+        existing_by_key, used_names = _existing_interface_index(project)
+        touched_modules: set[str] = set()
 
-        if method not in SUPPORTED_HTTP_METHODS:
-            skipped.append({"method": method, "path": path, "reason": "Unsupported HTTP method."})
-            continue
+        for operation in operations:
+            method = operation["method"]
+            path = operation["path"]
 
-        try:
-            payload = _operation_to_interface_payload(document, operation)
-        except OpenAPIError as exc:
-            skipped.append({"method": method, "path": path, "reason": str(exc)})
-            continue
+            if method not in SUPPORTED_HTTP_METHODS:
+                skipped.append({"method": method, "path": path, "reason": "Unsupported HTTP method."})
+                continue
 
-        module_name = payload.pop("_module_name", "")
-        if module_name:
-            payload["module"] = _get_or_create_module(
+            try:
+                payload = _operation_to_interface_payload(document, operation)
+            except OpenAPIError as exc:
+                skipped.append({"method": method, "path": path, "reason": str(exc)})
+                continue
+
+            module_name = payload.pop("_module_name", "")
+            if module_name:
+                module = _get_or_create_module(
+                    project=project,
+                    user=user,
+                    name=module_name,
+                    cache=module_cache,
+                )
+                payload["module"] = module.id
+                touched_modules.add(module.name)
+
+            existing = existing_by_key.get((payload["method"], payload["url"]))
+            existing_name = existing.name if existing else None
+
+            payload["name"] = _unique_interface_name(
+                name=payload["name"],
+                used_names=used_names,
+                exclude_name=existing_name,
+            )
+
+            serializer = ApiInterfaceSerializer(
+                existing,
+                data=payload,
+                partial=bool(existing),
+                context={"request": request, "view": view},
+            )
+            serializer.is_valid(raise_exception=True)
+            if existing:
+                instance = serializer.save(project=project)
+            else:
+                instance = serializer.save(project=project, created_by=user)
+            imported_ids.append(instance.id)
+
+            if existing:
+                updated_count += 1
+            else:
+                created_count += 1
+
+            existing_by_key[(payload["method"], payload["url"])] = instance
+            if existing_name:
+                used_names.discard(existing_name)
+            used_names.add(instance.name)
+
+        created_environments: list[dict[str, Any]] = []
+        if create_environments:
+            created_environments = _create_environments_from_document(
+                document=document,
                 project=project,
                 user=user,
-                name=module_name,
-                cache=module_cache,
-            ).id
-
-        existing = ApiInterface.objects.filter(
-            project=project,
-            type=ApiInterface.TYPE_HTTP,
-            method=payload["method"],
-            url=payload["url"],
-        ).first()
-
-        payload["name"] = _unique_interface_name(
-            project=project,
-            name=payload["name"],
-            exclude_id=existing.id if existing else None,
-        )
-
-        serializer = ApiInterfaceSerializer(
-            existing,
-            data=payload,
-            partial=bool(existing),
-            context={"request": request, "view": view},
-        )
-        serializer.is_valid(raise_exception=True)
-        if existing:
-            instance = serializer.save(project=project)
-        else:
-            instance = serializer.save(project=project, created_by=user)
-        imported_ids.append(instance.id)
-
-        if existing:
-            updated_count += 1
-        else:
-            created_count += 1
-
-    created_environments: list[dict[str, Any]] = []
-    if create_environments:
-        created_environments = _create_environments_from_document(
-            document=document,
-            project=project,
-            user=user,
-        )
+            )
 
     return {
         "format": "swagger" if document.get("swagger") == "2.0" else "openapi",
@@ -165,7 +176,7 @@ def import_openapi_interfaces(
         "skipped_count": len(skipped),
         "skipped": skipped[:50],
         "imported_ids": imported_ids,
-        "module_count": len(module_cache),
+        "module_count": len(touched_modules),
         "created_environments": created_environments,
     }
 
@@ -478,7 +489,17 @@ def _sample_from_media(document: dict[str, Any], media: dict[str, Any], schema: 
 
 
 def _sample_from_schema(document: dict[str, Any], schema: Any, seen_refs: set[str] | None = None) -> Any:
-    schema = _resolve_ref(document, schema, seen_refs=seen_refs)
+    seen = set(seen_refs or set())
+    if isinstance(schema, dict) and isinstance(schema.get("$ref"), str) and schema["$ref"].startswith("#/"):
+        ref = schema["$ref"]
+        if ref in seen:
+            # 循环引用（如树形/父子结构 schema 引用自身）：截断展开，避免无限递归。
+            return {}
+        schema = _resolve_ref(document, schema)
+        seen.add(ref)
+    else:
+        schema = _resolve_ref(document, schema, seen_refs=seen)
+
     if not isinstance(schema, dict):
         return ""
 
@@ -500,12 +521,12 @@ def _sample_from_schema(document: dict[str, Any], schema: Any, seen_refs: set[st
         if not isinstance(properties, dict):
             return {}
         return {
-            key: _sample_from_schema(document, value, seen_refs=seen_refs)
+            key: _sample_from_schema(document, value, seen_refs=seen)
             for key, value in properties.items()
         }
 
     if schema_type == "array":
-        return [_sample_from_schema(document, schema.get("items", {}), seen_refs=seen_refs)]
+        return [_sample_from_schema(document, schema.get("items", {}), seen_refs=seen)]
 
     if schema_type in {"integer", "number"}:
         return 0
@@ -589,6 +610,35 @@ def _module_name_from_operation(operation: dict[str, Any], path: str, document: 
     return parts[0][:100] if parts else ""
 
 
+def _normalize_module_name(name: str) -> str:
+    return re.sub(r"\s+", " ", name).strip()[:100]
+
+
+def _existing_module_cache(project: Project) -> dict[str, ApiModule]:
+    """预取项目下全部顶层模块,避免导入循环内逐条查询。"""
+    cache: dict[str, ApiModule] = {}
+    for module in ApiModule.objects.filter(project=project, parent__isnull=True).order_by("id"):
+        cache.setdefault(_normalize_module_name(module.name), module)
+    return cache
+
+
+def _existing_interface_index(project: Project) -> tuple[dict[tuple[str, str], ApiInterface], set[str]]:
+    """预取项目下的接口数据,返回 (HTTP 接口 method+url 索引, 项目全部接口的已用名称集合)。"""
+    index: dict[tuple[str, str], ApiInterface] = {}
+    used_names: set[str] = set()
+
+    for interface in (
+        ApiInterface.objects.filter(project=project)
+        .only("id", "type", "method", "url", "name")
+        .iterator(chunk_size=1000)
+    ):
+        used_names.add(interface.name)
+        if interface.type == ApiInterface.TYPE_HTTP:
+            index.setdefault((interface.method.upper(), interface.url), interface)
+
+    return index, used_names
+
+
 def _get_or_create_module(
     *,
     project: Project,
@@ -596,7 +646,7 @@ def _get_or_create_module(
     name: str,
     cache: dict[str, ApiModule],
 ) -> ApiModule:
-    normalized_name = re.sub(r"\s+", " ", name).strip()[:100]
+    normalized_name = _normalize_module_name(name)
     if normalized_name in cache:
         return cache[normalized_name]
 
@@ -617,24 +667,26 @@ def _get_or_create_module(
     return module
 
 
-def _unique_interface_name(project: Project, name: str, exclude_id: int | None = None) -> str:
+def _unique_interface_name(
+    *,
+    name: str,
+    used_names: set[str],
+    exclude_name: str | None = None,
+) -> str:
     base = re.sub(r"\s+", " ", name).strip() or "Imported API"
     base = base[:100]
 
-    queryset = ApiInterface.objects.filter(project=project, name=base)
-    if exclude_id:
-        queryset = queryset.exclude(id=exclude_id)
-    if not queryset.exists():
+    def available(candidate: str) -> bool:
+        return candidate not in used_names or candidate == exclude_name
+
+    if available(base):
         return base
 
     suffix = 2
     while True:
         suffix_text = f" {suffix}"
         candidate = f"{base[:100 - len(suffix_text)]}{suffix_text}"
-        query = ApiInterface.objects.filter(project=project, name=candidate)
-        if exclude_id:
-            query = query.exclude(id=exclude_id)
-        if not query.exists():
+        if available(candidate):
             return candidate
         suffix += 1
 
