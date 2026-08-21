@@ -578,6 +578,7 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `Execution succeeded: ${passed}/${total} steps passed`,
       executionFailed: (message: string) => `Execution failed: ${message}`,
       unknownError: 'Unknown error',
+      insufficientSlots: (name: string, need: number, free: number) => `Actuator ${name} has insufficient free slots (need ${need}, only ${free} left)`,
       fetchElementsFailed: 'Failed to fetch element list',
       fillRequired: 'Fill in the required fields',
       enterContent: 'Enter content',
@@ -693,6 +694,7 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `执行成功: ${passed}/${total} 步骤通过`,
       executionFailed: (message: string) => `执行失败: ${message}`,
       unknownError: '未知错误',
+      insufficientSlots: (name: string, need: number, free: number) => `执行器 ${name} 空闲 slot 不足（需要 ${need}，剩余 ${free}）`,
       fetchElementsFailed: '获取元素列表失败',
       fillRequired: '请填写必填项',
       enterContent: '请输入内容',
@@ -1034,7 +1036,19 @@ const executePageStep = async () => {
     Message.warning(stepText.value.noActionSteps)
     return
   }
-  
+
+  // 发送前预检查：空闲 slot 不足时直接提示，不进入加载态
+  const act = actuators.value.find((a: ActuatorInfo) => a.id === selectedActuator.value)
+  if (!act || !act.is_open) {
+    Message.warning(stepText.value.selectActuatorFirst)
+    return
+  }
+  const freeSlots = (act.max_slots ?? 1) - (act.busy_slots ?? 0)
+  if (freeSlots < 1) {
+    Message.error(stepText.value.insufficientSlots(act.name || act.id, 1, Math.max(freeSlots, 0)))
+    return
+  }
+
   executing.value = true
   
   // 确保 WebSocket 已连接
@@ -1074,6 +1088,15 @@ const handleStepResult = (data: any) => {
       || stepText.value.executionFailed(stepText.value.unknownError)
     )
   }
+}
+
+/** 执行被拒绝（如执行器空闲 slot 不足）：提示并复位加载态，避免按钮卡住 */
+const handleStepRejected = (data: any) => {
+  const error = data.data?.func_args?.error || (data.code !== 200 ? data.msg : '')
+  if (!error) return
+  executing.value = false
+  Message.error(error)
+  fetchActuators()
 }
 
 const fetchElements = async () => {
@@ -1430,6 +1453,7 @@ const onDragEnd = async () => {
 
 // WebSocket 事件监听
 let offStepResult: (() => void) | null = null
+let offStepRejected: (() => void) | null = null
 
 watch(() => props.pageStep, async () => {
   fetchSteps()
@@ -1448,10 +1472,13 @@ onMounted(() => {
   fetchEnvConfigs()
   // 监听页面步骤执行结果
   offStepResult = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, handleStepResult)
+  // 监听执行被拒绝（空闲 slot 不足等），复位加载态避免按钮卡住
+  offStepRejected = uiWebSocket.on(UiSocketEnum.PAGE_STEPS, handleStepRejected)
 })
 
 onUnmounted(() => {
   offStepResult?.()
+  offStepRejected?.()
 })
 </script>
 

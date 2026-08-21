@@ -6,7 +6,7 @@ api_username = "admin"
 api_password = "admin123456"
 
 [actuator]
-name = "本地执行器111"
+name = "WHarttest001"
 
 [browser]
 browser_type = "chromium"
@@ -22,7 +22,7 @@ viewport_height = 720
 retry_count = 1
 step_interval = 100
 screenshot_dir = "./data/screenshots"
-max_concurrent = 2
+max_concurrent = 3
 
 [trace]
 enabled = true
