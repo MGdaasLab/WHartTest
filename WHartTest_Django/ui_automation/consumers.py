@@ -308,7 +308,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         return effective or {}
 
     def _release_actuator_slots(self, args: dict, count: int = 1) -> None:
-        from .actuator_registry import adjust_busy_slots
+        from .actuator_registry import adjust_busy_slots, resolve_actuator_id_for_result
         if count <= 0:
             return
         actuator_id = args.get("actuator_id")
@@ -316,6 +316,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             actuator_id = args.get("effective_runtime", {}).get("actuator_id")
         if not actuator_id and isinstance(args.get("environment"), dict):
             actuator_id = args.get("environment", {}).get("actuator_id")
+        if not actuator_id and getattr(self, "is_actuator", False):
+            # 结果由执行器自己回传，当前连接即持有槽位的执行器
+            actuator_id = self.user_id
+        if not actuator_id:
+            # 兜底：按预留时写入 lease 的 case_id/batch_id 元数据反查
+            actuator_id = resolve_actuator_id_for_result(args)
         if not actuator_id:
             return
         try:
@@ -323,11 +329,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         except Exception as exc:
             logger.warning(f"adjust busy_slots -{count} failed: {exc}")
 
-    def _reserve_actuator_slots(self, args: dict, count: int = 1) -> bool:
+    def _reserve_actuator_slots(self, args: dict, count: int = 1) -> tuple[bool, str]:
         from . import actuator_registry
         actuator_id = args.get("actuator_id") or args.get("_selected_actuator_for_slots")
         if not actuator_id or count <= 0:
-            return True
+            return True, ""
         ttl = None
         effective = args.get("effective_runtime") if isinstance(args.get("effective_runtime"), dict) else {}
         try:
@@ -349,8 +355,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         )
         if not ok:
             logger.warning(f"reserve slots failed: {err}")
-            return False
-        return True
+            return False, err
+        return True, ""
 
     async def handle_execute_page_steps(self, args: dict, user: str):
         """处理执行页面步骤请求"""
@@ -358,14 +364,23 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         if err:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize(err)
+                msg=self._localize(err),
+                data=QueueModel(
+                    func_name=UiSocketEnum.PAGE_STEPS,
+                    func_args={"page_step_id": args.get("page_step_id"), "error": err},
+                ),
             ))
             return
 
-        if not self._reserve_actuator_slots(args, 1):
+        ok, err = self._reserve_actuator_slots(args, 1)
+        if not ok:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize("执行器空闲 slot 不足")
+                msg=err or self._localize("执行器空闲 slot 不足"),
+                data=QueueModel(
+                    func_name=UiSocketEnum.PAGE_STEPS,
+                    func_args={"page_step_id": args.get("page_step_id"), "error": err or ""},
+                ),
             ))
             return
 
@@ -399,14 +414,23 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         if err:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize(err)
+                msg=self._localize(err),
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE,
+                    func_args={"case_id": args.get("case_id"), "error": err},
+                ),
             ))
             return
 
-        if not self._reserve_actuator_slots(args, 1):
+        ok, err = self._reserve_actuator_slots(args, 1)
+        if not ok:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize("执行器空闲 slot 不足")
+                msg=err or self._localize("执行器空闲 slot 不足"),
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE,
+                    func_args={"case_id": args.get("case_id"), "error": err or ""},
+                ),
             ))
             return
 
@@ -444,7 +468,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         if not case_ids:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize("没有选择要执行的用例")
+                msg=self._localize("没有选择要执行的用例"),
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE_BATCH,
+                    func_args={"case_ids": [], "error": self._localize("没有选择要执行的用例")},
+                ),
             ))
             return
 
@@ -452,14 +480,23 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         if err:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize(err)
+                msg=self._localize(err),
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE_BATCH,
+                    func_args={"case_ids": case_ids, "error": err},
+                ),
             ))
             return
 
-        if not self._reserve_actuator_slots(args, len(case_ids)):
+        ok, err = self._reserve_actuator_slots(args, len(case_ids))
+        if not ok:
             await self.send_json(SocketDataModel(
                 code=ResponseCode.ERROR,
-                msg=self._localize("执行器空闲 slot 不足")
+                msg=err or self._localize("执行器空闲 slot 不足"),
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE_BATCH,
+                    func_args={"case_ids": case_ids, "error": err or ""},
+                ),
             ))
             return
         batch_id = await self.create_batch_record(case_ids)
