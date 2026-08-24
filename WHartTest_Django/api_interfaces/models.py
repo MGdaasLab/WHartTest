@@ -126,7 +126,7 @@ class ApiInterface(models.Model):
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
-        default=STATUS_INTEGRATING,
+        default=STATUS_SELF_TESTING,
         blank=True,
         verbose_name='Status',
     )
