@@ -190,10 +190,10 @@ const buildImportOptions = (): { import_mode: 'create_module' | 'existing_module
   return { import_mode: 'existing_module', module_id: importTargetModuleId.value }
 }
 
-// 已有模块下拉选项（保留层级缩进）
+// 已有模块下拉选项（仅根模块：只允许在根模块下导入接口）
 const importModuleSelectOptions = computed(() => {
-  return flattenModuleOptions(apis.value || []).map(item => ({
-    label: `${'　'.repeat(item.level)}${item.name}`,
+  return (apis.value || []).map(item => ({
+    label: item.name,
     value: item.id,
   }))
 })

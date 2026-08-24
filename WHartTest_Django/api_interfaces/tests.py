@@ -97,8 +97,8 @@ class ApiInterfaceModelTest(TestCase):
 
         self.assertEqual(interface.get_interface_data()['file_ids'], [8])
 
-    def test_unique_together_name_project(self):
-        """测试同一项目下接口名唯一约束"""
+    def test_same_name_same_project_allowed(self):
+        """同一项目下允许存在同名接口（名称不做唯一约束）"""
         ApiInterface.objects.create(
             name='Duplicate API',
             type='http',
@@ -107,15 +107,18 @@ class ApiInterfaceModelTest(TestCase):
             project=self.project,
             created_by=self.user,
         )
-        with self.assertRaises(Exception):
-            ApiInterface.objects.create(
-                name='Duplicate API',
-                type='http',
-                method='POST',
-                url='/api/test2',
-                project=self.project,
-                created_by=self.user,
-            )
+        ApiInterface.objects.create(
+            name='Duplicate API',
+            type='http',
+            method='POST',
+            url='/api/test2',
+            project=self.project,
+            created_by=self.user,
+        )
+        self.assertEqual(
+            ApiInterface.objects.filter(project=self.project, name='Duplicate API').count(),
+            2,
+        )
 
     def test_same_name_different_projects(self):
         """测试不同项目可以有相同接口名"""
@@ -603,8 +606,8 @@ class ApiInterfaceAPITest(TestCase):
         interface = ApiInterface.objects.get(name='New SQL Query')
         self.assertEqual(interface.type, 'sql')
 
-    def test_create_duplicate_name_returns_400(self):
-        """测试同项目重复接口名返回 400 而不是 500"""
+    def test_create_duplicate_name_allowed(self):
+        """接口名称不要求唯一：同项目下允许存在同名接口。"""
         ApiInterface.objects.create(
             name='Duplicate API',
             type='http',
@@ -620,8 +623,11 @@ class ApiInterfaceAPITest(TestCase):
             'url': '/api/new',
         }
         response = self.client.post(self.base_url, data, format='json')
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-        self.assertIn('name', response.data)
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(
+            ApiInterface.objects.filter(project=self.project, name='Duplicate API').count(),
+            2,
+        )
 
     def test_import_openapi_creates_and_updates_interfaces(self):
         """OpenAPI 3.x 导入应按 tag 建模块，重复导入按 method+url 更新。"""
@@ -1974,9 +1980,9 @@ class ApiInterfaceAPITest(TestCase):
         self.assertEqual(foreign_module.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(ApiInterface.objects.filter(project=self.project).count(), 0)
 
-    def test_import_openapi_create_module_second_module_renames_conflicts(self):
-        """同一份文档分别导入到两个不同新模块：第二次不得因接口重名报 400，
-        重名接口自动加后缀（如“解锁屏幕 2”），新接口落在第二个新模块下。"""
+    def test_import_openapi_second_module_same_name_allowed(self):
+        """同一份文档分别导入到两个不同新模块：接口名称不唯一，
+        第二次不必加后缀，同名接口允许存在于不同模块。"""
         document = {
             'openapi': '3.0.3',
             'info': {'title': 'Lock API', 'version': '1.0.0'},
@@ -2029,7 +2035,7 @@ class ApiInterfaceAPITest(TestCase):
         self.assertEqual(second.data['updated_count'], 0)
         module_b = ApiModule.objects.get(project=self.project, name='模块B')
         new_interface = ApiInterface.objects.get(project=self.project, module=module_b, url='/unlockscreen')
-        self.assertEqual(new_interface.name, '解锁屏幕 2')
+        self.assertEqual(new_interface.name, '解锁屏幕')
         self.assertEqual(ApiInterface.objects.filter(project=self.project).count(), 2)
 
     def test_import_openapi_with_self_referencing_schema(self):

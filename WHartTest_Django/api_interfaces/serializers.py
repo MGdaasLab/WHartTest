@@ -49,7 +49,6 @@ class ApiInterfaceSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         instance = getattr(self, 'instance', None)
-        name = attrs.get('name')
         project = attrs.get('project') or (instance.project if instance else None)
         view = self.context.get('view')
         view_kwargs = getattr(view, 'kwargs', {}) or {}
@@ -59,15 +58,6 @@ class ApiInterfaceSerializer(serializers.ModelSerializer):
             project_pk = view_kwargs.get('project_pk')
             if project_pk is not None:
                 project_id = int(project_pk)
-
-        if name and project_id is not None and not self.context.get('skip_name_check'):
-            query = ApiInterface.objects.filter(name=name, project_id=project_id)
-            if instance:
-                query = query.exclude(pk=instance.pk)
-            if query.exists():
-                raise serializers.ValidationError(
-                    {"name": [f"An interface named '{name}' already exists in this project."]}
-                )
 
         module = attrs.get('module', instance.module if instance else None)
         if module and project_id is not None and module.project_id != project_id:
