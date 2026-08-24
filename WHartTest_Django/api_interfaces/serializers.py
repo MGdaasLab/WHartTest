@@ -19,6 +19,12 @@ class ApiInterfaceModuleInfoSerializer(serializers.Serializer):
 
 class ApiInterfaceSerializer(serializers.ModelSerializer):
     module_info = ApiInterfaceModuleInfoSerializer(source='module', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    created_by_name = serializers.CharField(
+        source='created_by.username',
+        read_only=True,
+        allow_null=True,
+    )
 
     class Meta:
         model = ApiInterface
@@ -39,11 +45,6 @@ class ApiInterfaceSerializer(serializers.ModelSerializer):
             data['body'] = normalize_request_body(data.get('body'))
         except ValueError:
             data['body'] = {'type': 'raw', 'content': data.get('body')}
-        # Strip module_info from list responses, only include in detail
-        request = self.context.get('request')
-        view_kwargs = getattr(self.context.get('view'), 'kwargs', {}) or {}
-        if request and not view_kwargs.get('pk'):
-            data.pop('module_info', None)
         return data
 
     def validate(self, attrs):
@@ -59,7 +60,7 @@ class ApiInterfaceSerializer(serializers.ModelSerializer):
             if project_pk is not None:
                 project_id = int(project_pk)
 
-        if name and project_id is not None:
+        if name and project_id is not None and not self.context.get('skip_name_check'):
             query = ApiInterface.objects.filter(name=name, project_id=project_id)
             if instance:
                 query = query.exclude(pk=instance.pk)
@@ -216,13 +217,29 @@ _original_api_interface_update = ApiInterfaceSerializer.update if hasattr(ApiInt
 
 def _api_interface_serializer_create(self, validated_data):
     instance = super(ApiInterfaceSerializer, self).create(validated_data)
-    sync_file_references(instance.file_ids or [], instance.project, FileReference.REF_API_INTERFACE, instance.id, self.context.get('request').user if self.context.get('request') else None)
+    # 新接口没有历史附件引用,空附件列表时无需执行引用同步,
+    # 避免导入等批量创建场景为每个接口多出若干次无意义查询。
+    file_ids = instance.file_ids or []
+    if file_ids:
+        sync_file_references(
+            file_ids,
+            instance.project,
+            FileReference.REF_API_INTERFACE,
+            instance.id,
+            self.context.get('request').user if self.context.get('request') else None,
+        )
     return instance
 
 def _api_interface_serializer_update(self, instance, validated_data):
     instance = super(ApiInterfaceSerializer, self).update(instance, validated_data)
     if 'file_ids' in validated_data:
-        sync_file_references(instance.file_ids or [], instance.project, FileReference.REF_API_INTERFACE, instance.id, self.context.get('request').user if self.context.get('request') else None)
+        sync_file_references(
+            instance.file_ids or [],
+            instance.project,
+            FileReference.REF_API_INTERFACE,
+            instance.id,
+            self.context.get('request').user if self.context.get('request') else None,
+        )
     return instance
 
 ApiInterfaceSerializer.create = _api_interface_serializer_create

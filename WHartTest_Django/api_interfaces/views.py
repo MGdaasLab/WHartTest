@@ -130,6 +130,18 @@ class ApiInterfaceViewSet(BaseModelViewSet):
         strip_base_url = _parse_bool(request.data.get('strip_base_url'), default=True)
         create_environments = _parse_bool(request.data.get('create_environments'), default=False)
 
+        # 导入位置模式：create_module（创建新模块）/ existing_module（使用已有模块）
+        import_mode = str(request.data.get('import_mode') or '').strip()
+        if import_mode in ('', 'auto', 'legacy'):
+            import_mode = ''
+        import_mode = import_mode or None
+        module_name = str(request.data.get('module_name') or '')
+        try:
+            target_module_id = request.data.get('module_id', request.data.get('target_module_id'))
+            target_module_id = int(target_module_id) if target_module_id not in (None, '') else None
+        except (TypeError, ValueError):
+            target_module_id = None
+
         try:
             if source_url:
                 content, filename = fetch_api_document(str(source_url))
@@ -159,6 +171,9 @@ class ApiInterfaceViewSet(BaseModelViewSet):
                 view=self,
                 strip_base_url=strip_base_url,
                 create_environments=create_environments,
+                import_mode=import_mode,
+                module_name=module_name,
+                target_module_id=target_module_id,
             )
             result['format'] = parsed.source_format
             result['version'] = parsed.source_version
