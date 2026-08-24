@@ -12,7 +12,8 @@ import ApiExtractConfig from './ApiExtractConfig.vue'
 import ApiAssertConfig from './ApiAssertConfig.vue'
 import ApiHooksConfigEnhanced from './ApiHooksConfigEnhanced.vue'
 import { createInterface, updateInterface, debugInterface, quickDebugInterface, type ApiInterface, type DebugInterfaceRequest, type QuickDebugInterfaceRequest, type KeyValuePair } from '../../services/interfaceService'
-import type { ApiExtractPayload } from '../../types/interface'
+import { DEFAULT_INTERFACE_STATUS } from '../../types/interface'
+import type { ApiExtractPayload, InterfaceStatus } from '../../types/interface'
 import { useProjectStore } from '@/store/projectStore'
 import { useEnvironmentStore } from '../../stores/environmentStore'
 import { useApiTabsStore } from '../../stores/apiTabsStore'
@@ -359,7 +360,7 @@ const collectFileIdsFromBody = (body: any): number[] => {
 }
 
 // 处理保存用例
-const handleSave = async (requestData: { method: string, url: string, name: string, module?: number | string | null }) => {
+const handleSave = async (requestData: { method: string, url: string, name: string, module?: number | string | null, status?: InterfaceStatus }) => {
   if (!projectStore.currentProjectId) {
     Message.warning('请先选择项目')
     return
@@ -419,6 +420,7 @@ const handleSave = async (requestData: { method: string, url: string, name: stri
       url: requestData.url,
       project: Number(projectStore.currentProjectId),
       module: normalizedModuleId,
+      status: requestData.status || props.interface?.status || DEFAULT_INTERFACE_STATUS,
       headers,
       params,
       body,

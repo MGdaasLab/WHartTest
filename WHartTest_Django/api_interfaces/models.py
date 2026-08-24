@@ -28,6 +28,19 @@ class ApiInterface(models.Model):
         ('delete', 'Delete'),
     ]
 
+    # Interface status
+    STATUS_INTEGRATING = 'integrating'
+    STATUS_SELF_TESTING = 'self_testing'
+    STATUS_COMPLETED = 'completed'
+    STATUS_DEPRECATED = 'deprecated'
+
+    STATUS_CHOICES = [
+        (STATUS_SELF_TESTING, '自测中'),
+        (STATUS_INTEGRATING, '联调中'),
+        (STATUS_COMPLETED, '已完成'),
+        (STATUS_DEPRECATED, '已废弃'),
+    ]
+
     # Basic info
     name = models.CharField(max_length=100, verbose_name='Interface Name')
     type = models.CharField(
@@ -109,6 +122,13 @@ class ApiInterface(models.Model):
         blank=True,
         verbose_name='附件 file_id 列表',
         help_text='统一文件管理中的附件ID列表',
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_SELF_TESTING,
+        blank=True,
+        verbose_name='Status',
     )
 
     # Relationships
