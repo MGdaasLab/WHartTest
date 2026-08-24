@@ -282,17 +282,11 @@ class ApiInterfaceViewSet(BaseModelViewSet):
     def duplicate(self, request, *args, **kwargs):
         """Duplicate an interface in the same project/module."""
         source = self.get_object()
-        project_pk = self.kwargs.get('project_pk')
 
         base_name = request.data.get('name') or f"{source.name} 副本"
-        candidate_name = base_name
-        suffix = 2
-        while ApiInterface.objects.filter(project_id=project_pk, name=candidate_name).exists():
-            candidate_name = f"{base_name} {suffix}"
-            suffix += 1
 
         duplicate_data = {
-            'name': candidate_name,
+            'name': base_name,
             'type': source.type,
             'method': source.method,
             'url': source.url,

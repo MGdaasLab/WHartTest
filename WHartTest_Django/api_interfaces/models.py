@@ -161,7 +161,6 @@ class ApiInterface(models.Model):
         verbose_name = 'API Interface'
         verbose_name_plural = 'API Interfaces'
         ordering = ['-created_at']
-        unique_together = ['name', 'project']
 
     def __str__(self):
         return f"{self.project.name}-{self.name}"

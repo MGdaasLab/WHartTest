@@ -116,7 +116,7 @@ def import_openapi_interfaces(
                 target_module_id=target_module_id,
             )
 
-        existing_by_key, used_names = _existing_interface_index(project, scope_module=target_module)
+        existing_by_key = _existing_interface_index(project, scope_module=target_module)
         touched_modules: set[str] = set()
         if target_module is not None:
             touched_modules.add(target_module.name)
@@ -166,7 +166,6 @@ def import_openapi_interfaces(
                 touched_modules.add(module.name)
 
             existing = existing_by_key.get((payload["method"], payload["url"]))
-            existing_name = existing.name if existing else None
 
             # scoped 模式下：接口路径一致但内容（请求头、请求体、参数等）完全一致时
             # 视为无变化，跳过覆盖，不计入“修改”；内容不一致才覆盖并计为“修改”。
@@ -174,23 +173,11 @@ def import_openapi_interfaces(
                 imported_ids.append(existing.id)
                 continue
 
-            payload["name"] = _unique_interface_name(
-                name=payload["name"],
-                used_names=used_names,
-                exclude_name=existing_name,
-            )
-
             serializer = ApiInterfaceSerializer(
                 existing,
                 data=payload,
                 partial=bool(existing),
-                context={
-                    "request": request,
-                    "view": view,
-                    # 导入路径已在事务内用「全项目已用名称集合」保证接口名唯一,
-                    # 跳过序列化器按 name+project 的重复 DB 校验,减少导入耗时。
-                    "skip_name_check": True,
-                },
+                context={"request": request, "view": view},
             )
             serializer.is_valid(raise_exception=True)
             if existing:
@@ -205,9 +192,6 @@ def import_openapi_interfaces(
                 created_count += 1
 
             existing_by_key[(payload["method"], payload["url"])] = instance
-            if existing_name:
-                used_names.discard(existing_name)
-            used_names.add(instance.name)
 
         created_environments: list[dict[str, Any]] = []
         if create_environments:
@@ -695,15 +679,13 @@ def _existing_module_cache(project: Project) -> dict[str, ApiModule]:
 def _existing_interface_index(
     project: Project,
     scope_module: ApiModule | None = None,
-) -> tuple[dict[tuple[str, str], ApiInterface], set[str]]:
-    """预取项目下的接口数据,返回 (HTTP 接口 method+url 索引, 项目全部接口的已用名称集合)。
+) -> dict[tuple[str, str], ApiInterface]:
+    """预取项目下的接口数据,返回 HTTP 接口 method+url 索引。
 
     scope_module 非 None 时,接口索引只包含该模块及其全部子模块下的接口,
-    用于「创建新模块 / 使用已有模块」的定向导入,避免覆盖其他模块的同名接口;
-    已用名称集合始终覆盖整个项目（接口名称在项目内唯一,重名时需自动加后缀）。
+    用于「创建新模块 / 使用已有模块」的定向导入,避免覆盖其他模块的同路径接口。
     """
     index: dict[tuple[str, str], ApiInterface] = {}
-    used_names: set[str] = set()
 
     if scope_module is not None:
         subtree_ids = set(scope_module.get_all_descendant_ids())
@@ -715,12 +697,11 @@ def _existing_interface_index(
         .only("id", "type", "method", "url", "name", "module_id")
         .iterator(chunk_size=1000)
     ):
-        used_names.add(interface.name)
         if interface.type == ApiInterface.TYPE_HTTP:
             if subtree_ids is None or interface.module_id in subtree_ids:
                 index.setdefault((interface.method.upper(), interface.url), interface)
 
-    return index, used_names
+    return index
 
 
 def _get_or_create_module(
@@ -868,30 +849,6 @@ def _interface_import_content_equal(
         and norm_json(existing.body) == norm_json(payload.get("body"))
         and norm_json(existing.validators) == norm_json(payload.get("validators"))
     )
-
-
-def _unique_interface_name(
-    *,
-    name: str,
-    used_names: set[str],
-    exclude_name: str | None = None,
-) -> str:
-    base = re.sub(r"\s+", " ", name).strip() or "Imported API"
-    base = base[:100]
-
-    def available(candidate: str) -> bool:
-        return candidate not in used_names or candidate == exclude_name
-
-    if available(base):
-        return base
-
-    suffix = 2
-    while True:
-        suffix_text = f" {suffix}"
-        candidate = f"{base[:100 - len(suffix_text)]}{suffix_text}"
-        if available(candidate):
-            return candidate
-        suffix += 1
 
 
 def _resolve_ref(
