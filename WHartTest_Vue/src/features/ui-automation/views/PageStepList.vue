@@ -24,6 +24,10 @@
         />
       </div>
       <div class="action-buttons">
+        <a-button @click="openRecorder">
+          <template #icon><icon-record /></template>
+          {{ pageText.recordStep }}
+        </a-button>
         <a-button type="primary" @click="showAddModal">
           <template #icon><icon-plus /></template>
           {{ pageText.addStep }}
@@ -134,6 +138,13 @@
     >
       <StepDetailList v-if="currentPageStep" :page-step="currentPageStep" />
     </a-drawer>
+
+    <!-- 录制器弹窗 -->
+    <RecorderModal
+      v-model:visible="recorderModalVisible"
+      :project-id="projectId"
+      @refresh="onSearch"
+    />
   </div>
 </template>
 
@@ -141,13 +152,14 @@
 import FileAttachmentPicker from '@/features/file-management/components/FileAttachmentPicker.vue'
 import { ref, reactive, computed, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconSettings, IconCopy } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconEdit, IconDelete, IconSettings, IconCopy, IconRecord } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { pageStepsApi, pageApi, moduleApi } from '../api'
 import type { UiPageSteps, UiPageStepsForm, UiPage, UiModule, ExecutionStatus } from '../types'
 import { STATUS_LABELS, extractListData, extractPaginationData, extractResponseData } from '../types'
 import StepDetailList from './StepDetailList.vue'
+import RecorderModal from '../components/RecorderModal.vue'
 
 const props = defineProps<{
   selectedModuleId?: number
@@ -197,6 +209,8 @@ const pageText = computed(() => (
         deleteBlocked: 'Linked data prevents deletion. Remove the associations first',
         copySuccess: 'Copied successfully',
         copyFailed: 'Copy failed',
+        recordStep: 'Record steps',
+        openRecorderFailed: 'Failed to open recorder',
       }
     : {
         selectPage: '选择页面',
@@ -236,6 +250,8 @@ const pageText = computed(() => (
         deleteBlocked: '存在关联，无法删除。请先解除关联',
         copySuccess: '复制成功',
         copyFailed: '复制失败',
+        recordStep: '录制步骤',
+        openRecorderFailed: '打开录制器失败',
       }
 ))
 
@@ -245,6 +261,7 @@ const pageStepData = ref<UiPageSteps[]>([])
 const pageOptions = ref<UiPage[]>([])
 const moduleOptions = ref<UiModule[]>([])
 const modalVisible = ref(false)
+const recorderModalVisible = ref(false)
 const detailDrawerVisible = ref(false)
 const isEdit = ref(false)
 const currentPageStep = ref<UiPageSteps | null>(null)
@@ -392,6 +409,15 @@ const showAddModal = async () => {
   if (!moduleOptions.value.length) await fetchModules()
   if (!pageOptions.value.length) await fetchPages()
   modalVisible.value = true
+}
+
+// 打开录制器弹窗
+const openRecorder = () => {
+  if (!projectId.value) {
+    Message.warning(pageText.value.openRecorderFailed)
+    return
+  }
+  recorderModalVisible.value = true
 }
 
 const editPageStep = async (record: UiPageSteps) => {

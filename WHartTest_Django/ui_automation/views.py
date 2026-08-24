@@ -1,8 +1,16 @@
 # -*- coding: utf-8 -*-
 """UI 自动化视图"""
 
+import json
+import os
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from django.conf import settings
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
@@ -1395,3 +1403,217 @@ def trigger_batch_execution(request):
             'effective_runtime': effective,
         },
     })
+
+
+# ---------------------------------------------------------------------------
+# 录制器会话（Playwright 无头浏览器录制，方案：截图帧流式）
+# ---------------------------------------------------------------------------
+
+_DEFAULT_RECORDER_VIEWPORT = {'width': 1400, 'height': 900}
+
+
+def _resolve_recorder_skill_dir() -> str:
+    """定位 playwright npm 依赖所在的 skill 目录。
+
+    优先级：环境变量 RECORDER_SKILL_DIR > DB 中已部署的 playwright skill
+    （docker 下可写，支持首次自动 npm install）> 仓库内 WHartTest_Skills 兜底。
+    """
+    env_dir = os.environ.get('RECORDER_SKILL_DIR', '').strip()
+    if env_dir and os.path.isdir(env_dir):
+        return env_dir
+
+    from skills.models import Skill
+    skill = (
+        Skill.objects.filter(name__in=['playwright-skill', 'playwright-cli'], is_active=True)
+        .order_by('id')
+        .first()
+    )
+    if skill:
+        full = skill.get_full_path()
+        if full and os.path.isdir(full):
+            return full
+
+    fallback = Path(settings.BASE_DIR).parent / 'WHartTest_Skills' / 'playwright-skill'
+    if fallback.is_dir():
+        return str(fallback)
+    return ''
+
+
+def _recorder_output_dir() -> Path:
+    """录制脚本输出目录：项目 data 目录下的 recorder/<日期>/。
+
+    MEDIA_ROOT 的父目录即项目 data 目录：
+    - docker：/app/data/media → /app/data（宿主 ./data 挂载）
+    - 本地：<仓库根>/data/media → <仓库根>/data
+    """
+    base = Path(settings.MEDIA_ROOT).parent
+    return base / 'recorder' / datetime.now().strftime('%Y%m%d')
+
+
+class UiRecorderSessionViewSet(viewsets.ViewSet):
+    """录制会话生命周期：创建（启动浏览器）/ 结束（存脚本+解析入库）/ 取消。"""
+
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def _owner_ok(request, meta) -> bool:
+        return meta.user_id == request.user.username or request.user.is_superuser
+
+    def create(self, request):
+        """POST recorder-sessions/
+        {env_config_id, page_id, page_step_id, create_elements, create_steps}
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError, RecorderSessionMeta,
+        )
+
+        env_config = UiEnvironmentConfig.objects.filter(
+            id=request.data.get('env_config_id')
+        ).first()
+        if env_config is None:
+            return Response({'detail': '请选择有效的环境配置'}, status=status.HTTP_400_BAD_REQUEST)
+
+        page = UiPage.objects.filter(id=request.data.get('page_id'), project=env_config.project).first()
+        if page is None:
+            return Response({'detail': '请选择当前项目下的页面'}, status=status.HTTP_400_BAD_REQUEST)
+
+        page_step = UiPageSteps.objects.filter(
+            id=request.data.get('page_step_id'),
+            project=env_config.project,
+            page=page,
+        ).first()
+        if page_step is None:
+            return Response({'detail': '请选择当前页面下的页面步骤'}, status=status.HTTP_400_BAD_REQUEST)
+
+        base_url = (env_config.base_url or page.url or '').strip()
+        if not base_url:
+            return Response(
+                {'detail': '环境配置与页面均未配置 URL，无法确定录制导航地址'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        skill_dir = _resolve_recorder_skill_dir()
+        if not skill_dir:
+            return Response(
+                {'detail': '未找到 playwright skill 目录（可设置环境变量 RECORDER_SKILL_DIR）'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        session_id = None
+        session = recorder_manager.create_session(
+            user_id=request.user.username,
+            project_id=env_config.project_id,
+            skill_dir=skill_dir,
+        )
+        meta = RecorderSessionMeta(
+            user_id=request.user.username,
+            project_id=env_config.project_id,
+            page_id=page.id,
+            page_step_id=page_step.id,
+            create_elements=bool(request.data.get('create_elements')),
+            create_steps=bool(request.data.get('create_steps')),
+            base_url=base_url,
+            viewport=_DEFAULT_RECORDER_VIEWPORT,
+        )
+        recorder_manager.set_meta(session.session_id, meta)
+        session_id = session.session_id
+
+        try:
+            session.start(timeout=120)
+            result = session.request('start', {
+                'url': base_url,
+                'viewport': meta.viewport,
+            }, timeout=90)
+        except RecorderSessionError as exc:
+            recorder_manager.close(session_id, graceful=False)
+            return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        viewport = result.get('state', {}).get('viewport') or meta.viewport
+        return Response({
+            'session_id': session_id,
+            'viewport': viewport,
+            'base_url': base_url,
+            'page_id': page.id,
+            'page_step_id': page_step.id,
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def finish(self, request, pk=None):
+        """POST recorder-sessions/{id}/finish/
+        停止录制 → 脚本落盘 data/recorder/<日期>/ →（开关开启）解析入库。
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError,
+        )
+        from .recorder_apply import apply_recorded_actions
+
+        session_id = pk
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None or not self._owner_ok(request, meta):
+            return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = session.request('finish', {}, timeout=30)
+        except RecorderSessionError as exc:
+            recorder_manager.close(session_id, graceful=False)
+            return Response({'detail': f'结束录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        actions = result.get('state', {}).get('actions') or []
+        script = result.get('state', {}).get('script') or ''
+
+        # 原始录制脚本落盘（JSON 动作列表 + 可读 playwright JS）
+        output_dir = _recorder_output_dir()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        file_stem = uuid.uuid4().hex
+        raw_path = output_dir / f'{file_stem}.json'
+        script_path = output_dir / f'{file_stem}.js'
+        try:
+            raw_path.write_text(
+                json.dumps({'session_id': session_id, 'base_url': meta.base_url,
+                            'actions': actions}, ensure_ascii=False, indent=2),
+                encoding='utf-8',
+            )
+            script_path.write_text(script, encoding='utf-8')
+        except OSError as exc:
+            recorder_manager.close(session_id, graceful=False)
+            return Response({'detail': f'录制脚本写入失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 解析入库（元素 → 所选页面；步骤 → 所选页面步骤）
+        apply_stats = {
+            'elements_created': 0,
+            'elements_updated': 0,
+            'steps_created': 0,
+        }
+        if (meta.create_elements or meta.create_steps) and meta.page_step_id:
+            page = UiPage.objects.filter(id=meta.page_id).first()
+            page_step = UiPageSteps.objects.filter(id=meta.page_step_id).first()
+            if page and page_step:
+                apply_stats = apply_recorded_actions(
+                    page=page,
+                    page_step=page_step,
+                    user=request.user,
+                    actions=actions,
+                )
+
+        recorder_manager.close(session_id)
+        return Response({
+            'message': '录制完成',
+            'script_path': str(script_path),
+            'raw_path': str(raw_path),
+            'actions_count': len(actions),
+            **apply_stats,
+        })
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """POST recorder-sessions/{id}/cancel/ 取消录制，释放浏览器进程。"""
+        from .recorder.session_manager import recorder_manager
+
+        session_id = pk
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None or not self._owner_ok(request, meta):
+            return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
+        recorder_manager.close(session_id, graceful=False)
+        return Response({'message': '录制已取消'})

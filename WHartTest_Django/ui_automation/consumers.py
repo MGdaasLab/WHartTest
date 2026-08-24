@@ -7,6 +7,7 @@ UI自动化 WebSocket Consumer
 - /ws/ui/actuator/ - 执行器连接，用于接收执行任务和返回结果
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -100,6 +101,10 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         self.group_name: str = 'ui_automation'
         self.actuator_info: dict = {}  # 执行器信息
         self.language: str = 'zh-Hans'
+        # 录制器状态
+        self._recorder_session_id: Optional[str] = None
+        self._recorder_relay_task: Optional[asyncio.Task] = None
+        self._recorder_closed: bool = False
 
     def _get_query_params(self) -> dict[str, list[str]]:
         query_string = self.scope.get('query_string', b'').decode('utf-8')
@@ -173,6 +178,19 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
     
     async def disconnect(self, close_code):
         """断开连接"""
+        # 清理录制器：停止帧中继并关闭录制会话（避免遗留无头浏览器进程）
+        self._recorder_closed = True
+        if self._recorder_relay_task and not self._recorder_relay_task.done():
+            self._recorder_relay_task.cancel()
+        self._recorder_relay_task = None
+        if self._recorder_session_id:
+            try:
+                from .recorder.session_manager import recorder_manager
+                recorder_manager.close(self._recorder_session_id, graceful=False)
+            except Exception as exc:
+                logger.warning('[recorder] disconnect cleanup error: %s', exc)
+            self._recorder_session_id = None
+
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
         
         if self.is_actuator:
@@ -238,6 +256,10 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.TEST_CASE: self.handle_execute_test_case,
                 UiSocketEnum.TEST_CASE_BATCH: self.handle_execute_batch,
                 UiSocketEnum.STOP_EXECUTION: self.handle_stop_execution,
+                UiSocketEnum.RECORDER_START: self.handle_recorder_start,
+                UiSocketEnum.RECORDER_INPUT: self.handle_recorder_input,
+                UiSocketEnum.RECORDER_ASSERT: self.handle_recorder_assert,
+                UiSocketEnum.RECORDER_STOP: self.handle_recorder_stop,
             }
         
         handler = handler_map.get(func_name)
@@ -250,6 +272,120 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 msg=self._localize(f"未知的操作: {func_name}")
             ))
     
+
+    # ------------------------------------------------------------------
+    # 录制器（Playwright 无头浏览器录制：帧推流 / 输入转发 / 动作中继）
+    # ------------------------------------------------------------------
+
+    async def _send_recorder(self, func_name: str, func_args: dict, msg: str = 'ok'):
+        await self.send_json(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg=msg,
+            user=self.user_id,
+            is_notice=NoticeType.WEB,
+            data=QueueModel(func_name=func_name, func_args=func_args),
+        ))
+
+    async def _send_recorder_error(self, message: str):
+        await self.send_json(SocketDataModel(
+            code=ResponseCode.ERROR,
+            msg=message,
+            user=self.user_id,
+            is_notice=NoticeType.WEB,
+            data=QueueModel(
+                func_name=UiSocketEnum.RECORDER_STATUS,
+                func_args={'status': 'error', 'message': message},
+            ),
+        ))
+
+    async def handle_recorder_start(self, args, user):
+        """绑定录制会话并启动帧中继任务。args: {session_id}"""
+        from .recorder.session_manager import recorder_manager
+
+        session_id = args.get('session_id')
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        # WS 层通常为匿名 web_xxx，无法精确匹配用户时仅依赖 uuid 防猜测
+        if not self.user_id.startswith('web_') and meta.user_id != self.user_id:
+            await self._send_recorder_error('无权访问该录制会话')
+            return
+
+        self._recorder_session_id = session_id
+        if self._recorder_relay_task is None or self._recorder_relay_task.done():
+            self._recorder_closed = False
+            self._recorder_relay_task = asyncio.create_task(self._recorder_relay(session_id))
+        await self._send_recorder(UiSocketEnum.RECORDER_STATUS, {'status': 'started'})
+
+    async def _recorder_relay(self, session_id: str):
+        """帧/动作中继：轮询会话事件队列并推给前端（丢帧合并，不积压）。"""
+        from .recorder.session_manager import recorder_manager
+
+        while not self._recorder_closed:
+            try:
+                session = recorder_manager.get(session_id)
+                if session is None:
+                    await self._send_recorder(
+                        UiSocketEnum.RECORDER_STATUS, {'status': 'ended', 'message': '录制会话已结束'}
+                    )
+                    break
+                frame = session.take_latest_frame()
+                if frame is not None:
+                    await self._send_recorder(UiSocketEnum.RECORDER_FRAME, {'frame': frame})
+                for ev in session.drain_events():
+                    if ev.get('type') == 'actions':
+                        await self._send_recorder(UiSocketEnum.RECORDER_ACTION, {'action': ev.get('data')})
+                    elif ev.get('type') == 'status':
+                        await self._send_recorder(UiSocketEnum.RECORDER_STATUS, ev.get('data') or {})
+            except Exception as exc:
+                logger.warning('[recorder] relay error: %s', exc)
+            await asyncio.sleep(0.15)
+
+    async def handle_recorder_input(self, args, user):
+        """转发前端输入事件到录制进程（fire-and-forget）。"""
+        from .recorder.session_manager import recorder_manager
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            session.notify('input', args)
+        except Exception as exc:
+            await self._send_recorder_error(f'输入转发失败: {exc}')
+
+    async def handle_recorder_assert(self, args, user):
+        """请求录制进程记录断言动作（需要等待元素悬停状态）。"""
+        from .recorder.session_manager import recorder_manager
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            result = await sync_to_async(session.request)(
+                'assert', {'mode': args.get('mode') or 'visible'}, timeout=20
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'断言记录失败: {exc}')
+            return
+        state = result.get('state') or {}
+        await self._send_recorder(
+            UiSocketEnum.RECORDER_STATUS,
+            {'status': 'asserted', 'action': state.get('action')},
+            msg='断言已记录',
+        )
+
+    async def handle_recorder_stop(self, args, user):
+        """停止帧中继（结束录制走 REST finish）。"""
+        self._recorder_closed = True
+        if self._recorder_relay_task and not self._recorder_relay_task.done():
+            self._recorder_relay_task.cancel()
+        self._recorder_relay_task = None
+        self._recorder_session_id = None
+        await self._send_recorder(UiSocketEnum.RECORDER_STATUS, {'status': 'stopped'})
 
     async def _load_env_config(self, env_config_id):
         """Load UiEnvironmentConfig by id (async)."""

@@ -297,4 +297,43 @@ export const actuatorApi = {
 }
 
 
+// ==================== 录制器会话 ====================
+export interface RecorderSessionCreatePayload {
+  env_config_id: number
+  page_id: number
+  page_step_id: number
+  create_elements?: boolean
+  create_steps?: boolean
+}
+
+export interface RecorderSessionInfo {
+  session_id: string
+  viewport: { width: number; height: number }
+  base_url: string
+  page_id: number
+  page_step_id: number
+}
+
+export interface RecorderFinishResult {
+  message: string
+  script_path: string
+  raw_path: string
+  actions_count: number
+  elements_created: number
+  elements_updated: number
+  steps_created: number
+}
+
+export const recorderApi = {
+  create: (data: RecorderSessionCreatePayload) =>
+    request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/`, data),
+
+  finish: (sessionId: string) =>
+    request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`),
+
+  cancel: (sessionId: string) =>
+    request.post(`${BASE_URL}/recorder-sessions/${sessionId}/cancel/`),
+}
+
+
 export { fileService as uiFileService } from '@/features/file-management/services/fileService'

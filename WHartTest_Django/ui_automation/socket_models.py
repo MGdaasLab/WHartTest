@@ -32,6 +32,14 @@ class UiSocketEnum:
     CASE_RESULT = 'u_case_result'         # 用例执行结果
     SET_ACTUATOR_INFO = 't_set_actuator_info'  # 设置执行器信息
     SET_ACTUATOR_CONFIG = 't_set_actuator_config'  # 平台下发执行器配置
+    # 录制器
+    RECORDER_START = 'u_recorder_start'    # 前端→后端：绑定录制会话，启动帧中继
+    RECORDER_INPUT = 'u_recorder_input'    # 前端→后端：浏览器输入事件（鼠标/键盘/滚轮）
+    RECORDER_ASSERT = 'u_recorder_assert'  # 前端→后端：记录断言动作
+    RECORDER_STOP = 'u_recorder_stop'      # 前端→后端：停止帧中继
+    RECORDER_FRAME = 'u_recorder_frame'    # 后端→前端：浏览器画面帧（base64 jpeg）
+    RECORDER_ACTION = 'u_recorder_action'  # 后端→前端：录制动作增量
+    RECORDER_STATUS = 'u_recorder_status'  # 后端→前端：录制状态/错误
 
 
 class QueueModel(BaseModel):

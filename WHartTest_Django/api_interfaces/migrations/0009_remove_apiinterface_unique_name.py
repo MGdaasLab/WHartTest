@@ -4,7 +4,7 @@ from django.db import migrations
 
 class Migration(migrations.Migration):
     dependencies = [
-        ('api_interfaces', '0006_apiinterface_status'),
+        ('api_interfaces', '0008_alter_apiinterface_status'),
     ]
 
     operations = [

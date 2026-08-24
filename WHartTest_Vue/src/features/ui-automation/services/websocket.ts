@@ -16,6 +16,14 @@ export const UiSocketEnum = {
   STOP_EXECUTION: 'u_stop_execution',     // 停止执行
   STEP_RESULT: 'u_step_result',           // 步骤执行结果
   CASE_RESULT: 'u_case_result',           // 用例执行结果
+  // 录制器
+  RECORDER_START: 'u_recorder_start',     // 绑定录制会话，启动帧中继
+  RECORDER_INPUT: 'u_recorder_input',     // 浏览器输入事件
+  RECORDER_ASSERT: 'u_recorder_assert',   // 记录断言动作
+  RECORDER_STOP: 'u_recorder_stop',       // 停止帧中继
+  RECORDER_FRAME: 'u_recorder_frame',     // 浏览器画面帧
+  RECORDER_ACTION: 'u_recorder_action',   // 录制动作增量
+  RECORDER_STATUS: 'u_recorder_status',   // 录制状态/错误
 } as const
 
 /** Socket 消息模型 */
@@ -249,6 +257,28 @@ class UiWebSocketService {
     return this.send(UiSocketEnum.STOP_EXECUTION, {
       task_id: taskId,
     })
+  }
+
+  // ---------------- 录制器 ----------------
+
+  /** 绑定录制会话（开始帧中继） */
+  recorderStart(sessionId: string): boolean {
+    return this.send(UiSocketEnum.RECORDER_START, { session_id: sessionId })
+  }
+
+  /** 转发浏览器输入事件 */
+  recorderInput(args: Record<string, any>): boolean {
+    return this.send(UiSocketEnum.RECORDER_INPUT, args)
+  }
+
+  /** 记录断言动作 */
+  recorderAssert(mode: string): boolean {
+    return this.send(UiSocketEnum.RECORDER_ASSERT, { mode })
+  }
+
+  /** 停止帧中继 */
+  recorderStop(): boolean {
+    return this.send(UiSocketEnum.RECORDER_STOP, {})
   }
 }
 
