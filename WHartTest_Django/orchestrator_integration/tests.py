@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 from unittest.mock import patch
 
 from asgiref.sync import async_to_sync
@@ -22,6 +23,7 @@ from .builtin_tools.skill_tools import (
     _build_skill_screenshots_dir,
     _finalize_skill_result,
     _prepare_skill_screenshots_dir,
+    _SKILL_DIR_STALE_SECONDS,
     _sanitize_runtime_path_segment,
 )
 from .builtin_tools.output_sanitizer import strip_terminal_control_sequences
@@ -266,21 +268,34 @@ class SkillScreenshotDirectoryTests(SimpleTestCase):
         self.assertTrue(screenshots_dir.startswith(temp_media_root))
         self.assertNotIn("..", screenshots_dir)
 
-    def test_prepare_skill_screenshots_dir_clears_stale_chat_session(self):
+    def test_prepare_skill_screenshots_dir_clears_idle_dir(self):
         with tempfile.TemporaryDirectory() as temp_media_root:
             with override_settings(MEDIA_ROOT=temp_media_root):
-                screenshots_dir = _prepare_skill_screenshots_dir(1, "89", "chat-a")
+                screenshots_dir = _prepare_skill_screenshots_dir(1, "89")
                 stale_file = os.path.join(screenshots_dir, "old.png")
                 with open(stale_file, "w", encoding="utf-8") as f:
                     f.write("old screenshot")
 
-                refreshed_dir = _prepare_skill_screenshots_dir(1, "89", "chat-b")
-                marker_path = os.path.join(refreshed_dir, ".chat_session")
+                # 目录仍新鲜：不清理，避免误删当前会话截图
+                refreshed_dir = _prepare_skill_screenshots_dir(1, "89")
+                self.assertEqual(refreshed_dir, screenshots_dir)
+                self.assertTrue(os.path.exists(stale_file))
 
+                # 子目录内文件也参与闲置判定：子目录内容变新则不清空
+                sub_file = os.path.join(screenshots_dir, "sub", "recent.png")
+                os.makedirs(os.path.dirname(sub_file), exist_ok=True)
+                with open(sub_file, "w", encoding="utf-8") as f:
+                    f.write("recent")
+                refreshed_dir = _prepare_skill_screenshots_dir(1, "89")
+                self.assertTrue(os.path.exists(stale_file))
+
+                # 目录树闲置超过阈值后清理
+                old = time.time() - _SKILL_DIR_STALE_SECONDS - 60
+                os.utime(stale_file, (old, old))
+                os.utime(sub_file, (old, old))
+                refreshed_dir = _prepare_skill_screenshots_dir(1, "89")
                 self.assertEqual(refreshed_dir, screenshots_dir)
                 self.assertFalse(os.path.exists(stale_file))
-                with open(marker_path, "r", encoding="utf-8") as f:
-                    self.assertEqual(f.read().strip(), "chat-b")
 
     def test_build_skill_artifacts_dir_uses_runtime_media_root(self):
         with tempfile.TemporaryDirectory() as temp_media_root:

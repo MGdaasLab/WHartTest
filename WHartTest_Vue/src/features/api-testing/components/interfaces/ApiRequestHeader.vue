@@ -6,6 +6,12 @@ import type { ApiInterface } from '../../services/interfaceService'
 import { quickDebugInterface, type QuickDebugInterfaceRequest } from '../../services/interfaceService'
 import { useProjectStore } from '@/store/projectStore'
 import { Message } from '@arco-design/web-vue'
+import {
+  DEFAULT_INTERFACE_STATUS,
+  INTERFACE_STATUS_OPTIONS,
+  getInterfaceStatusMeta,
+  type InterfaceStatus,
+} from '../../types/interface'
 
 // 扩展 ApiInterface 类型
 interface ExtendedApiInterface extends ApiInterface {
@@ -103,6 +109,9 @@ const lastDefaultModuleId = ref<number>()
 const requestUrl = ref('')
 // 当前选中的请求方法
 const selectedMethod = ref('GET')
+// 当前选中的接口状态
+const selectedStatus = ref<InterfaceStatus>(DEFAULT_INTERFACE_STATUS)
+const interfaceStatusOptions = INTERFACE_STATUS_OPTIONS
 
 // 请求方法选项
 const httpMethods = [
@@ -115,6 +124,7 @@ const httpMethods = [
 
 // 下拉框显示状态
 const popupVisible = ref(false)
+const statusPopupVisible = ref(false)
 
 const emit = defineEmits(['send', 'save'])
 
@@ -136,6 +146,7 @@ const handleSave = () => {
     method: selectedMethod.value,
     url: requestUrl.value,
     module: normalizedModuleId,
+    status: selectedStatus.value,
     id: props.interface?.id
   })
 }
@@ -151,6 +162,21 @@ const getCurrentMethodColor = () => {
   return httpMethods.find(m => m.value === selectedMethod.value)?.color || 'method-default'
 }
 
+// 选择接口状态
+const selectStatus = (status: InterfaceStatus) => {
+  selectedStatus.value = status
+  statusPopupVisible.value = false
+}
+
+// 获取当前状态按钮样式
+const getCurrentStatusClass = () => {
+  return getInterfaceStatusMeta(selectedStatus.value).buttonClass || 'status-default'
+}
+
+const getCurrentStatusLabel = () => {
+  return getInterfaceStatusMeta(selectedStatus.value).label
+}
+
 const applyDefaultModule = (moduleId?: number) => {
   selectedModule.value = moduleId
   lastDefaultModuleId.value = moduleId
@@ -163,6 +189,7 @@ watch(() => props.interface, (newInterface) => {
     apiName.value = newInterface.name || ''
     selectedMethod.value = newInterface.method || 'GET'
     requestUrl.value = newInterface.url || ''
+    selectedStatus.value = (newInterface.status || DEFAULT_INTERFACE_STATUS) as InterfaceStatus
     selectedModule.value = normalizeModuleValue(newInterface.module)
     lastDefaultModuleId.value = undefined
   } else {
@@ -170,6 +197,7 @@ watch(() => props.interface, (newInterface) => {
     apiName.value = ''
     selectedMethod.value = 'GET'
     requestUrl.value = ''
+    selectedStatus.value = DEFAULT_INTERFACE_STATUS
     applyDefaultModule(normalizeModuleValue(props.selectedModule?.id))
   }
 }, { immediate: true, deep: true })
@@ -327,14 +355,36 @@ const handleQuickDebug = async () => {
         </a-select>
       </div>
 
+      <!-- 接口状态：与请求方法同风格的彩色按钮下拉 -->
+      <a-dropdown
+        trigger="click"
+        position="bl"
+        v-model:popup-visible="statusPopupVisible"
+      >
+        <div :class="['status-button', getCurrentStatusClass()]" role="button">
+          <span class="status-button__label">{{ getCurrentStatusLabel() }}</span>
+        </div>
+        <template #content>
+          <div class="status-dropdown">
+            <div
+              v-for="item in interfaceStatusOptions"
+              :key="item.value"
+              :class="['status-button', 'status-button--option', item.buttonClass]"
+              @click="selectStatus(item.value)"
+            >
+              <span class="status-button__label">{{ item.label }}</span>
+            </div>
+          </div>
+        </template>
+      </a-dropdown>
+
       <!-- 接口名称输入框 -->
       <a-input
         v-model="apiName"
         placeholder="请输入接口名称"
         size="large"
         allow-clear
-        :style="{ width: '80%' }"
-        class="menu-item api-name-input rounded-lg"
+        class="menu-item api-name-input rounded-lg flex-1"
       />
     </div>
   </div>
@@ -422,6 +472,74 @@ a-input.menu-item {
   margin: 2px 4px !important;
   border-radius: 4px;
   text-align: center;
+}
+
+/* 接口状态按钮（与请求方法同风格，文字强制居中） */
+.status-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-radius: 0.25rem;
+  color: #fff;
+  font-weight: 500;
+  cursor: pointer;
+  /* 与 .method-button 同宽同高 */
+  width: 108px;
+  min-width: 108px;
+  height: 32px;
+  padding: 0;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1;
+  letter-spacing: 0;
+  text-align: center;
+  transition: all 0.2s ease-in-out;
+  flex-shrink: 0;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.status-button__label {
+  display: block;
+  width: 100%;
+  text-align: center;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.status-self-testing { background-color: rgba(249, 115, 22, 0.88); }
+.status-integrating { background-color: rgba(59, 130, 246, 0.88); }
+.status-completed { background-color: rgba(34, 197, 94, 0.88); }
+.status-deprecated { background-color: rgba(107, 114, 128, 0.9); }
+.status-default { background-color: rgba(75, 85, 99, 1); }
+
+.status-button:hover {
+  transform: translateY(-1px);
+  opacity: 1;
+}
+
+.status-dropdown {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  width: 108px;
+  box-sizing: border-box;
+  padding: 4px 0;
+}
+
+.status-dropdown .status-button--option {
+  width: auto !important;
+  min-width: 0;
+  height: 28px;
+  margin: 2px 4px !important;
+  border-radius: 4px;
+}
+
+.api-request-header :deep(.status-button) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
 }
 
 /* 输入框样式 */

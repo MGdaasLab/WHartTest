@@ -476,6 +476,39 @@ def adjust_busy_slots(actuator_id: str, delta: int) -> Optional[dict[str, Any]]:
         return _sync_busy_from_leases(actuator_id)
 
 
+def resolve_actuator_id_for_result(
+    args: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """按结果载荷反查持有槽位的执行器 ID。
+
+    执行器回传的 CASE_RESULT / PAGE_STEP_RESULT 载荷不携带 actuator_id
+    （CaseResultModel 无该字段）。服务端在 reserve 时已把任务的
+    case_id / batch_id / case_ids 写入 lease 的 meta，这里据此把一次结果
+    匹配回预留其槽位的执行器，避免结果路径因取不到 actuator_id 而漏释放。
+    """
+    args = args or {}
+    case_id = args.get("case_id")
+    batch_id = args.get("batch_id")
+    if case_id is None and batch_id is None:
+        return None
+    case_id_s = str(case_id) if case_id is not None else None
+    batch_id_s = str(batch_id) if batch_id is not None else None
+    with _SLOT_LOCK:
+        for lease in _leases_view().values():
+            meta = lease.get("meta") or {}
+            if case_id_s is not None:
+                lease_case = meta.get("case_id")
+                lease_case_ids = meta.get("case_ids") or []
+                if str(lease_case) == case_id_s or (
+                    isinstance(lease_case_ids, (list, tuple))
+                    and case_id_s in {str(x) for x in lease_case_ids}
+                ):
+                    return str(lease.get("actuator_id"))
+            if batch_id_s is not None and str(meta.get("batch_id")) == batch_id_s:
+                return str(lease.get("actuator_id"))
+    return None
+
+
 def reserve_slots(
     actuator_id: str,
     count: int = 1,

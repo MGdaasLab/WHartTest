@@ -304,6 +304,7 @@ const pageText = computed(() => (
         batchDeleteSuccess: (count: number) => `Deleted ${count} cases successfully`,
         caseRunSuccess: (passed: number, total: number) => `Case execution succeeded: ${passed}/${total} steps passed`,
         caseRunFailed: (message: string) => `Case execution failed: ${message}`,
+        insufficientSlots: (name: string, need: number, free: number) => `Actuator ${name} has insufficient free slots (need ${need}, only ${free} left)`,
       }
     : {
         selectModule: '选择模块',
@@ -373,6 +374,7 @@ const pageText = computed(() => (
         batchDeleteSuccess: (count: number) => `成功删除 ${count} 个用例`,
         caseRunSuccess: (passed: number, total: number) => `用例执行成功: ${passed}/${total} 步骤通过`,
         caseRunFailed: (message: string) => `用例执行失败: ${message}`,
+        insufficientSlots: (name: string, need: number, free: number) => `执行器 ${name} 空闲 slot 不足（需要 ${need}，剩余 ${free}）`,
       }
 ))
 
@@ -691,6 +693,18 @@ const selectAvailableActuator = (needSlots = 1): string | undefined => {
   return match?.id
 }
 
+/** 校验选中执行器空闲 slot 是否足够；不足则返回详细提示文案，足够返回 null */
+const buildSlotsError = (actuatorId: string | undefined, needSlots: number): string | null => {
+  if (!actuatorId) return pageText.value.selectOnlineActuator
+  const act = actuators.value.find(a => a.id === actuatorId)
+  if (!act || !act.is_open) return pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator
+  const max = act.max_slots ?? 1
+  const busy = act.busy_slots ?? 0
+  const free = max - busy
+  if (free >= needSlots) return null
+  return pageText.value.insufficientSlots(act.name || actuatorId, needSlots, Math.max(free, 0))
+}
+
 const runTestCase = async (record: UiTestCase) => {
   // 先获取执行器列表
   await fetchActuators()
@@ -712,6 +726,13 @@ const runTestCase = async (record: UiTestCase) => {
       Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
       return
     }
+  }
+
+  // 发送前预检查：选中执行器空闲 slot 不足时直接提示，不进入禁用态
+  const slotErr = buildSlotsError(selectedActuator.value, 1)
+  if (slotErr) {
+    Message.error(slotErr)
+    return
   }
 
   // 连接 WebSocket
@@ -766,6 +787,14 @@ const runBatchTestCases = async () => {
       Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
       return
     }
+  }
+
+  // 发送前预检查：批量任务数不得超过执行器剩余 slot，不足时直接提示，不进入禁用态
+  const needSlots = selectedRowKeys.value.length || 1
+  const slotErr = buildSlotsError(selectedActuator.value, needSlots)
+  if (slotErr) {
+    Message.error(slotErr)
+    return
   }
 
   // 连接 WebSocket
@@ -840,6 +869,24 @@ const handleCaseResult = (data: any) => {
   fetchTestCases()
 }
 
+/** 处理执行被拒绝（如执行器空闲 slot 不足）：提示并移除对应执行中状态，避免按钮卡在禁用态 */
+const handleRunRejected = (data: any) => {
+  const args = data.data?.func_args
+  const error = args?.error || (data.code !== 200 ? data.msg : '')
+  if (!error) return
+  Message.error(error)
+  const remove = new Set<number>()
+  if (args?.case_id != null) remove.add(Number(args.case_id))
+  if (Array.isArray(args?.case_ids)) {
+    args.case_ids.forEach((id: any) => remove.add(Number(id)))
+  }
+  if (remove.size > 0) {
+    executingIds.value = executingIds.value.filter(id => !remove.has(id))
+  }
+  fetchActuators()
+  fetchTestCases()
+}
+
 /** 获取环境配置 */
 const fetchEnvConfigs = async (options: { resetSelected?: boolean } = {}) => {
   const currentProjectId = projectId.value
@@ -888,6 +935,8 @@ const fetchActuators = async (options: { resetSelected?: boolean } = {}) => {
 
 /** WebSocket 事件监听 */
 let offCaseResult: (() => void) | null = null
+let offTestCaseRejected: (() => void) | null = null
+let offBatchRejected: (() => void) | null = null
 
 watch(() => props.selectedModuleId, (newVal) => {
   filters.module = newVal
@@ -931,11 +980,16 @@ defineExpose({ refresh })
 onMounted(() => {
   // 监听用例执行结果
   offCaseResult = uiWebSocket.on(UiSocketEnum.CASE_RESULT, handleCaseResult)
+  // 监听执行被拒绝（空闲 slot 不足等），确保按钮不卡在禁用态
+  offTestCaseRejected = uiWebSocket.on(UiSocketEnum.TEST_CASE, handleRunRejected)
+  offBatchRejected = uiWebSocket.on(UiSocketEnum.TEST_CASE_BATCH, handleRunRejected)
 })
 
 onUnmounted(() => {
   // 清理事件监听
   offCaseResult?.()
+  offTestCaseRejected?.()
+  offBatchRejected?.()
 })
 </script>
 

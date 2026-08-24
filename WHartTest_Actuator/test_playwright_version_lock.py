@@ -55,10 +55,7 @@ class PlaywrightVersionLockTest(unittest.TestCase):
 
     def test_uv_lock_resolves_locked_playwright_version(self):
         data = tomllib.loads((ACTUATOR_DIR / "uv.lock").read_text(encoding="utf-8"))
-        packages = {
-            package["name"]: package
-            for package in data["package"]
-        }
+        packages = {package["name"]: package for package in data["package"]}
 
         self.assertEqual(packages["playwright"]["version"], PLAYWRIGHT_VERSION)
 

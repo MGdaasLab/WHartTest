@@ -5,7 +5,7 @@ import django.utils.translation
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("api_database_configs", "0003_remove_db2_database_type"),
+        ("api_database_configs", "0001_initial"),
     ]
 
     operations = [

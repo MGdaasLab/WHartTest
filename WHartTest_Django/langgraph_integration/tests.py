@@ -1,11 +1,110 @@
 import unittest
 from unittest.mock import Mock, patch
 
+from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
 from langchain_core.messages import AIMessage, HumanMessage
 from rest_framework.test import APIClient
+
+
+class AutoSummarizeSessionTitleTests(TestCase):
+    class _DummyTitleLLM:
+        async def ainvoke(self, messages):
+            return type(
+                "TitleResponse",
+                (),
+                {
+                    "content": '"自动标题"',
+                    "usage_metadata": {
+                        "input_tokens": 11,
+                        "output_tokens": 3,
+                        "input_token_details": {"cache_read": 2},
+                    },
+                },
+            )()
+
+    def setUp(self):
+        from projects.models import Project
+
+        self.user = get_user_model().objects.create_user(
+            username="title-summary-user",
+            password="password123",
+        )
+        self.project = Project.objects.create(
+            name="Title Summary Project",
+            creator=self.user,
+        )
+
+    def _create_session(self, title):
+        from .models import ChatSession
+
+        return ChatSession.objects.create(
+            user=self.user,
+            session_id=f"title-summary-{title}",
+            title=title,
+            project=self.project,
+        )
+
+    def test_auto_summarize_updates_new_conversation_title_and_records_tokens(self):
+        from .models import TokenUsageRecord
+        from .views import auto_summarize_session_title
+
+        session = self._create_session("新对话 - 原始问题")
+
+        result = async_to_sync(auto_summarize_session_title)(
+            self._DummyTitleLLM(),
+            session,
+            "帮我生成测试用例",
+        )
+
+        self.assertEqual(result, "自动标题")
+        session.refresh_from_db()
+        self.assertEqual(session.title, "自动标题")
+        self.assertEqual(session.total_input_tokens, 11)
+        self.assertEqual(session.total_output_tokens, 3)
+        self.assertEqual(session.total_tokens, 14)
+        self.assertEqual(session.total_cache_read_tokens, 2)
+        self.assertEqual(session.request_count, 1)
+        self.assertTrue(
+            TokenUsageRecord.objects.filter(
+                session_id=session.session_id,
+                input_tokens=11,
+                output_tokens=3,
+                cache_read_tokens=2,
+            ).exists()
+        )
+
+    def test_auto_summarize_does_not_overwrite_manual_title_but_records_tokens(self):
+        from .models import TokenUsageRecord
+        from .views import auto_summarize_session_title
+
+        session = self._create_session("用户手动标题")
+
+        result = async_to_sync(auto_summarize_session_title)(
+            self._DummyTitleLLM(),
+            session,
+            "帮我生成测试用例",
+        )
+
+        self.assertIsNone(result)
+        session.refresh_from_db()
+        self.assertEqual(session.title, "用户手动标题")
+        self.assertEqual(session.total_input_tokens, 11)
+        self.assertEqual(session.total_output_tokens, 3)
+        self.assertEqual(session.total_tokens, 14)
+        self.assertEqual(session.total_cache_read_tokens, 2)
+        self.assertEqual(session.request_count, 1)
+        self.assertTrue(
+            TokenUsageRecord.objects.filter(
+                session_id=session.session_id,
+                input_tokens=11,
+                output_tokens=3,
+                cache_read_tokens=2,
+            ).exists()
+        )
+
 
 try:
     from .bundle_runtime import LLMConfigResolutionError, resolve_llm_config
@@ -484,4 +583,3 @@ class ChatSessionAPIViewTests(TestCase):
         }
         response = self.client.put(url, payload, format="json")
         self.assertEqual(response.status_code, 404)
-

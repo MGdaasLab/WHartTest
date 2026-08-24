@@ -179,7 +179,7 @@ RUN set -eux; \
       exit 1; \
     fi
 
-# 收集第三方许可证文件（Playwright/Pillow/Chromium/FFmpeg）
+# 收集第三方许可证文件（Playwright/Pillow/Chromium/FFmpeg/NLTK）
 RUN set -eux; \
     mkdir -p /app/third_party_licenses/python /app/third_party_licenses/playwright-browsers; \
     cp /app/THIRD_PARTY_NOTICES.md /app/third_party_licenses/THIRD_PARTY_NOTICES.md; \
@@ -190,9 +190,9 @@ RUN set -eux; \
       depth="$3"; \
       [ -d "$src" ] || return 0; \
       mkdir -p "$dst"; \
-      find "$src" -maxdepth "$depth" -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" \) -exec cp -f {} "$dst"/ \; ; \
+      find "$src" -maxdepth "$depth" -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" -o -name "AUTHORS*" \) -exec cp -f {} "$dst"/ \; ; \
     }; \
-    for pattern in "playwright-*.dist-info" "pillow-*.dist-info" "Pillow-*.dist-info"; do \
+    for pattern in "playwright-*.dist-info" "pillow-*.dist-info" "Pillow-*.dist-info" "nltk-*.dist-info"; do \
       for dir in "$site_pkgs"/$pattern; do \
         [ -d "$dir" ] || continue; \
         copy_python_licenses "$dir" "/app/third_party_licenses/python/$(basename "$dir")" 2; \
