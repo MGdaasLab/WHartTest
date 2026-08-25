@@ -20,6 +20,7 @@ export const UiSocketEnum = {
   RECORDER_START: 'u_recorder_start',     // 绑定录制会话，启动帧中继
   RECORDER_INPUT: 'u_recorder_input',     // 浏览器输入事件
   RECORDER_ASSERT: 'u_recorder_assert',   // 记录断言动作
+  RECORDER_REMOVE_ACTION: 'u_recorder_remove_action', // 删除已录动作
   RECORDER_STOP: 'u_recorder_stop',       // 停止帧中继
   RECORDER_FRAME: 'u_recorder_frame',     // 浏览器画面帧
   RECORDER_ACTION: 'u_recorder_action',   // 录制动作增量
@@ -271,9 +272,18 @@ class UiWebSocketService {
     return this.send(UiSocketEnum.RECORDER_INPUT, args)
   }
 
-  /** 记录断言动作 */
-  recorderAssert(mode: string): boolean {
-    return this.send(UiSocketEnum.RECORDER_ASSERT, { mode })
+  /** 记录断言动作（断言模式下点击页面元素时传坐标，精确定位目标；内容/页面校验传期望值） */
+  recorderAssert(mode: string, x?: number, y?: number, value?: string): boolean {
+    return this.send(UiSocketEnum.RECORDER_ASSERT, {
+      mode,
+      ...(x !== undefined && y !== undefined ? { x, y } : {}),
+      ...(value !== undefined ? { value } : {}),
+    })
+  }
+
+  /** 删除已录动作 */
+  recorderRemoveAction(seq: number): boolean {
+    return this.send(UiSocketEnum.RECORDER_REMOVE_ACTION, { seq })
   }
 
   /** 停止帧中继 */

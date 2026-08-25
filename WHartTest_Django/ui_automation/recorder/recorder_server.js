@@ -50,7 +50,8 @@ function parseCli(argv) {
   const out = { skillDir: '' };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--skill-dir') {
-      out.skillDir = argv[i + 1] || '';
+      const raw = argv[i + 1] || '';
+      out.skillDir = raw ? path.resolve(raw) : '';
       i++;
     }
   }
@@ -84,8 +85,7 @@ function installPlaywright(skillDir) {
 // 页面注入的录制捕获脚本（运行在浏览器页面中）
 // ---------------------------------------------------------------------------
 
-const INIT_SCRIPT = `
-(function () {
+const INIT_SCRIPT = () => {
   if (window.__whart) return;
   window.__whart = { hovered: null, describe: null };
 
@@ -93,12 +93,71 @@ const INIT_SCRIPT = `
     return (s || '').replace(/\\s+/g, ' ').trim().slice(0, max || 40);
   }
 
+  function escAttr(v) {
+    return String(v).replace(/["']/g, '');
+  }
+
+  // 元素自身是否具备唯一性高的定位属性
+  function selfAnchor(el) {
+    var attrs = {};
+    if (el.getAttribute) {
+      attrs.id = el.getAttribute('id') || '';
+      attrs.name = el.getAttribute('name') || '';
+      attrs.placeholder = el.getAttribute('placeholder') || '';
+      attrs.testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-test-id') || '';
+    }
+    if (attrs.id) return '//*[@id="' + escAttr(attrs.id) + '"]';
+    if (attrs.testId) return '//*[@data-testid="' + escAttr(attrs.testId) + '"]';
+    if (attrs.name) return '//*[@name="' + escAttr(attrs.name) + '"]';
+    if (attrs.placeholder) return '//*[@placeholder="' + escAttr(attrs.placeholder) + '"]';
+    return null;
+  }
+
+  // 某 class token 是否在文档中唯一（可安全用作锚点）
+  function isUniqueClassToken(token) {
+    try {
+      return document.querySelectorAll('[class~="' + token.replace(/["\\]/g, '') + '"]').length === 1;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // 角色+文本 xpath 锚点：仅当元素为按钮/链接且该（标签+精确文本）在文档中唯一时使用，
+  // 避免文本歧义（多个同文本元素）；不唯一时走结构化相对路径。
+  function textAnchor(el) {
+    var tag = el.tagName || '';
+    var role = el.getAttribute && el.getAttribute('role');
+    if (tag !== 'BUTTON' && tag !== 'A' && tag !== 'LABEL' && tag !== 'SUMMARY' &&
+        role !== 'button' && role !== 'link' && role !== 'tab') {
+      return null;
+    }
+    var text = cleanText(el.textContent, 40);
+    if (!text || text.length < 1 || text.length > 30) return null;
+    var selector = tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY'
+      ? tag.toLowerCase() : '*';
+    try {
+      var matched = Array.prototype.filter.call(document.querySelectorAll(selector), function (n) {
+        return cleanText(n.textContent, 50) === text;
+      });
+      if (matched.length === 1) {
+        return '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 生成相对定位 xpath：优先属性锚点，
+  // 其次角色+文本锚点（唯一时），否则向上找唯一 class 祖先锚点，
+  // 从锚点向下写相对路径（避免 /html/body[...] 绝对路径，元素位置变动容错更好）。
   function buildXPath(el) {
-    if (el.id) return '//*[@id="' + String(el.id).replace(/["']/g, '') + '"]';
-    var nm = el.getAttribute && el.getAttribute('name');
-    if (nm) return '//*[@name="' + String(nm).replace(/["']/g, '') + '"]';
+    var self = selfAnchor(el);
+    if (self) return self;
+    var textSelf = textAnchor(el);
+    if (textSelf) return textSelf;
+
     var parts = [];
     var node = el;
+    var hops = 0;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
       var idx = 1;
       var sib = node.previousElementSibling;
@@ -108,7 +167,24 @@ const INIT_SCRIPT = `
       }
       parts.unshift(node.tagName.toLowerCase() + '[' + idx + ']');
       node = node.parentElement;
+      hops++;
+      if (hops > 6 || !node || node.nodeType !== 1 || node === document.documentElement || node === document.body) {
+        break;
+      }
+      var anchor = selfAnchor(node);
+      if (anchor) return anchor + '/' + parts.join('/');
+      var cls = node.getAttribute && node.getAttribute('class');
+      if (typeof cls === 'string' && cls.trim()) {
+        var tokens = cls.trim().split(/\s+/);
+        for (var i = 0; i < tokens.length; i++) {
+          var tk = tokens[i];
+          if (tk && isUniqueClassToken(tk)) {
+            return '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]/' + parts.join('/');
+          }
+        }
+      }
     }
+    // 兜底：短绝对路径（一般最多到第 7 层）
     return '/html/' + parts.join('/');
   }
 
@@ -139,18 +215,13 @@ const INIT_SCRIPT = `
       return { locator_type: 'placeholder', locator_value: attrs.placeholder, name: label.slice(0, 24) };
     }
     var tag = el.tagName || '';
-    var clickableText = (tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY' ||
-      attrs.role === 'button' || attrs.role === 'link' || attrs.role === 'tab') && text;
-    if (clickableText) {
-      return { locator_type: 'text', locator_value: text, name: text.slice(0, 24) };
-    }
-    if (attrs.role) {
-      return { locator_type: 'role', locator_value: attrs.role, name: label.slice(0, 24) };
-    }
+    // 统一走 xpath 定位（含角色+文本锚点 / 结构化相对路径），
+    // 不再使用 getByText/getByRole，避免页面上同文本/同角色元素歧义。
     return { locator_type: 'xpath', locator_value: buildXPath(el), name: label.slice(0, 24) };
   }
 
   window.__whart.describe = describe;
+  window.__whart.buildXPath = buildXPath;
 
   document.addEventListener('pointermove', function (e) {
     if (e.target && e.target.nodeType === 1) {
@@ -207,8 +278,7 @@ const INIT_SCRIPT = `
       window.__whartReport({ t: 'press', el: d, key: 'Enter' });
     }
   }, true);
-})();
-`;
+};
 
 // ---------------------------------------------------------------------------
 // 录制状态
@@ -218,8 +288,12 @@ const state = {
   browser: null,
   context: null,
   page: null,
+  cdpSession: null,
+  frameMode: 'screencast',   // screencast（60fps 推流）| screenshot（截图回退）
   viewport: { width: 1400, height: 900 },
+  frameRate: Math.max(1, Math.min(60, parseInt(process.env.RECORDER_FRAME_RATE || '60', 10) || 60)),
   running: false,
+  preRunning: false,      // 前置步骤执行中（不记录动作/导航）
   frameTimer: null,
   capturing: false,
   startedUrl: '',
@@ -230,8 +304,12 @@ const state = {
   lastClick: { sel: '', ts: 0 },
   lastFill: { sel: '', value: '', ts: 0 },
   lastPress: { sel: '', ts: 0 },
+  lastFrameTs: 0,          // 最近一次推帧时间（screencast 高帧率 / 截图基线兜底）
   finished: false,
 };
+
+// 连续输入合并窗口：同一元素在该窗口内多次 input 事件合并为一次 fill
+const FILL_MERGE_WINDOW = 1000;
 
 function recordAction(action) {
   state.seq += 1;
@@ -244,7 +322,7 @@ function recordAction(action) {
 }
 
 function handleReport(payload) {
-  if (!state.running || !payload || !payload.t) return;
+  if (!state.running || state.preRunning || !payload || !payload.t) return;
   const now = Date.now();
   try {
     if (payload.t === 'click') {
@@ -253,8 +331,22 @@ function handleReport(payload) {
       state.lastClick = { sel: selKey, ts: now };
       recordAction({ type: 'click', selector: payload.el });
     } else if (payload.t === 'fill') {
+      // 连续输入合并：同一元素 1 秒内的多次 input 事件合并为一次 fill，
+      // 用最新值原地更新上一条动作（逐字输入只留最终值）。
       const selKey = JSON.stringify(payload.el);
-      if (selKey === state.lastFill.sel && payload.value === state.lastFill.value && now - state.lastFill.ts < 500) return;
+      if (
+        selKey === state.lastFill.sel &&
+        now - state.lastFill.ts < FILL_MERGE_WINDOW &&
+        state.recorded.length > 0
+      ) {
+        const prev = state.recorded[state.recorded.length - 1];
+        if (prev.type === 'fill') {
+          prev.value = payload.value;
+          state.lastFill = { sel: selKey, value: payload.value, ts: now };
+          pushEvent('actions', prev);
+          return;
+        }
+      }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
       recordAction({ type: 'fill', selector: payload.el, value: payload.value });
     } else if (payload.t === 'check' || payload.t === 'uncheck') {
@@ -271,7 +363,7 @@ function handleReport(payload) {
 }
 
 function recordNavigation(url) {
-  if (!state.running || state.finished) return;
+  if (!state.running || state.finished || state.preRunning) return;
   if (!url || !url.startsWith('http')) return;
   if (url === state.lastNavUrl) return;
   const prev = state.lastNavUrl || state.startedUrl || '';
@@ -285,10 +377,62 @@ function recordNavigation(url) {
 // 帧推流
 // ---------------------------------------------------------------------------
 
-function startFrameLoop() {
+/**
+ * CDP Page.startScreencast：浏览器原生编码 jpeg 帧并推送（最高 60fps），
+ * 每帧需回 Ack 否则浏览器会暂停推流。启动失败时回退到截图轮询模式。
+ */
+async function startFrameStream(page) {
+  try {
+    const cdpSession = await page.context().newCDPSession(page);
+    cdpSession.on('Page.screencastFrame', (params) => {
+      if (!state.running || state.finished || !params.data) return;
+      pushEvent('frame', {
+        mime: 'image/jpeg',
+        data: params.data.replace(/^data:image\/jpeg;base64,/, ''),
+        w: state.viewport.width,
+        h: state.viewport.height,
+      });
+      state.lastFrameTs = Date.now();
+      cdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {});
+    });
+    await cdpSession.send('Page.startScreencast', {
+      format: 'jpeg',
+      quality: 65,
+      maxWidth: state.viewport.width,
+      maxHeight: state.viewport.height,
+      everyNthFrame: 1,
+      maxFrameRate: state.frameRate,
+    });
+    state.cdpSession = cdpSession;
+    state.frameMode = 'screencast';
+    serverLog('screencast 模式启动，目标帧率:', state.frameRate);
+    return true;
+  } catch (e) {
+    serverLog('screencast 启动失败，回退截图模式:', e && e.message ? e.message : String(e));
+    return false;
+  }
+}
+
+function stopFrameStream() {
+  if (state.cdpSession) {
+    state.cdpSession.send('Page.stopScreencast').catch(() => {});
+    state.cdpSession = null;
+  }
+}
+
+/**
+ * 截图基线兜底。
+ * - screencast 模式：Chromium 只在内容变化时合成新帧（静态页面几乎不推帧），
+ *   因此保留一个低频基线（intervalMs=400，距上次推帧 >300ms 才截），
+ *   保证画布在页面静止时也能刷新、反映悬停等状态。
+ * - 截图回退模式：无 screencast 时的主推流（250ms 间隔）。
+ */
+function startFrameLoop(intervalMs = 250, minGapMs = 0) {
   if (state.frameTimer) return;
   state.frameTimer = setInterval(async () => {
     if (!state.running || state.finished || state.capturing || !state.page) return;
+    const gap = Date.now() - state.lastFrameTs;
+    if (minGapMs > 0 && gap < minGapMs) return;
     state.capturing = true;
     try {
       const shot = await state.page.screenshot({ type: 'jpeg', quality: 60 });
@@ -298,12 +442,13 @@ function startFrameLoop() {
         w: state.viewport.width,
         h: state.viewport.height,
       });
+      state.lastFrameTs = Date.now();
     } catch (e) {
       // 页面可能已被关闭，忽略
     } finally {
       state.capturing = false;
     }
-  }, 250);
+  }, intervalMs);
 }
 
 function stopFrameLoop() {
@@ -328,11 +473,11 @@ function locatorExpr(selector) {
     case 'name':
       return `page.locator("[name='${String(locator_value).replace(/'/g, '')}']")`;
     case 'placeholder':
-      return `page.get_by_placeholder('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `page.getByPlaceholder('${String(locator_value).replace(/'/g, "\\'")}')`;
     case 'text':
-      return `page.get_by_text('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `page.getByText('${String(locator_value).replace(/'/g, "\\'")}')`;
     case 'role':
-      return `page.get_by_role('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `page.getByRole('${String(locator_value).replace(/'/g, "\\'")}')`;
     default:
       return `page.locator('${String(locator_value).replace(/'/g, "\\'")}')`;
   }
@@ -351,6 +496,14 @@ function buildScript(actions, startUrl) {
   for (const a of actions) {
     if (a.type === 'goto') {
       lines.push(`  await page.goto('${String(a.url || '').replace(/'/g, "\\'")}');`);
+      continue;
+    }
+    // 页面校验断言（URL/标题）不需要元素定位
+    if (a.type === 'assert' && (a.mode === 'url' || a.mode === 'title')) {
+      const val = String(a.value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      lines.push(a.mode === 'url'
+        ? `  await expect(page).toHaveURL('${val}');`
+        : `  await expect(page).toHaveTitle('${val}');`);
       continue;
     }
     const loc = locatorExpr(a.selector);
@@ -374,11 +527,21 @@ function buildScript(actions, startUrl) {
         break;
       case 'assert':
         if (a.mode === 'url') {
-          lines.push(`  await expect(page).to_have_url('${val}');`);
+          lines.push(`  await expect(page).toHaveURL('${val}');`);
+        } else if (a.mode === 'title') {
+          lines.push(`  await expect(page).toHaveTitle('${val}');`);
         } else if (a.mode === 'contain_text') {
-          lines.push(`  await expect(${loc}).to_contain_text('${val}');`);
-        } else {
-          lines.push(`  await expect(${loc}).to_be_${a.mode === 'enabled' ? 'enabled' : 'visible'}();`);
+          lines.push(`  await expect(${loc}).toContainText('${val}');`);
+        } else if (a.mode === 'text') {
+          lines.push(`  await expect(${loc}).toHaveText('${val}');`);
+        } else if (a.mode === 'value') {
+          lines.push(`  await expect(${loc}).toHaveValue('${val}');`);
+        } else if (a.mode === 'count') {
+          lines.push(`  await expect(${loc}).toHaveCount(parseInt('${val}', 10) || 0);`);
+        } else if (['visible', 'hidden', 'enabled', 'disabled', 'checked'].includes(a.mode)) {
+          lines.push(`  await expect(${loc}).toBe${a.mode.charAt(0).toUpperCase() + a.mode.slice(1)}();`);
+        } else if (loc) {
+          lines.push(`  await expect(${loc}).toBeVisible();`);
         }
         break;
       default:
@@ -396,6 +559,24 @@ function buildScript(actions, startUrl) {
 
 async function cmdPing() {
   return { ok: true, state: { alive: true, recorded: state.recorded.length } };
+}
+
+let ensureInjectionBusy = false;
+
+/** 校验录制注入脚本是否在页面中生效；未生效则手动补注（导航到新文档后会丢失注入）。 */
+async function ensureInjection() {
+  if (ensureInjectionBusy || !state.page || !state.context) return;
+  ensureInjectionBusy = true;
+  try {
+    const ok = await state.page.evaluate(() => typeof window.__whart === 'object' && typeof window.__whart.describe === 'function');
+    if (!ok) {
+      await state.page.evaluate(INIT_SCRIPT);
+    }
+  } catch (e) {
+    serverLog('ensureInjection 异常:', e && e.message ? e.message : String(e));
+  } finally {
+    ensureInjectionBusy = false;
+  }
 }
 
 async function cmdStart(params) {
@@ -428,11 +609,19 @@ async function cmdStart(params) {
     state.browser = await chromium.launch(launchOptions);
     state.context = await state.browser.newContext({ viewport });
     await state.context.exposeFunction('__whartReport', handleReport);
-    await state.context.addInitScript(INIT_SCRIPT);
+    try {
+      await state.context.addInitScript(INIT_SCRIPT);
+    } catch (_) {
+      // 个别环境下 context 级注入失败，改用页面级 + 兜底补注
+    }
     state.page = await state.context.newPage();
+    try {
+      await state.page.addInitScript(INIT_SCRIPT);
+    } catch (_) {}
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
         recordNavigation(frame.url());
+        ensureInjection();
       }
     });
   } catch (e) {
@@ -450,9 +639,17 @@ async function cmdStart(params) {
     state.startedUrl = url;
     state.lastNavUrl = url;
   }
+  await ensureInjection();
   state.finished = false;
-  startFrameLoop();
-  return { ok: true, state: { viewport, url: state.startedUrl } };
+  state.lastFrameTs = 0;
+  const streamed = await startFrameStream(state.page);
+  if (streamed) {
+    // screencast 高帧率 + 截图基线兜底（静态页面也能持续刷新）
+    startFrameLoop(400, 300);
+  } else {
+    startFrameLoop(250, 0);
+  }
+  return { ok: true, state: { viewport, url: state.startedUrl, frame_mode: state.frameMode, frame_rate: state.frameRate } };
 }
 
 async function cmdInput(params) {
@@ -494,35 +691,237 @@ async function cmdInput(params) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 前置步骤执行（录制前自动执行可复用页面步骤，如登录）
+// ---------------------------------------------------------------------------
+
+/** 按平台执行器同款映射构建 Playwright locator */
+function buildLocator(page, selector) {
+  if (!selector) return null;
+  const type = selector.locator_type || 'xpath';
+  const value = String(selector.locator_value || '');
+  let loc = null;
+  switch (type) {
+    case 'xpath':
+      loc = page.locator('xpath=' + value);
+      break;
+    case 'id':
+      loc = page.locator('#' + value);
+      break;
+    case 'name':
+      loc = page.locator("[name='" + value + "']");
+      break;
+    case 'text':
+      loc = page.getByText(value);
+      break;
+    case 'role':
+      loc = page.getByRole(value);
+      break;
+    case 'placeholder':
+      loc = page.getByPlaceholder(value);
+      break;
+    case 'label':
+      loc = page.getByLabel(value);
+      break;
+    default:
+      loc = page.locator(value);
+  }
+  const index = Number(selector.locator_index);
+  if (Number.isInteger(index) && index > 1) {
+    loc = loc.nth(index - 1);
+  }
+  return loc;
+}
+
+/** 执行一步平台步骤（ope_key 词汇表与执行器对齐），返回错误信息或 null */
+async function runOneStep(page, step) {
+  const opeKey = String(step.ope_key || '');
+  const opeValue = step.ope_value && typeof step.ope_value === 'object' ? step.ope_value : {};
+  const inputValue = String(
+    opeValue.text || opeValue.value || opeValue.timeout || opeValue.url || opeValue.key || opeValue.expected || ''
+  );
+  const locator = buildLocator(page, step.element || step.selector);
+
+  if (opeKey === 'goto') {
+    await page.goto(inputValue, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    return null;
+  }
+  if (opeKey === 'wait') {
+    const ms = parseInt(inputValue, 10);
+    await page.waitForTimeout(Number.isFinite(ms) ? ms : 1000);
+    return null;
+  }
+  if (opeKey.startsWith('assert_')) {
+    const assertType = opeKey.replace('assert_', '');
+    const options = { timeout: 10000 };
+    if (assertType === 'visible') await locator.waitFor({ state: 'visible', ...options });
+    else if (assertType === 'hidden') await locator.waitFor({ state: 'hidden', ...options });
+    else if (assertType === 'enabled') await locator.waitFor({ state: 'attached', ...options });
+    else if (assertType === 'text' || assertType === 'contain_text') {
+      await locator.waitFor({ state: 'visible', ...options });
+      if (inputValue) {
+        await locator.filter({ hasText: inputValue }).waitFor({ state: 'visible', ...options });
+      }
+    }
+    else await locator.waitFor({ state: 'visible', ...options });
+    return null;
+  }
+  if (!locator) {
+    return '步骤缺少元素定位（' + opeKey + '）';
+  }
+  switch (opeKey) {
+    case 'click':
+      await locator.click({ timeout: 15000 });
+      return null;
+    case 'fill':
+      await locator.fill(inputValue);
+      return null;
+    case 'clear':
+      await locator.fill('');
+      return null;
+    case 'check':
+      await locator.check();
+      return null;
+    case 'uncheck':
+      await locator.uncheck();
+      return null;
+    case 'select':
+    case 'select_option':
+      await locator.select_option(inputValue);
+      return null;
+    case 'hover':
+      await locator.hover();
+      return null;
+    case 'press':
+      await locator.press(inputValue || 'Enter');
+      return null;
+    case 'upload':
+      return 'upload 步骤请手动录制';
+    default:
+      return '不支持的操作类型: ' + opeKey;
+  }
+}
+
+async function cmdRemoveAction(params) {
+  const seq = Number(params && params.seq);
+  if (!Number.isFinite(seq)) {
+    return { ok: false, error: '缺少有效的操作序号 seq' };
+  }
+  const before = state.recorded.length;
+  state.recorded = state.recorded.filter((a) => a.seq !== seq);
+  const removed = before - state.recorded.length;
+  return { ok: true, state: { removed } };
+}
+
+async function cmdRunSteps(params) {
+  if (!state.page || !state.running) {
+    return { ok: false, error: '录制会话未启动' };
+  }
+  const steps = Array.isArray(params.steps) ? params.steps : [];
+  if (!steps.length) {
+    return { ok: true, state: { executed: 0, failed: false } };
+  }
+  // 前置执行期间不记录任何动作/导航
+  state.preRunning = true;
+  let executed = 0;
+  let failedStep = -1;
+  let errorMsg = '';
+  try {
+    for (let i = 0; i < steps.length; i++) {
+      try {
+        const err = await runOneStep(state.page, steps[i]);
+        if (err) {
+          failedStep = i;
+          errorMsg = err;
+          break;
+        }
+        executed += 1;
+        await state.page.waitForTimeout(200);
+      } catch (e) {
+        failedStep = i;
+        errorMsg = '第 ' + (i + 1) + ' 步执行失败: ' + (e && e.message ? e.message : String(e));
+        break;
+      }
+    }
+  } finally {
+    state.preRunning = false;
+  }
+  if (failedStep >= 0) {
+    return { ok: false, error: errorMsg, state: { executed, failed_step: failedStep + 1 } };
+  }
+  return { ok: true, state: { executed, failed: false } };
+}
+
+// 断言模式分类（与平台执行器 assert_* 词汇表对齐）
+const ASSERT_ELEMENT_STATE = ['visible', 'hidden', 'enabled', 'disabled', 'checked'];
+const ASSERT_CONTENT = ['text', 'contain_text', 'value', 'count'];
+const ASSERT_PAGE = ['url', 'title'];
+
 async function cmdAssert(params) {
   if (!state.page || !state.running) {
     return { ok: false, error: '录制会话未启动' };
   }
   const mode = String(params.mode || 'visible');
+  const inputValue = String(params.value || '');
+
+  // 页面校验：断言当前页面 URL / 标题，无需选择元素
   if (mode === 'url') {
-    recordAction({ type: 'assert', mode: 'url', value: state.page.url() });
+    recordAction({ type: 'assert', mode: 'url', value: inputValue || state.page.url() });
     return { ok: true, state: { action: 'assert_url' } };
   }
-  if (!['visible', 'contain_text', 'enabled'].includes(mode)) {
+  if (mode === 'title') {
+    if (!inputValue) {
+      return { ok: false, error: '请先输入要断言的页面标题' };
+    }
+    recordAction({ type: 'assert', mode: 'title', value: inputValue });
+    return { ok: true, state: { action: 'assert_title' } };
+  }
+
+  if (!ASSERT_ELEMENT_STATE.includes(mode) && !ASSERT_CONTENT.includes(mode)) {
     return { ok: false, error: '不支持的断言模式: ' + mode };
   }
+
+  // 内容校验：期望值必填
+  if (ASSERT_CONTENT.includes(mode) && !inputValue) {
+    return { ok: false, error: '请先输入要校验的内容' };
+  }
+
   try {
-    const hovered = await state.page.evaluate(() => {
-      const w = window.__whart;
-      if (!w || !w.describe || !w.hovered) return null;
-      return w.describe(w.hovered);
-    });
-    if (!hovered) {
-      return { ok: false, error: '请先在浏览器画面中把鼠标悬停到要断言的元素上' };
-    }
-    let value = '';
-    if (mode === 'contain_text') {
-      value = await state.page.evaluate(() => {
-        const el = window.__whart ? window.__whart.hovered : null;
-        return el && el.textContent ? String(el.textContent).replace(/\s+/g, ' ').trim().slice(0, 60) : '';
+    // 优先按坐标定位（断言模式下点击页面元素）；无坐标时回退到悬停元素
+    const hasPoint = params.x !== undefined && params.x !== null && params.y !== undefined && params.y !== null;
+    let info = null;
+    if (hasPoint) {
+      info = await state.page.evaluate(([x, y]) => {
+        const el = document.elementFromPoint(x, y);
+        const w = window.__whart;
+        if (!el || !w || !w.describe) return null;
+        const sel = w.describe(el);
+        if (!sel) return null;
+        return {
+          selector: sel,
+          text: el.textContent ? String(el.textContent).replace(/\s+/g, ' ').trim().slice(0, 60) : '',
+        };
+      }, [Number(params.x), Number(params.y)]);
+      if (!info) {
+        return { ok: false, error: '请点击页面上的可断言元素（点击空白处无法断言）' };
+      }
+    } else {
+      info = await state.page.evaluate(() => {
+        const w = window.__whart;
+        if (!w || !w.describe || !w.hovered) return null;
+        const sel = w.describe(w.hovered);
+        if (!sel) return null;
+        return {
+          selector: sel,
+          text: w.hovered.textContent ? String(w.hovered.textContent).replace(/\s+/g, ' ').trim().slice(0, 60) : '',
+        };
       });
+      if (!info) {
+        return { ok: false, error: '请先在浏览器画面中把鼠标悬停到要断言的元素上' };
+      }
     }
-    recordAction({ type: 'assert', mode, selector: hovered, value });
+    const value = ASSERT_CONTENT.includes(mode) ? inputValue : '';
+    recordAction({ type: 'assert', mode, selector: info.selector, value });
     return { ok: true, state: { action: 'assert_' + mode } };
   } catch (e) {
     return { ok: false, error: '断言记录失败: ' + (e && e.message ? e.message : String(e)) };
@@ -530,7 +929,11 @@ async function cmdAssert(params) {
 }
 
 async function cmdFinish() {
+  stopFrameStream();
   stopFrameLoop();
+  // 收尾优化：对已录的 xpath 选择器用页面实时 DOM 重新定位，
+  // 把绝对路径（/html/body[...]）升级为属性锚点 / 带锚祖先的相对路径。
+  await optimizeXpathSelectors();
   state.finished = true;
   state.running = false;
   return {
@@ -543,7 +946,39 @@ async function cmdFinish() {
   };
 }
 
+async function optimizeXpathSelectors() {
+  if (!state.page || !state.recorded.length) return;
+  for (const action of state.recorded) {
+    const sel = action.selector;
+    if (!sel || sel.locator_type !== 'xpath' || !sel.locator_value) continue;
+    try {
+      const improved = await state.page.evaluate((xpath) => {
+        const w = window.__whart;
+        if (!w || !w.describe || !w.buildXPath) return null;
+        let el = null;
+        try {
+          const res = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+          el = res.singleNodeValue;
+        } catch (_) {
+          return null;
+        }
+        if (!el || !(el instanceof Element)) return null;
+        // 优先升级为属性/文本/role 定位；否则用带锚相对 xpath
+        const d = w.describe(el);
+        if (d && d.locator_type !== 'xpath') return d;
+        return { locator_type: 'xpath', locator_value: w.buildXPath(el), name: d && d.name ? d.name : sel.name };
+      }, sel.locator_value);
+      if (improved) {
+        action.selector = improved;
+      }
+    } catch (_) {
+      // 页面已跳转等场景下保持原选择器
+    }
+  }
+}
+
 async function cmdClose() {
+  stopFrameStream();
   stopFrameLoop();
   state.running = false;
   try {
@@ -578,22 +1013,43 @@ rl.on('line', (line) => {
 
   const id = msg.id;
   const method = msg.method || '';
+  // 所有响应必须回显请求 id，Python 侧按 id 配对请求/响应
+  const respond = async (result) => send({ id, ...result });
   chain = chain.then(async () => {
     try {
       switch (method) {
         case 'ping':
-          return send(await cmdPing());
+          return respond(await cmdPing());
         case 'start':
-          return send(await cmdStart(msg.params || {}));
+          return respond(await cmdStart(msg.params || {}));
         case 'input':
-          return send(await cmdInput(msg.params || {}));
+          return respond(await cmdInput(msg.params || {}));
+        case 'run_steps':
+          return respond(await cmdRunSteps(msg.params || {}));
+        case 'remove_action':
+          return respond(await cmdRemoveAction(msg.params || {}));
         case 'assert':
-          return send(await cmdAssert(msg.params || {}));
+          return respond(await cmdAssert(msg.params || {}));
+        case 'eval': {
+          // 调试命令：在页面上下文执行 JS 并返回结果
+          const code = String((msg.params && msg.params.code) || '');
+          if (!state.page) {
+            return respond({ ok: false, error: '录制会话未启动' });
+          }
+          const val = await state.page.evaluate((c) => {
+            try {
+              return { ok: true, result: (0, eval)(c) };
+            } catch (e) {
+              return { ok: false, error: String(e && e.message ? e.message : e) };
+            }
+          }, code);
+          return respond({ ok: true, state: { eval: val } });
+        }
         case 'finish':
-          return send(await cmdFinish());
+          return respond(await cmdFinish());
         case 'close': {
           const r = await cmdClose();
-          send(r);
+          respond(r);
           setTimeout(() => process.exit(0), 50);
           return;
         }

@@ -62,6 +62,10 @@ class RecorderSessionMeta:
         create_steps: bool,
         base_url: str,
         viewport: dict,
+        kind: str = 'record',          # record=步骤录制 / case=用例录制
+        case_name: str = '',           # case 模式：用例名称
+        pre_page_step_id: Optional[int] = None,  # case 模式：前置页面步骤（结束后加入用例）
+        case_module_id: Optional[int] = None,    # case 模式：用例所属模块
     ):
         self.user_id = user_id
         self.project_id = project_id
@@ -71,6 +75,10 @@ class RecorderSessionMeta:
         self.create_steps = create_steps
         self.base_url = base_url
         self.viewport = dict(viewport)
+        self.kind = kind
+        self.case_name = case_name
+        self.pre_page_step_id = pre_page_step_id
+        self.case_module_id = case_module_id
 
 
 class RecorderSession:

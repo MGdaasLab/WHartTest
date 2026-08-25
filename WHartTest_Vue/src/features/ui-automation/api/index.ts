@@ -302,8 +302,7 @@ export interface RecorderSessionCreatePayload {
   env_config_id: number
   page_id: number
   page_step_id: number
-  create_elements?: boolean
-  create_steps?: boolean
+  pre_page_step_id?: number
 }
 
 export interface RecorderSessionInfo {
@@ -312,24 +311,49 @@ export interface RecorderSessionInfo {
   base_url: string
   page_id: number
   page_step_id: number
+  pre_executed?: number
+  pre_failed?: boolean
 }
 
 export interface RecorderFinishResult {
   message: string
-  script_path: string
-  raw_path: string
   actions_count: number
   elements_created: number
   elements_updated: number
   steps_created: number
 }
 
+export interface RecorderCaseCreatePayload {
+  case_name: string
+  page_id: number
+  env_config_id: number
+  pre_page_step_id?: number
+  module_id?: number
+}
+
+export interface RecorderCaseFinishResult {
+  message: string
+  actions_count: number
+  case_id: number | null
+  page_steps_created: number
+  case_steps_created: number
+  elements_created: number
+  elements_updated: number
+}
+
+export interface RecorderFinishBody {
+  groups?: Array<{ name: string; seqs: number[] }>
+}
+
 export const recorderApi = {
   create: (data: RecorderSessionCreatePayload) =>
     request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/`, data),
 
-  finish: (sessionId: string) =>
-    request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`),
+  caseCreate: (data: RecorderCaseCreatePayload) =>
+    request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/case/`, data),
+
+  finish: (sessionId: string, body?: RecorderFinishBody) =>
+    request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`, body ?? {}),
 
   cancel: (sessionId: string) =>
     request.post(`${BASE_URL}/recorder-sessions/${sessionId}/cancel/`),

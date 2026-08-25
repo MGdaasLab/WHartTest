@@ -11,6 +11,14 @@
     <!-- 阶段1：录制参数表单 -->
     <div v-if="phase === 'setup'" class="recorder-setup">
       <a-form :model="form" layout="vertical">
+        <a-form-item :label="text.caseName" :required="true">
+          <a-input
+            v-model="form.case_name"
+            :placeholder="text.enterCaseName"
+            :max-length="255"
+            allow-clear
+          />
+        </a-form-item>
         <a-form-item :label="text.page" :required="true">
           <div class="recorder-select-with-add">
             <a-select
@@ -21,25 +29,8 @@
               allow-clear
               :loading="loadingPages"
               class="flex-1"
-              @change="onPageChange"
             />
             <a-button type="outline" size="small" :disabled="starting" :title="text.addPage" @click="openAddPage">
-              <template #icon><icon-plus /></template>
-            </a-button>
-          </div>
-        </a-form-item>
-        <a-form-item :label="text.pageStep" :required="true">
-          <div class="recorder-select-with-add">
-            <a-select
-              v-model="form.page_step_id"
-              :options="stepOptions"
-              :placeholder="text.selectPageStep"
-              allow-search
-              allow-clear
-              :loading="loadingSteps"
-              class="flex-1"
-            />
-            <a-button type="outline" size="small" :disabled="starting" :title="text.addPageStep" @click="openAddStep">
               <template #icon><icon-plus /></template>
             </a-button>
           </div>
@@ -75,63 +66,6 @@
       </div>
     </div>
 
-    <!-- 快捷新增页面 -->
-    <a-modal
-      :visible="addPageVisible"
-      :title="text.addPage"
-      :footer="false"
-      :mask-closable="!addPageSubmitting"
-      :closable="!addPageSubmitting"
-      width="480px"
-      @cancel="addPageVisible = false"
-    >
-      <a-form :model="addPageForm" layout="vertical">
-        <a-form-item :label="text.module" :required="true">
-          <a-select
-            v-model="addPageForm.module"
-            :options="moduleFlatOptions"
-            :placeholder="text.selectModule"
-            allow-search
-            allow-clear
-          />
-        </a-form-item>
-        <a-form-item :label="text.pageName" :required="true">
-          <a-input v-model="addPageForm.name" :placeholder="text.enterPageName" :max-length="64" allow-clear />
-        </a-form-item>
-        <a-form-item :label="text.pageUrl">
-          <a-input v-model="addPageForm.url" :placeholder="text.enterPageUrl" allow-clear />
-        </a-form-item>
-      </a-form>
-      <div class="recorder-setup-actions">
-        <a-button :disabled="addPageSubmitting" @click="addPageVisible = false">{{ text.cancel }}</a-button>
-        <a-button type="primary" :loading="addPageSubmitting" @click="submitAddPage">{{ text.create }}</a-button>
-      </div>
-    </a-modal>
-
-    <!-- 快捷新增页面步骤 -->
-    <a-modal
-      :visible="addStepVisible"
-      :title="text.addPageStep"
-      :footer="false"
-      :mask-closable="!addStepSubmitting"
-      :closable="!addStepSubmitting"
-      width="480px"
-      @cancel="addStepVisible = false"
-    >
-      <a-form :model="addStepForm" layout="vertical">
-        <a-form-item :label="text.stepName" :required="true">
-          <a-input v-model="addStepForm.name" :placeholder="text.enterStepName" :max-length="64" allow-clear />
-        </a-form-item>
-        <a-form-item :label="text.description">
-          <a-textarea v-model="addStepForm.description" :placeholder="text.enterDescription" :auto-size="{ minRows: 2 }" />
-        </a-form-item>
-      </a-form>
-      <div class="recorder-setup-actions">
-        <a-button :disabled="addStepSubmitting" @click="addStepVisible = false">{{ text.cancel }}</a-button>
-        <a-button type="primary" :loading="addStepSubmitting" @click="submitAddStep">{{ text.create }}</a-button>
-      </div>
-    </a-modal>
-
     <!-- 阶段2：录制视图 -->
     <div v-if="phase !== 'setup'" class="recorder-live">
       <div class="recorder-canvas-wrap">
@@ -155,7 +89,7 @@
           <a-select
             v-model="assertMode"
             size="small"
-            style="width: 140px"
+            style="width: 132px"
             @change="onAssertModeChange"
           >
             <a-option-group :label="text.assertGroupState">
@@ -197,8 +131,54 @@
           </a-button>
         </div>
         <div class="recorder-hint">{{ text.recordHint }}</div>
+
+        <!-- 步骤分组：添加步骤 + 当前活动步骤 + 分组切换 -->
+        <div class="recorder-case-groups">
+          <div class="recorder-case-groups-head">
+            <a-button type="primary" size="small" :disabled="!recording" @click="openAddGroup">
+              <template #icon><icon-plus /></template>
+              {{ text.addStep }}
+            </a-button>
+            <span class="recorder-type-hint">{{ text.dragHint }}</span>
+          </div>
+          <!-- 步骤分组列表：点击切换录制归属，拖动调整顺序（顺序即用例步骤顺序） -->
+          <draggable
+            v-model="recordGroups"
+            item-key="uid"
+            handle=".drag-handle"
+            class="recorder-case-groups-list"
+          >
+            <template #item="{ element, index }">
+              <div
+                class="recorder-case-group-item"
+                :class="{ active: element.uid === activeGroupId }"
+                @click="selectGroup(element.uid)"
+              >
+                <icon-drag-dot-vertical class="drag-handle" />
+                <span class="recorder-case-group-name">{{ element.name }}</span>
+                <a-tag color="cyan">{{ element.seqs.length }}</a-tag>
+                <a-popconfirm
+                  :content="text.deleteGroupConfirm"
+                  position="left"
+                  @ok="deleteGroup(element.uid)"
+                >
+                  <a-button type="text" size="mini" class="recorder-case-group-del" @click.stop>
+                    <template #icon><icon-delete /></template>
+                  </a-button>
+                </a-popconfirm>
+              </div>
+            </template>
+          </draggable>
+          <div v-if="recordGroups.length" class="recorder-case-active">
+            {{ text.activeStep }}：
+            <a-tag color="arcoblue" size="small">
+              {{ activeGroupName || text.noStepYet }}
+            </a-tag>
+          </div>
+        </div>
+
         <div class="recorder-actions-list">
-          <div v-for="a in actions" :key="a.seq" class="recorder-action-item">
+          <div v-for="a in viewActions" :key="a.seq" class="recorder-action-item">
             <a-tag size="small" :color="actionTagColor(a.type)">
               {{ actionLabel(a) }}
             </a-tag>
@@ -213,24 +193,80 @@
               <template #icon><icon-delete /></template>
             </a-button>
           </div>
-          <div v-if="recording && actions.length === 0" class="recorder-actions-empty">
+          <div v-if="recording && viewActions.length === 0" class="recorder-actions-empty">
             {{ text.noActions }}
           </div>
         </div>
       </div>
     </div>
+
+    <!-- 添加步骤弹窗 -->
+    <a-modal
+      :visible="addGroupVisible"
+      :title="text.addStep"
+      :footer="false"
+      width="420px"
+      @cancel="addGroupVisible = false"
+    >
+      <a-input
+        v-model="newGroupName"
+        :placeholder="text.enterStepName"
+        :max-length="64"
+        allow-clear
+        @press-enter="submitAddGroup"
+      />
+      <div class="recorder-setup-actions">
+        <a-button @click="addGroupVisible = false">{{ text.cancel }}</a-button>
+        <a-button type="primary" @click="submitAddGroup">{{ text.create }}</a-button>
+      </div>
+    </a-modal>
+
+    <!-- 快捷新增页面 -->
+    <a-modal
+      :visible="addPageVisible"
+      :title="text.addPage"
+      :footer="false"
+      :mask-closable="!addPageSubmitting"
+      :closable="!addPageSubmitting"
+      width="480px"
+      @cancel="addPageVisible = false"
+    >
+      <a-form :model="addPageForm" layout="vertical">
+        <a-form-item :label="text.module" :required="true">
+          <a-select
+            v-model="addPageForm.module"
+            :options="moduleFlatOptions"
+            :placeholder="text.selectModule"
+            allow-search
+            allow-clear
+            :loading="loadingModules"
+          />
+        </a-form-item>
+        <a-form-item :label="text.pageName" :required="true">
+          <a-input v-model="addPageForm.name" :placeholder="text.enterPageName" :max-length="64" allow-clear />
+        </a-form-item>
+        <a-form-item :label="text.pageUrl">
+          <a-input v-model="addPageForm.url" :placeholder="text.enterPageUrl" allow-clear />
+        </a-form-item>
+      </a-form>
+      <div class="recorder-setup-actions">
+        <a-button :disabled="addPageSubmitting" @click="addPageVisible = false">{{ text.cancel }}</a-button>
+        <a-button type="primary" :loading="addPageSubmitting" @click="submitAddPage">{{ text.create }}</a-button>
+      </div>
+    </a-modal>
   </a-modal>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconPlus, IconDragDotVertical } from '@arco-design/web-vue/es/icon'
+import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../api'
-import type { RecorderSessionInfo, RecorderFinishResult } from '../api'
-import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm, UiPageStepsForm } from '../types'
+import type { RecorderSessionInfo, RecorderCaseFinishResult } from '../api'
+import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm } from '../types'
 import { extractListData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
 
@@ -249,30 +285,66 @@ const { isEnglish } = useAppI18n()
 const text = computed(() => (
   isEnglish.value
     ? {
-        title: 'Record Steps',
+        title: 'Record Test Case',
+        caseName: 'Case name',
+        enterCaseName: 'Enter case name',
         page: 'Page',
         selectPage: 'Select a page',
-        pageStep: 'Page step',
-        selectPageStep: 'Select a page step',
         environment: 'Environment',
         selectEnvironment: 'Select an environment',
         envHint: 'Recording navigates to the environment base URL (falls back to the page URL).',
         preStep: 'Pre-step (optional)',
         preStepPlaceholder: 'Select a page step to auto-run before recording',
-        preStepHint: 'Auto executes this step (e.g. login) before recording starts; its actions are not recorded.',
+        preStepHint: 'Auto executes this step (e.g. login) before recording; it will also be added to the case.',
         cancel: 'Cancel',
         startRecord: 'Start Recording',
         connecting: 'Connecting to browser...',
         preparing: 'Preparing browser...',
         assert: 'Assert',
+        finishRecord: 'Finish',
+        recordHint: 'Operate in the browser view. Use "Add step" to group later actions before recording.',
+        noActions: 'No actions yet in this step.',
+        addStep: 'Add step',
+        enterStepName: 'Enter step name',
+        create: 'Create',
+        activeStep: 'Recording into',
+        addPage: 'New page',
+        module: 'Module',
+        selectModule: 'Select module',
+        pageName: 'Page name',
+        enterPageName: 'Enter page name',
+        pageUrl: 'Page URL',
+        enterPageUrl: 'Enter page URL (optional)',
+        createSuccess: 'Created successfully',
+        createFailed: 'Creation failed',
+        modulePageRequired: 'Select a module and enter a page name',
+        noStepYet: 'No step yet — record actions will be unassigned until you add one',
+        dragHint: 'Click a step to keep recording into it; drag to reorder (final case step order)',
+        deleteGroupConfirm: 'Delete this step? Its recorded actions will not be saved.',
+        selectPageFirst: 'Select a page first',
+        startFailed: 'Failed to start recording',
+        finishFailed: 'Failed to finish recording',
+        finishSuccess: 'Case recorded',
+        stats: 'Actions: {actions}, steps created: {steps}, case steps: {caseSteps}, elements: +{elements}',
+        assertRecorded: 'Assertion recorded',
+        assertFailed: 'Assertion failed',
         assertPickElement: 'Click an element in the view…',
+        assertModeHint: 'Assert mode: click the target element in the browser view',
+        removeAction: 'Remove this action',
+        preFailed: 'Pre-step failed, please check its definition',
+        needGroupFirst: 'Add at least one step before finishing if there are actions',
+        selectStepToGroup: 'Please add a step first',
+        confirmCancel: 'Cancel recording? The unfinished recording will be discarded.',
         assertGroupState: 'Element state',
         assertGroupContent: 'Content check',
         assertGroupPage: 'Page check',
+        assertVisible: 'Visible',
         assertHidden: 'Hidden',
+        assertEnabled: 'Enabled',
         assertDisabled: 'Disabled',
         assertChecked: 'Checked',
         assertText: 'Has text',
+        assertContainText: 'Contains text',
         assertValue: 'Has value',
         assertCount: 'Count equals',
         assertUrl: 'URL equals',
@@ -283,67 +355,68 @@ const text = computed(() => (
         assertCountPlaceholder: 'Expected count',
         assertTitleRequired: 'Enter the expected title',
         assertValueRequired: 'Enter the content to check',
-        assertModeHint: 'Assert mode: click the target element in the browser view',
-        preFailed: 'Pre-step failed, please check its definition',
-        addPage: 'New page',
-        addPageStep: 'New page step',
-        module: 'Module',
-        selectModule: 'Select module',
-        pageName: 'Page name',
-        enterPageName: 'Enter page name',
-        pageUrl: 'Page URL',
-        enterPageUrl: 'Enter page URL (optional)',
-        stepName: 'Step name',
-        enterStepName: 'Enter step name',
-        description: 'Description',
-        enterDescription: 'Enter description (optional)',
-        create: 'Create',
-        createSuccess: 'Created successfully',
-        createFailed: 'Creation failed',
-        modulePageRequired: 'Select a module and enter a page name',
-        selectPageFirst: 'Select a page first',
-        finishRecord: 'Finish',
-        recordHint: 'Operate in the browser view below. Hover an element then click Assert to record an assertion.',
-        noActions: 'No actions yet. Operate in the browser view.',
-        confirmCancel: 'Cancel recording? The unfinished recording will be discarded.',
-        startFailed: 'Failed to start recording',
-        finishFailed: 'Failed to finish recording',
-        finishSuccess: 'Recording saved',
-        stats: 'Actions: {actions}, elements: +{elements}, steps: +{steps}',
-        assertRecorded: 'Assertion recorded',
-        assertFailed: 'Assertion failed',
-        assertVisible: 'Visible',
-        assertContainText: 'Contains text',
-        assertEnabled: 'Enabled',
-        emptyPageSteps: 'This page has no page steps yet',
-        selectedEnvNoUrl: 'The selected environment has no base URL. Pick one with an address, or set the base URL in environment config.',
       }
     : {
-        title: '录制步骤',
+        title: '录制用例',
+        caseName: '用例名称',
+        enterCaseName: '请输入用例名称',
         page: '页面',
         selectPage: '请选择页面',
-        pageStep: '页面步骤',
-        selectPageStep: '请选择页面步骤',
         environment: '环境',
         selectEnvironment: '请选择环境',
         envHint: '录制时先导航到环境的基础 URL（环境未配置时使用页面 URL）。',
         preStep: '前置步骤（可选）',
         preStepPlaceholder: '选择录制前自动执行的页面步骤',
-        preStepHint: '开始录制前自动执行该步骤（如登录），执行过程不会进入录制动作。',
+        preStepHint: '开始录制前自动执行该步骤（如登录），执行过程不会进入录制动作；结束后该步骤也会加入用例。',
         cancel: '取消',
         startRecord: '开始录制',
         connecting: '正在连接浏览器…',
         preparing: '正在准备浏览器…',
         assert: '断言',
+        finishRecord: '结束录制',
+        recordHint: '在左侧浏览器画面中操作；录制前请先点击「添加步骤」分组后续动作。',
+        noActions: '该步骤下暂无动作',
+        addStep: '添加步骤',
+        enterStepName: '请输入步骤名称',
+        create: '创建',
+        activeStep: '当前录制到',
+        addPage: '新增页面',
+        module: '所属模块',
+        selectModule: '请选择模块',
+        pageName: '页面名称',
+        enterPageName: '请输入页面名称',
+        pageUrl: '页面 URL',
+        enterPageUrl: '请输入页面 URL（可选）',
+        createSuccess: '创建成功',
+        createFailed: '创建失败',
+        modulePageRequired: '请选择模块并填写页面名称',
+        noStepYet: '尚未添加步骤',
+        dragHint: '点击步骤切换录制归属；拖动可调整顺序（即用例步骤顺序）',
+        deleteGroupConfirm: '删除该步骤？此步骤中录制的动作将不会保存。',
+        selectPageFirst: '请先选择页面',
+        startFailed: '启动录制失败',
+        finishFailed: '结束录制失败',
+        finishSuccess: '用例录制完成',
+        stats: '动作 {actions} 个，新建步骤 {steps} 个，用例步骤 {caseSteps} 个，元素 +{elements}',
+        assertRecorded: '断言已记录',
+        assertFailed: '断言失败',
         assertPickElement: '请在画面中点击元素…',
+        assertModeHint: '断言模式：请在左侧画面中点击要断言的元素',
         removeAction: '删除此操作',
+        preFailed: '前置步骤执行失败，请检查步骤定义',
+        needGroupFirst: '存在未分组的动作，请先添加步骤',
+        selectStepToGroup: '请先添加步骤',
+        confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
         assertGroupState: '元素状态',
         assertGroupContent: '内容校验',
         assertGroupPage: '页面校验',
+        assertVisible: '元素可见',
         assertHidden: '元素隐藏',
+        assertEnabled: '元素可用',
         assertDisabled: '元素不可用',
         assertChecked: '已勾选',
         assertText: '文本等于',
+        assertContainText: '包含文本',
         assertValue: '值等于',
         assertCount: '数量等于',
         assertUrl: 'URL等于',
@@ -354,44 +427,10 @@ const text = computed(() => (
         assertCountPlaceholder: '期望数量',
         assertTitleRequired: '请输入要断言的页面标题',
         assertValueRequired: '请输入要校验的内容',
-        assertModeHint: '断言模式：请在左侧画面中点击要断言的元素',
-        preFailed: '前置步骤执行失败，请检查步骤定义',
-        addPage: '新增页面',
-        addPageStep: '新增页面步骤',
-        module: '所属模块',
-        selectModule: '请选择模块',
-        pageName: '页面名称',
-        enterPageName: '请输入页面名称',
-        pageUrl: '页面 URL',
-        enterPageUrl: '请输入页面 URL（可选）',
-        stepName: '步骤名称',
-        enterStepName: '请输入步骤名称',
-        description: '描述',
-        enterDescription: '请输入描述（可选）',
-        create: '创建',
-        createSuccess: '创建成功',
-        createFailed: '创建失败',
-        modulePageRequired: '请选择模块并填写页面名称',
-        selectPageFirst: '请先选择页面',
-        finishRecord: '结束录制',
-        recordHint: '在左侧浏览器画面中操作；悬停目标元素后点击「断言」可记录断言。',
-        noActions: '暂无动作，请在浏览器画面中操作',
-        confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
-        startFailed: '启动录制失败',
-        finishFailed: '结束录制失败',
-        finishSuccess: '录制已保存',
-        stats: '动作 {actions} 个，新增元素 {elements} 个，新增步骤 {steps} 个',
-        assertRecorded: '断言已记录',
-        assertFailed: '断言失败',
-        assertVisible: '元素可见',
-        assertContainText: '包含文本',
-        assertEnabled: '元素可用',
-        emptyPageSteps: '该页面下还没有页面步骤',
-        selectedEnvNoUrl: '所选环境未配置基础 URL，请选择带地址的环境，或在环境配置中填写 base_url',
       }
 ))
 
-type Phase = 'setup' | 'recording' | 'result'
+type Phase = 'setup' | 'recording'
 
 const phase = ref<Phase>('setup')
 const starting = ref(false)
@@ -399,30 +438,31 @@ const recording = ref(false)
 const finishing = ref(false)
 
 const form = reactive({
+  case_name: '',
   page_id: undefined as number | undefined,
-  page_step_id: undefined as number | undefined,
   env_config_id: undefined as number | undefined,
   pre_page_step_id: undefined as number | undefined,
 })
 
 const projectId = computed(() => props.projectId ?? useProjectStore().currentProject?.id)
 
-// ---- 快捷新增页面/步骤 ----
+const loadingPages = ref(false)
+const loadingEnvs = ref(false)
+const loadingPreSteps = ref(false)
+const pageOptions = ref<Array<{ label: string; value: number; module?: number }>>([])
+const envOptions = ref<Array<{ label: string; value: number; base_url?: string | null }>>([])
+const preStepOptions = ref<Array<{ label: string; value: number }>>([])
+
+// ---- 快捷新增页面 ----
 const addPageVisible = ref(false)
-const addStepVisible = ref(false)
 const addPageSubmitting = ref(false)
-const addStepSubmitting = ref(false)
+const loadingModules = ref(false)
+const moduleOptions = ref<UiModule[]>([])
 const addPageForm = reactive<Partial<UiPageForm>>({
   project: 0,
   module: undefined,
   name: '',
   url: '',
-})
-const addStepForm = reactive<Partial<UiPageStepsForm>>({
-  project: 0,
-  page: undefined,
-  name: '',
-  description: '',
 })
 
 const moduleFlatOptions = computed(() => {
@@ -444,7 +484,7 @@ async function fetchModules() {
     const res = await moduleApi.tree(projectId.value)
     moduleOptions.value = extractListData<UiModule>(res)
   } catch (_) {
-    // 模块为可选项，拉取失败不阻塞
+    // 模块为可选项
   } finally {
     loadingModules.value = false
   }
@@ -470,7 +510,6 @@ async function submitAddPage() {
     const created = extractResponseData<UiPage>(res)
     if (!created) throw new Error(text.value.createFailed)
     addPageVisible.value = false
-    // 刷新页面列表并自动选中新页面，联动加载其步骤
     const listRes = await pageApi.list({ project: projectId.value })
     pageOptions.value = extractListData<UiPage>(listRes).map((p) => ({
       label: p.name,
@@ -478,7 +517,6 @@ async function submitAddPage() {
       module: p.module,
     }))
     form.page_id = created.id
-    fetchSteps(created.id)
     Message.success(text.value.createSuccess)
   } catch (e: any) {
     Message.error(e?.error || e?.message || text.value.createFailed)
@@ -487,65 +525,52 @@ async function submitAddPage() {
   }
 }
 
-function openAddStep() {
-  if (!form.page_id) {
-    Message.warning(text.value.selectPageFirst)
-    return
-  }
-  const pickedPage = pageOptions.value.find((p) => p.value === form.page_id)
-  addStepForm.project = projectId.value || 0
-  addStepForm.page = form.page_id
-  addStepForm.module = pickedPage?.module
-  addStepForm.name = ''
-  addStepForm.description = ''
-  addStepVisible.value = true
-}
-
-async function submitAddStep() {
-  if (!addStepForm.name?.trim()) {
-    Message.warning(text.value.enterStepName)
-    return
-  }
-  addStepSubmitting.value = true
-  try {
-    const res = await pageStepsApi.create(addStepForm as UiPageStepsForm)
-    const created = extractResponseData<UiPageSteps>(res)
-    if (!created) throw new Error(text.value.createFailed)
-    addStepVisible.value = false
-    // 刷新步骤列表并自动选中新步骤
-    fetchSteps(form.page_id!)
-    form.page_step_id = created.id
-    Message.success(text.value.createSuccess)
-  } catch (e: any) {
-    Message.error(e?.error || e?.message || text.value.createFailed)
-  } finally {
-    addStepSubmitting.value = false
-  }
-}
-
-const loadingPages = ref(false)
-const loadingSteps = ref(false)
-const loadingEnvs = ref(false)
-const loadingPreSteps = ref(false)
-const loadingModules = ref(false)
-const pageOptions = ref<Array<{ label: string; value: number; module?: number }>>([])
-const preStepOptions = ref<Array<{ label: string; value: number }>>([])
-const moduleOptions = ref<UiModule[]>([])
-const stepOptions = ref<Array<{ label: string; value: number }>>([])
-const envOptions = ref<Array<{ label: string; value: number; base_url?: string | null }>>([])
-
 const sessionId = ref('')
 const viewport = reactive({ width: 1400, height: 900 })
-const actions = ref<Array<Record<string, any>>>([])
 const firstFrame = ref(false)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
-const lastFrameData = ref('')
 
+// ---- 录制动作与步骤分组 ----
+const allActions = ref<Array<Record<string, any>>>([])
+const recordGroups = ref<Array<{ uid: number; name: string; seqs: number[] }>>([])
+const activeGroupId = ref<number | null>(null)   // 当前录制归属（切换分组即切换归属）
+const addGroupVisible = ref(false)
+const newGroupName = ref('')
+let groupUidSeed = 1
+
+const activeGroup = computed(() => {
+  return activeGroupId.value === null
+    ? null
+    : recordGroups.value.find((g) => g.uid === activeGroupId.value) || null
+})
+
+const activeGroupName = computed(() => (activeGroup.value ? activeGroup.value.name : ''))
+
+const viewActions = computed(() => {
+  const g = activeGroup.value
+  if (!g) return []
+  const seqs = new Set(g.seqs)
+  return allActions.value.filter((a) => seqs.has(a.seq))
+})
+
+function selectGroup(uid: number) {
+  activeGroupId.value = uid
+}
+
+function deleteGroup(uid: number) {
+  const idx = recordGroups.value.findIndex((g) => g.uid === uid)
+  if (idx < 0) return
+  recordGroups.value.splice(idx, 1)
+  // 删除的是当前录制归属组时，切到第一个剩余分组
+  if (activeGroupId.value === uid) {
+    activeGroupId.value = recordGroups.value.length ? recordGroups.value[0].uid : null
+  }
+}
+
+// ---- 断言 ----
 const assertMode = ref('visible')
 const assertValue = ref('')
-const assertActive = ref(false)   // 断言模式：激活后下一次画布点击用于定位断言目标
-
-// 断言方法三分类（与执行器 assert_* 词汇表对齐）
+const assertActive = ref(false)
 const assertStateOptions = computed(() => [
   { label: text.value.assertVisible, value: 'visible' },
   { label: text.value.assertHidden, value: 'hidden' },
@@ -563,8 +588,6 @@ const assertPageOptions = computed(() => [
   { label: text.value.assertUrl, value: 'url' },
   { label: text.value.assertTitle, value: 'title' },
 ])
-
-// 内容校验与页面校验需要输入期望值
 const ASSERT_NEEDS_VALUE = ['text', 'contain_text', 'value', 'count', 'url', 'title']
 const needAssertValue = computed(() => ASSERT_NEEDS_VALUE.includes(assertMode.value))
 const assertValuePlaceholder = computed(() => {
@@ -588,26 +611,11 @@ async function fetchPages() {
   loadingPages.value = true
   try {
     const res = await pageApi.list({ project: projectId.value })
-    const list = extractListData<UiPage>(res)
-    pageOptions.value = list.map((p) => ({ label: p.name, value: p.id, module: p.module }))
+    pageOptions.value = extractListData<UiPage>(res).map((p) => ({ label: p.name, value: p.id }))
   } catch (e: any) {
     Message.error(e?.error || e?.message || text.value.startFailed)
   } finally {
     loadingPages.value = false
-  }
-}
-
-async function fetchSteps(pageId: number) {
-  if (!projectId.value) return
-  loadingSteps.value = true
-  try {
-    const res = await pageStepsApi.list({ project: projectId.value, page: pageId })
-    const list = extractListData<UiPageSteps>(res)
-    stepOptions.value = list.map((s) => ({ label: s.name, value: s.id }))
-  } catch (e: any) {
-    Message.error(e?.error || e?.message || text.value.startFailed)
-  } finally {
-    loadingSteps.value = false
   }
 }
 
@@ -623,7 +631,6 @@ async function fetchEnvs() {
       base_url: e.base_url,
     }))
     if (!form.env_config_id && list.length > 0) {
-      // 优先选择带基础 URL 的环境（录制需要导航地址）
       const withUrl = list.filter((e) => e.base_url)
       const def = withUrl.find((e) => e.is_default) || withUrl[0] || list[0]
       form.env_config_id = def.id
@@ -640,22 +647,15 @@ async function fetchPreSteps() {
   loadingPreSteps.value = true
   try {
     const res = await pageStepsApi.list({ project: projectId.value })
-    const list = extractListData<UiPageSteps>(res)
-    preStepOptions.value = list.map((s) => ({
+    preStepOptions.value = extractListData<UiPageSteps>(res).map((s) => ({
       label: s.page_name ? `${s.name}（${s.page_name}）` : s.name,
       value: s.id,
     }))
-  } catch (e: any) {
-    // 前置步骤为可选项，拉取失败不阻塞录制
+  } catch (_) {
+    // 前置步骤为可选项
   } finally {
     loadingPreSteps.value = false
   }
-}
-
-function onPageChange(value: number | undefined) {
-  form.page_step_id = undefined
-  stepOptions.value = []
-  if (value) fetchSteps(value)
 }
 
 watch(
@@ -675,15 +675,17 @@ function resetState() {
   starting.value = false
   recording.value = false
   finishing.value = false
+  form.case_name = ''
   form.page_id = undefined
-  form.page_step_id = undefined
   form.env_config_id = undefined
   form.pre_page_step_id = undefined
-  stepOptions.value = []
   sessionId.value = ''
-  actions.value = []
   firstFrame.value = false
+  allActions.value = []
+  recordGroups.value = []
+  activeGroupId.value = null
   assertActive.value = false
+  assertValue.value = ''
 }
 
 // ------------------------------------------------------------------
@@ -697,25 +699,24 @@ async function ensureWs() {
 }
 
 async function handleStart() {
-  if (!form.page_id || !form.page_step_id) {
-    Message.warning(text.value.selectPageStep)
+  if (!form.case_name.trim()) {
+    Message.warning(text.value.enterCaseName)
+    return
+  }
+  if (!form.page_id) {
+    Message.warning(text.value.selectPageFirst)
     return
   }
   if (!form.env_config_id) {
     Message.warning(text.value.selectEnvironment)
     return
   }
-  const pickedEnv = envOptions.value.find((e) => e.value === form.env_config_id)
-  if (pickedEnv && !pickedEnv.base_url) {
-    Message.warning(text.value.selectedEnvNoUrl)
-    return
-  }
   starting.value = true
   try {
-    const info = extractResponseData<RecorderSessionInfo>(await recorderApi.create({
-      env_config_id: form.env_config_id,
+    const info = extractResponseData<RecorderSessionInfo>(await recorderApi.caseCreate({
+      case_name: form.case_name.trim(),
       page_id: form.page_id,
-      page_step_id: form.page_step_id,
+      env_config_id: form.env_config_id,
       pre_page_step_id: form.pre_page_step_id,
     }))
     if (!info) throw new Error(text.value.startFailed)
@@ -745,15 +746,23 @@ async function handleStart() {
 
 async function handleFinish() {
   if (!sessionId.value) return
+  if (allActions.value.length > 0 && recordGroups.value.length === 0) {
+    Message.warning(text.value.needGroupFirst)
+    return
+  }
   finishing.value = true
   try {
     uiWebSocket.recorderStop()
-    const result = extractResponseData<RecorderFinishResult>(await recorderApi.finish(sessionId.value))
+    const result = extractResponseData<RecorderCaseFinishResult>(await recorderApi.finish(
+      sessionId.value,
+      { groups: recordGroups.value.map((g) => ({ name: g.name, seqs: g.seqs.slice() })) },
+    ))
     if (!result) throw new Error(text.value.finishFailed)
     const stats = text.value.stats
       .replace('{actions}', String(result.actions_count))
+      .replace('{steps}', String(result.page_steps_created))
+      .replace('{caseSteps}', String(result.case_steps_created))
       .replace('{elements}', String(result.elements_created))
-      .replace('{steps}', String(result.steps_created))
     Message.success(`${text.value.finishSuccess}（${stats}）`)
     emit('refresh')
     closeModal()
@@ -795,7 +804,29 @@ function closeModal() {
 }
 
 // ------------------------------------------------------------------
-// 画布：帧绘制 + 输入转发
+// 步骤分组
+// ------------------------------------------------------------------
+
+function openAddGroup() {
+  if (!recording.value) return
+  newGroupName.value = ''
+  addGroupVisible.value = true
+}
+
+function submitAddGroup() {
+  const name = newGroupName.value.trim()
+  if (!name) {
+    Message.warning(text.value.enterStepName)
+    return
+  }
+  const uid = groupUidSeed++
+  recordGroups.value.push({ uid, name, seqs: [] })
+  activeGroupId.value = uid
+  addGroupVisible.value = false
+}
+
+// ------------------------------------------------------------------
+// 画布：帧绘制 + 输入转发（与录制步骤一致）
 // ------------------------------------------------------------------
 
 function drawFrame(imageSrc: string) {
@@ -828,16 +859,12 @@ function onPointerDown(e: PointerEvent) {
   if (!recording.value) return
   const { x, y } = canvasPoint(e)
   if (assertActive.value) {
-    // 断言模式：本次点击只用于定位断言目标，不记录普通点击
     assertActive.value = false
     uiWebSocket.recorderAssert(assertMode.value, x, y, assertValue.value.trim() || undefined)
     return
   }
   uiWebSocket.recorderInput({
-    type: 'mouse',
-    event: 'down',
-    x,
-    y,
+    type: 'mouse', event: 'down', x, y,
     button: e.button === 2 ? 'right' : 'left',
     clickCount: e.detail || 1,
   })
@@ -847,10 +874,7 @@ function onPointerUp(e: PointerEvent) {
   if (!recording.value) return
   const { x, y } = canvasPoint(e)
   uiWebSocket.recorderInput({
-    type: 'mouse',
-    event: 'up',
-    x,
-    y,
+    type: 'mouse', event: 'up', x, y,
     button: e.button === 2 ? 'right' : 'left',
     clickCount: e.detail || 1,
   })
@@ -869,13 +893,7 @@ function onPointerMove(e: PointerEvent) {
 function onWheel(e: WheelEvent) {
   if (!recording.value) return
   const { x, y } = canvasPoint(e)
-  uiWebSocket.recorderInput({
-    type: 'wheel',
-    x,
-    y,
-    deltaX: e.deltaX,
-    deltaY: e.deltaY,
-  })
+  uiWebSocket.recorderInput({ type: 'wheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY })
   e.preventDefault()
 }
 
@@ -901,12 +919,11 @@ function unbindCanvasListeners() {
 }
 
 // ------------------------------------------------------------------
-// 断言 & 动作展示
+// 断言按钮
 // ------------------------------------------------------------------
 
 function handleAssert() {
   if (!recording.value) return
-  // 页面校验（URL/标题）：不需要选元素，直接记录断言
   if (assertMode.value === 'url' || assertMode.value === 'title') {
     if (assertMode.value === 'title' && !assertValue.value.trim()) {
       Message.warning(text.value.assertTitleRequired)
@@ -915,21 +932,17 @@ function handleAssert() {
     uiWebSocket.recorderAssert(assertMode.value, undefined, undefined, assertValue.value.trim())
     return
   }
-  // 内容校验需输入期望值
   if (needAssertValue.value && !assertValue.value.trim()) {
     Message.warning(text.value.assertValueRequired)
     return
   }
-  // 进入断言模式：下一次画布点击定位要断言的元素
   assertActive.value = true
   Message.info(text.value.assertModeHint)
 }
 
-function removeAction(a: Record<string, any>) {
-  // 本地即时移除 + 通知录制进程同步删除（保证落盘脚本一致）
-  actions.value = actions.value.filter((x) => x.seq !== a.seq)
-  uiWebSocket.recorderRemoveAction(a.seq)
-}
+// ------------------------------------------------------------------
+// 动作展示
+// ------------------------------------------------------------------
 
 function actionLabel(a: Record<string, any>): string {
   const map: Record<string, string> = {
@@ -977,15 +990,21 @@ function actionDesc(a: Record<string, any>): string {
   return sel?.name || sel?.locator_value || ''
 }
 
+function removeAction(a: Record<string, any>) {
+  allActions.value = allActions.value.filter((x) => x.seq !== a.seq)
+  for (const g of recordGroups.value) {
+    g.seqs = g.seqs.filter((s) => s !== a.seq)
+  }
+  uiWebSocket.recorderRemoveAction(a.seq)
+}
+
 // ------------------------------------------------------------------
 // WS 消息
 // ------------------------------------------------------------------
 
 function onRecorderFrame(data: any) {
-  const args = data?.data?.func_args || {}
-  const frame = args.frame
+  const frame = data?.data?.func_args?.frame
   if (!frame?.data) return
-  lastFrameData.value = frame.data
   firstFrame.value = true
   if (viewport.width !== frame.w || viewport.height !== frame.h) {
     viewport.width = frame.w || viewport.width
@@ -997,12 +1016,16 @@ function onRecorderFrame(data: any) {
 function onRecorderAction(data: any) {
   const action = data?.data?.func_args?.action
   if (!action) return
-  // 连续输入合并时同一 seq 会推送更新版本，按 seq 原地替换
-  const idx = actions.value.findIndex((a) => a.seq === action.seq)
+  // 同 seq 更新（连续输入合并场景）
+  const idx = allActions.value.findIndex((a) => a.seq === action.seq)
   if (idx >= 0) {
-    actions.value[idx] = action
+    allActions.value[idx] = action
   } else {
-    actions.value.push(action)
+    allActions.value.push(action)
+  }
+  // 新动作挂到当前活动步骤
+  if (activeGroup.value) {
+    if (!activeGroup.value.seqs.includes(action.seq)) activeGroup.value.seqs.push(action.seq)
   }
 }
 
@@ -1036,6 +1059,12 @@ onUnmounted(() => {
 </script>
 
 <style lang="postcss" scoped>
+.recorder-select-with-add {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .recorder-setup-actions {
   display: flex;
   justify-content: flex-end;
@@ -1047,20 +1076,6 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--color-text-3);
-}
-
-
-.recorder-select-with-add {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.recorder-switch-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 6px 2px;
 }
 
 .recorder-live {
@@ -1101,7 +1116,7 @@ onUnmounted(() => {
 
 .recorder-side {
   flex: 0 1 300px;
-  min-width: 220px;
+  min-width: 240px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1120,6 +1135,26 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
+.recorder-case-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.recorder-case-groups-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.recorder-case-active {
+  font-size: 12px;
+  color: var(--color-text-3);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .recorder-actions-list {
   flex: 1;
   overflow-y: auto;
@@ -1129,7 +1164,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 480px;
+  max-height: 420px;
 }
 
 .recorder-action-item {
@@ -1146,6 +1181,65 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+
+.recorder-type-hint {
+  font-size: 12px;
+  color: var(--color-text-3);
+  flex: 1;
+  min-width: 0;
+}
+
+.recorder-case-groups-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-2);
+  border-radius: 6px;
+  padding: 6px;
+}
+
+.recorder-case-group-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  border: 1px solid transparent;
+}
+
+.recorder-case-group-item:hover {
+  background: var(--color-fill-2);
+}
+
+.recorder-case-group-item.active {
+  background: var(--color-primary-light-1);
+  border-color: var(--color-primary-4);
+}
+
+.recorder-case-group-item .drag-handle {
+  cursor: move;
+  color: var(--color-text-3);
+  flex: none;
+}
+
+.recorder-case-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recorder-case-group-del {
+  flex: none;
+  color: var(--color-text-3);
+}
+
 
 .recorder-actions-empty {
   color: var(--color-text-3);

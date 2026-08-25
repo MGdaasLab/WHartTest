@@ -86,6 +86,10 @@
             {{ batchDeleteLabel }}
           </a-button>
         </a-popconfirm>
+        <a-button @click="openRecorderCase">
+          <template #icon><icon-record /></template>
+          {{ pageText.recordCase }}
+        </a-button>
         <a-button type="primary" @click="showAddModal">
           <template #icon><icon-plus /></template>
           {{ pageText.addCase }}
@@ -210,14 +214,22 @@
     >
       <CaseStepList v-if="currentTestCase" :test-case="currentTestCase" />
     </a-drawer>
+
+    <!-- 录制用例弹窗 -->
+    <RecorderCaseModal
+      v-model:visible="recorderCaseVisible"
+      :project-id="projectStore.currentProjectId"
+      @refresh="onSearch"
+    />
   </div>
 </template>
 
 <script setup lang="ts">
 import FileAttachmentPicker from '@/features/file-management/components/FileAttachmentPicker.vue'
+import RecorderCaseModal from '../components/RecorderCaseModal.vue'
 import { ref, reactive, computed, onMounted, watch, onUnmounted } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconOrderedList, IconPlayArrow, IconThunderbolt, IconCopy } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconEdit, IconDelete, IconOrderedList, IconPlayArrow, IconThunderbolt, IconCopy, IconRecord } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { testCaseApi, moduleApi, actuatorApi, envConfigApi, type ActuatorInfo } from '../api'
@@ -251,6 +263,7 @@ const pageText = computed(() => (
         batchDelete: 'Batch delete',
         batchDeleteConfirm: 'Delete the selected cases? This action cannot be undone.',
         addCase: 'Create case',
+        recordCase: 'Record case',
         steps: 'Steps',
         run: 'Run',
         running: 'Running',
@@ -321,6 +334,7 @@ const pageText = computed(() => (
         batchDelete: '批量删除',
         batchDeleteConfirm: '确定要删除选中的用例吗？此操作不可恢复。',
         addCase: '新增用例',
+        recordCase: '录制用例',
         steps: '步骤',
         run: '执行',
         running: '执行中',
@@ -392,6 +406,7 @@ const selectedEnvConfig = ref<number | undefined>() // 选中的环境配置
 const selectedActuator = ref<string | undefined>()
 const selectedRowKeys = ref<number[]>([]) // 批量选中的用例ID
 const modalVisible = ref(false)
+const recorderCaseVisible = ref(false)
 const stepsDrawerVisible = ref(false)
 const isEdit = ref(false)
 const currentTestCase = ref<UiTestCase | null>(null)
@@ -553,6 +568,14 @@ const resetForm = () => {
     case_flow: '',
   })
   formRef.value?.clearValidate()
+}
+
+const openRecorderCase = () => {
+  if (!projectStore.currentProjectId) {
+    Message.warning(pageText.value.selectModule)
+    return
+  }
+  recorderCaseVisible.value = true
 }
 
 const showAddModal = async () => {

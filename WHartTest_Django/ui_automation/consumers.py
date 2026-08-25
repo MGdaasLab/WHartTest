@@ -259,6 +259,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.RECORDER_START: self.handle_recorder_start,
                 UiSocketEnum.RECORDER_INPUT: self.handle_recorder_input,
                 UiSocketEnum.RECORDER_ASSERT: self.handle_recorder_assert,
+                UiSocketEnum.RECORDER_REMOVE_ACTION: self.handle_recorder_remove_action,
                 UiSocketEnum.RECORDER_STOP: self.handle_recorder_stop,
             }
         
@@ -341,7 +342,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                         await self._send_recorder(UiSocketEnum.RECORDER_STATUS, ev.get('data') or {})
             except Exception as exc:
                 logger.warning('[recorder] relay error: %s', exc)
-            await asyncio.sleep(0.15)
+            await asyncio.sleep(0.02)
 
     async def handle_recorder_input(self, args, user):
         """转发前端输入事件到录制进程（fire-and-forget）。"""
@@ -357,7 +358,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             await self._send_recorder_error(f'输入转发失败: {exc}')
 
     async def handle_recorder_assert(self, args, user):
-        """请求录制进程记录断言动作（需要等待元素悬停状态）。"""
+        """请求录制进程记录断言动作（转发模式/坐标/期望值）。"""
         from .recorder.session_manager import recorder_manager
 
         session = recorder_manager.get(self._recorder_session_id or '')
@@ -366,7 +367,14 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             return
         try:
             result = await sync_to_async(session.request)(
-                'assert', {'mode': args.get('mode') or 'visible'}, timeout=20
+                'assert',
+                {
+                    'mode': args.get('mode') or 'visible',
+                    'x': args.get('x'),
+                    'y': args.get('y'),
+                    'value': args.get('value') or '',
+                },
+                timeout=20,
             )
         except Exception as exc:
             await self._send_recorder_error(f'断言记录失败: {exc}')
@@ -386,6 +394,21 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         self._recorder_relay_task = None
         self._recorder_session_id = None
         await self._send_recorder(UiSocketEnum.RECORDER_STATUS, {'status': 'stopped'})
+
+    async def handle_recorder_remove_action(self, args, user):
+        """删除已录动作（录制中误触时手动清理）。args: {seq}"""
+        from .recorder.session_manager import recorder_manager
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            await sync_to_async(session.request)(
+                'remove_action', {'seq': args.get('seq')}, timeout=10,
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'删除操作失败: {exc}')
 
     async def _load_env_config(self, env_config_id):
         """Load UiEnvironmentConfig by id (async)."""

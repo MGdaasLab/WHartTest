@@ -39,12 +39,22 @@ _OP_KEY = {
     'press': 'press',
 }
 
-# 断言模式 → ope_key（执行器 assert_* 集合）
+# 断言模式 → ope_key（执行器 assert_* 集合，三类：元素状态/内容校验/页面校验）
 _ASSERT_KEY = {
+    # 元素状态（无需期望值）
     'visible': 'assert_visible',
-    'contain_text': 'assert_contain_text',
+    'hidden': 'assert_hidden',
     'enabled': 'assert_enabled',
+    'disabled': 'assert_disabled',
+    'checked': 'assert_checked',
+    # 内容校验（需要期望值 + 元素）
+    'text': 'assert_text',
+    'contain_text': 'assert_contain_text',
+    'value': 'assert_value',
+    'count': 'assert_count',
+    # 页面校验（需要期望值，无需元素）
     'url': 'assert_url',
+    'title': 'assert_title',
 }
 
 _MAX_NAME = 64
@@ -190,3 +200,107 @@ def apply_recorded_actions(
         'steps_created': steps_created,
         'actions_count': actions_count,
     }
+
+def apply_recorded_case(
+    *,
+    page: UiPage,
+    user,
+    actions: list[dict[str, Any]],
+    groups: list[dict[str, Any]],
+    case_name: str,
+    project,
+    module: Any = None,
+    pre_page_step: UiPageSteps | None = None,
+) -> dict[str, Any]:
+    """用例录制落库：
+
+    1. 按前端分组（步骤名称 + 动作 seq 列表）逐组创建页面步骤（挂到所选页面），
+       复用 apply_recorded_actions 生成元素与步骤明细；
+    2. 创建测试用例（名称 = 表单用例名），把「前置页面步骤 + 新建步骤组」
+       按顺序以 UiCaseStepsDetailed 引用进用例。
+
+    返回统计：{'case_id', 'page_steps_created', 'case_steps_created', 'elements_created', ...}
+    """
+    from .models import UiTestCase, UiCaseStepsDetailed
+
+    actions_by_seq = {int(a.get('seq')): a for a in actions if a.get('seq') is not None}
+
+    created_page_steps: list[UiPageSteps] = []
+    total_elements_created = 0
+    total_elements_updated = 0
+    total_actions = 0
+
+    for idx, group in enumerate(groups):
+        name = str(group.get('name') or '').strip() or f'录制步骤{idx + 1}'
+        seqs = group.get('seqs') or []
+        group_actions = [actions_by_seq[int(s)] for s in seqs if int(s) in actions_by_seq]
+
+        page_step = UiPageSteps.objects.create(
+            project=page.project,
+            page=page,
+            module=page.module,
+            name=name[:64],
+            creator=user,
+        )
+        stats = apply_recorded_actions(
+            page=page,
+            page_step=page_step,
+            user=user,
+            actions=group_actions,
+        )
+        created_page_steps.append(page_step)
+        total_elements_created += stats['elements_created']
+        total_elements_updated += stats['elements_updated']
+        total_actions += stats['actions_count']
+
+    if not created_page_steps:
+        return {
+            'case_id': None,
+            'page_steps_created': 0,
+            'case_steps_created': 0,
+            'elements_created': 0,
+            'elements_updated': 0,
+            'actions_count': total_actions,
+        }
+
+    test_case = UiTestCase.objects.create(
+        project=project,
+        module=module if module is not None else page.module,
+        name=case_name[:255] or f'录制用例{test_case_suffix()}',
+        creator=user,
+    )
+
+    case_steps_created = 0
+    case_sort = 0
+    if pre_page_step is not None:
+        UiCaseStepsDetailed.objects.create(
+            test_case=test_case,
+            page_step=pre_page_step,
+            case_sort=case_sort,
+        )
+        case_sort += 1
+        case_steps_created += 1
+
+    for page_step in created_page_steps:
+        UiCaseStepsDetailed.objects.create(
+            test_case=test_case,
+            page_step=page_step,
+            case_sort=case_sort,
+        )
+        case_sort += 1
+        case_steps_created += 1
+
+    return {
+        'case_id': test_case.id,
+        'page_steps_created': len(created_page_steps),
+        'case_steps_created': case_steps_created,
+        'elements_created': total_elements_created,
+        'elements_updated': total_elements_updated,
+        'actions_count': total_actions,
+    }
+
+
+def test_case_suffix() -> str:
+    """录制用例默认命名后缀（罕见兜底）。"""
+    import uuid
+    return uuid.uuid4().hex[:8]
