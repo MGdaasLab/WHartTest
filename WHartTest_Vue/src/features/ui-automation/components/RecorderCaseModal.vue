@@ -344,6 +344,7 @@ const text = computed(() => (
         removeAction: 'Remove this action',
         preFailed: 'Pre-step failed, please check its definition',
         needGroupFirst: 'Add at least one step before finishing if there are actions',
+        needCreateStepFirst: 'Please add a step first, then record actions',
         selectStepToGroup: 'Please add a step first',
         confirmCancel: 'Cancel recording? The unfinished recording will be discarded.',
         assertGroupState: 'Element state',
@@ -418,6 +419,7 @@ const text = computed(() => (
         wait: '等待',
         waitSeconds: (sec: number) => `${sec} 秒`,
         needGroupFirst: '存在未分组的动作，请先添加步骤',
+        needCreateStepFirst: '请先创建步骤，再继续录制',
         selectStepToGroup: '请先添加步骤',
         confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
         assertGroupState: '元素状态',
@@ -550,6 +552,7 @@ const activeGroupId = ref<number | null>(null)   // 当前录制归属（切换�
 const addGroupVisible = ref(false)
 const newGroupName = ref('')
 let groupUidSeed = 1
+let lastGroupHintTs = 0   // 未创建步骤时提示节流
 
 const activeGroup = computed(() => {
   return activeGroupId.value === null
@@ -1039,6 +1042,16 @@ function onRecorderFrame(data: any) {
 function onRecorderAction(data: any) {
   const action = data?.data?.func_args?.action
   if (!action) return
+  // 未创建步骤时拦截：撤销该动作并提示先添加步骤（提示节流 3 秒一次）
+  if (!activeGroup.value) {
+    const now = Date.now()
+    if (now - lastGroupHintTs > 3000) {
+      lastGroupHintTs = now
+      Message.warning(text.value.needCreateStepFirst)
+    }
+    uiWebSocket.recorderRemoveAction(action.seq)
+    return
+  }
   // 同 seq 更新（连续输入合并场景）
   const idx = allActions.value.findIndex((a) => a.seq === action.seq)
   if (idx >= 0) {

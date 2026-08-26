@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.db.models.deletion import ProtectedError
+from django.db.models import Count
 from django.db import transaction
 from copy import deepcopy
 from file_management.services import maybe_cleanup_unreferenced_files, sync_file_references
@@ -387,6 +388,29 @@ class UiElementViewSet(viewsets.ModelViewSet):
             )
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request):
+        """批量删除元素。POST: {"ids": [1, 2]}；被页面步骤引用的元素拒绝删除。"""
+        ids = request.data.get('ids') or []
+        if not ids:
+            return Response({'error': 'ids 参数必填'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            elements = list(UiElement.objects.filter(id__in=ids).annotate(
+                usage=Count('step_details'),
+            ))
+            if not elements:
+                return Response({'deleted': 0, 'blocked': []})
+            blocked = [(e.id, e.name, e.usage) for e in elements if e.usage]
+            if blocked:
+                detail = '、'.join(f'「{name}」（被 {usage} 个步骤引用）' for _, name, usage in blocked[:10])
+                return Response(
+                    {'error': f'以下元素存在引用无法删除：{detail}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            deleted_ids = [e.id for e in elements]
+            UiElement.objects.filter(id__in=deleted_ids).delete()
+        return Response({'deleted': len(deleted_ids), 'blocked': []})
+
 
 class UiPageStepsViewSet(viewsets.ModelViewSet):
     """页面步骤管理视图"""
@@ -527,6 +551,25 @@ class UiPageStepsDetailedViewSet(viewsets.ModelViewSet):
         instance.delete()
         if old_file_ids and project:
             maybe_cleanup_unreferenced_files(project, candidate_file_ids=old_file_ids, reason='unbind')
+
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request):
+        """批量删除步骤明细。POST: {"ids": [1, 2]}；同步清理附件引用。"""
+        ids = request.data.get('ids') or []
+        if not ids:
+            return Response({'error': 'ids 参数必填'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            qs = self.get_queryset().select_related('page_step', 'page_step__project').filter(id__in=ids)
+            old_file_ids = []
+            project = None
+            for step in qs:
+                old_file_ids.extend(_remove_upload_step_file_reference(step, request.user))
+                if project is None and step.page_step_id and step.page_step:
+                    project = step.page_step.project
+            deleted_count = qs.delete()[0]
+            if old_file_ids and project:
+                maybe_cleanup_unreferenced_files(project, candidate_file_ids=old_file_ids, reason='unbind')
+        return Response({'deleted': deleted_count})
 
     @action(detail=False, methods=['post'])
     def batch_update(self, request):
@@ -1481,6 +1524,8 @@ def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta
                 'executed': pre_resp.get('state', {}).get('executed', 0),
                 'failed': pre_resp.get('state', {}).get('failed', False),
             }
+            # 前置执行后重建干净页面：消除滚动/弹层/半渲染残留，录制从完整顶部视图开始
+            session.request('reset_page', {}, timeout=60)
         except RecorderSessionError:
             recorder_manager.close(session_id, graceful=False)
             raise

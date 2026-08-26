@@ -9,19 +9,34 @@
         @search="fetchElements"
         @clear="fetchElements"
       />
-      <a-button type="primary" @click="showAddModal">
-        <template #icon><icon-plus /></template>
-        新增元素
-      </a-button>
+      <div class="element-header-right">
+        <a-popconfirm
+          content="确定删除选中的元素？被页面步骤引用的元素将被跳过。"
+          :disabled="!selectedRowKeys.length"
+          @ok="handleBatchDelete"
+        >
+          <a-button status="danger" :disabled="!selectedRowKeys.length">
+            <template #icon><icon-delete /></template>
+            批量删除{{ selectedRowKeys.length ? `（${selectedRowKeys.length}）` : '' }}
+          </a-button>
+        </a-popconfirm>
+        <a-button type="primary" @click="showAddModal">
+          <template #icon><icon-plus /></template>
+          新增元素
+        </a-button>
+      </div>
     </div>
 
     <a-table
+      v-model:selectedKeys="selectedRowKeys"
       :columns="columns"
       :data="elementData"
       :loading="loading"
       :pagination="false"
       size="small"
       :scroll="{ y: 400 }"
+      :row-selection="rowSelection"
+      row-key="id"
     >
       <template #locator_type="{ record }">
         <a-tag>{{ record.locator_type }}</a-tag>
@@ -135,7 +150,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch } from 'vue'
+import { ref, reactive, watch, computed } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { IconPlus, IconEdit, IconDelete } from '@arco-design/web-vue/es/icon'
 import { elementApi } from '../api'
@@ -152,6 +167,8 @@ const isEdit = ref(false)
 const currentElement = ref<UiElement | null>(null)
 const formRef = ref()
 const searchKey = ref('')
+const selectedRowKeys = ref<(string | number)[]>([])
+const rowSelection = { showCheckedAll: true }
 
 const locatorTypes = [
   { value: 'xpath', label: 'XPath' },
@@ -318,6 +335,21 @@ const handleCancel = () => {
   modalVisible.value = false
 }
 
+const handleBatchDelete = async () => {
+  if (!selectedRowKeys.value.length) return
+  try {
+    const res = await elementApi.batchDelete(selectedRowKeys.value.map(Number))
+    const data = (res as any)?.data
+    const deleted = data?.deleted ?? selectedRowKeys.value.length
+    Message.success(`删除成功（${deleted} 个）`)
+    selectedRowKeys.value = []
+    fetchElements()
+  } catch (error: unknown) {
+    const err = error as { error?: string }
+    Message.error(err?.error || '批量删除失败')
+  }
+}
+
 const deleteElement = async (record: UiElement) => {
   try {
     await elementApi.delete(record.id)
@@ -341,6 +373,12 @@ watch(() => props.page, fetchElements, { immediate: true })
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+}
+
+.element-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 .ellipsis-text {
   max-width: 180px;

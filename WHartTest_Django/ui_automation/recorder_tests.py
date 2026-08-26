@@ -421,3 +421,49 @@ class RecorderWaitApplyTests(TestCase):
         self.assertEqual(wait_step.ope_key, 'wait')
         self.assertEqual(wait_step.ope_value, {'timeout': 3})
         self.assertIsNone(wait_step.element)
+
+
+class BatchDeleteApiTests(TestCase):
+    """元素 / 步骤明细批量删除接口。"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_superuser(username='batch-del', password='secret')
+        self.client.force_authenticate(user=self.user)
+        self.project = Project.objects.create(name='Batch Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+
+    def test_element_batch_delete_blocked_by_usage(self):
+        el = UiElement.objects.create(page=self.page, name='E1', locator_type='xpath',
+                                      locator_value='//button[1]', creator=self.user)
+        UiPageStepsDetailed.objects.create(page_step=self.page_step, element=el,
+                                           ope_key='click', step_sort=0)
+        resp = self.client.post('/api/ui-automation/elements/batch-delete/',
+                                {'ids': [el.id]}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('引用', resp.data['error'])
+
+    def test_element_batch_delete_ok(self):
+        el = UiElement.objects.create(page=self.page, name='E1', locator_type='xpath',
+                                      locator_value='//button[1]', creator=self.user)
+        resp = self.client.post('/api/ui-automation/elements/batch-delete/',
+                                {'ids': [el.id]}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['deleted'], 1)
+        self.assertFalse(UiElement.objects.filter(id=el.id).exists())
+
+    def test_step_detail_batch_delete(self):
+        d1 = UiPageStepsDetailed.objects.create(page_step=self.page_step, ope_key='click', step_sort=0)
+        d2 = UiPageStepsDetailed.objects.create(page_step=self.page_step, ope_key='fill', step_sort=1)
+        resp = self.client.post('/api/ui-automation/page-steps-detailed/batch-delete/',
+                                {'ids': [d1.id, d2.id]}, format='json')
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['deleted'], 2)
+        self.assertEqual(UiPageStepsDetailed.objects.filter(page_step=self.page_step).count(), 0)

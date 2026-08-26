@@ -83,6 +83,9 @@ export const elementApi = {
     request.patch<UiElement>(`${BASE_URL}/elements/${id}/`, data),
 
   delete: (id: number) => request.delete(`${BASE_URL}/elements/${id}/`),
+
+  batchDelete: (ids: number[]) =>
+    request.post(`${BASE_URL}/elements/batch-delete/`, { ids }),
 }
 
 // ==================== 页面步骤管理 ====================
@@ -120,6 +123,9 @@ export const pageStepsDetailedApi = {
 
   batchUpdate: (pageStepId: number, steps: Omit<UiPageStepsDetailed, 'page_step' | 'created_at' | 'updated_at'>[]) =>
     request.post(`${BASE_URL}/page-steps-detailed/batch_update/`, { page_step: pageStepId, steps }),
+
+  batchDelete: (ids: number[]) =>
+    request.post(`${BASE_URL}/page-steps-detailed/batch-delete/`, { ids }),
 }
 
 // ==================== 测试用例管理 ====================

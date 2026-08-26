@@ -19,6 +19,16 @@
           <template #icon><icon-play-arrow /></template>
           {{ stepText.debugRun }}
         </a-button>
+        <a-popconfirm
+          :content="stepText.batchDeleteConfirm"
+          :disabled="!selectedStepIds.length"
+          @ok="handleBatchDeleteSteps"
+        >
+          <a-button status="danger" size="small" :disabled="!selectedStepIds.length">
+            <template #icon><icon-delete /></template>
+            {{ stepText.batchDelete }}{{ selectedStepIds.length ? `（${selectedStepIds.length}）` : '' }}
+          </a-button>
+        </a-popconfirm>
         <a-button type="primary" size="small" @click="showAddModal">
           <template #icon><icon-plus /></template>
           {{ stepText.addAction }}
@@ -38,8 +48,13 @@
         @end="onDragEnd"
       >
         <template #item="{ element, index }">
-          <div class="step-card">
+          <div class="step-card" :class="{ 'step-card--selected': selectedStepIds.includes(element.id) }">
             <div class="step-left">
+              <a-checkbox
+                v-model="selectedStepIds"
+                :value="element.id"
+                class="step-batch-checkbox"
+              />
               <div class="drag-handle">
                 <icon-drag-dot-vertical />
               </div>
@@ -588,6 +603,8 @@ const stepText = computed(() => isEnglish.value
       addFailed: 'Add failed',
       deleteSuccess: 'Deleted successfully',
       deleteFailed: 'Delete failed',
+      batchDelete: 'Batch delete',
+      batchDeleteConfirm: 'Delete the selected steps?',
       sortSaved: 'Order saved',
       saveSortFailed: 'Failed to save order',
     }
@@ -704,6 +721,8 @@ const stepText = computed(() => isEnglish.value
       addFailed: '添加失败',
       deleteSuccess: '删除成功',
       deleteFailed: '删除失败',
+      batchDelete: '批量删除',
+      batchDeleteConfirm: '确定删除选中的步骤？',
       sortSaved: '排序已保存',
       saveSortFailed: '保存排序失败',
     }
@@ -806,6 +825,7 @@ const translateServerMessage = (message: unknown) => (
 const loading = ref(false)
 const submitting = ref(false)
 const stepData = ref<UiPageStepsDetailed[]>([])
+const selectedStepIds = ref<number[]>([])
 const moduleOptions = ref<UiModule[]>([])
 const modulesLoading = ref(false)
 const flatModuleOptions = computed(() => flattenModules(moduleOptions.value))
@@ -1415,6 +1435,19 @@ const handleCancel = () => {
   modalVisible.value = false
 }
 
+const handleBatchDeleteSteps = async () => {
+  if (!selectedStepIds.value.length) return
+  try {
+    await pageStepsDetailedApi.batchDelete(selectedStepIds.value)
+    Message.success(stepText.value.deleteSuccess)
+    selectedStepIds.value = []
+    await fetchSteps()
+  } catch (error: unknown) {
+    const err = error as { error?: string }
+    Message.error(translateServerMessage(err?.error) || stepText.value.deleteFailed)
+  }
+}
+
 const deleteStep = async (step: UiPageStepsDetailed) => {
   if (!step.id) return
   try {
@@ -1502,6 +1535,14 @@ onUnmounted(() => {
 .empty-tips {
   padding: 40px 0;
 }
+.step-card--selected {
+  border-color: var(--color-primary-4) !important;
+}
+
+.step-batch-checkbox {
+  margin-right: 6px;
+}
+
 .step-card {
   display: flex;
   align-items: center;

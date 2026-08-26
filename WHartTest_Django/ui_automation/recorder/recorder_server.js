@@ -213,16 +213,47 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
+  // 元素自身唯一 class 锚点（非状态类、页面唯一）
+  function selfClassAnchor(el) {
+    var cls = el.getAttribute && el.getAttribute('class');
+    if (typeof cls !== 'string' || !cls.trim()) return null;
+    var tokens = cls.trim().split(/\s+/);
+    for (var i = 0; i < tokens.length; i++) {
+      var tk = tokens[i];
+      if (tk && isUniqueClassToken(tk)) {
+        return '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]';
+      }
+    }
+    return null;
+  }
+
+  // 子元素文本锚点：点击的是容器 div，但其首个文本型子元素（span/按钮等）
+  // 文本唯一时直接指向子元素（运行时点击等价）。
+  function childTextAnchor(el) {
+    if (!el || !el.children || !el.children.length) return null;
+    for (var i = 0; i < el.children.length; i++) {
+      var t = textAnchor(el.children[i]);
+      if (t) return t;
+    }
+    return null;
+  }
+
   // 生成相对定位 xpath：
   // ① 自身分层锚点（data-testid/稳定id/name/placeholder，带标签+唯一性校验）；
   // ② 角色+文本锚点（唯一时，带标签）；
-  // ③ 向上找最近的唯一锚点祖先（属性锚点 / 唯一 class），从锚点向下写相对路径；
-  // ④ 兜底短绝对路径（index 保证唯一）。
+  // ③ 自身唯一 class 锚点（此前只检查父级，漏掉了元素自身）；
+  // ④ 子元素文本锚点（点击 div、文本在子 span 时直接指向子元素，运行时可点击等价）；
+  // ⑤ 向上找最近的唯一锚点祖先（属性锚点 / 唯一 class），从锚点向下写相对路径；
+  // ⑥ 兜底短绝对路径（index 保证唯一）。
   function buildXPath(el) {
     var self = pickAnchor(el);
     if (self) return self;
+    var selfClass = selfClassAnchor(el);
+    if (selfClass) return selfClass;
     var textSelf = textAnchor(el);
     if (textSelf) return textSelf;
+    var childText = childTextAnchor(el);
+    if (childText) return childText;
 
     var parts = [];
     var node = el;
@@ -938,6 +969,62 @@ async function cmdRunSteps(params) {
   return { ok: true, state: { executed, failed: false } };
 }
 
+/**
+ * 重建干净页面：前置执行结束后调用。
+ * 关闭旧页面并在同一上下文新建页面（登录态/cookie 保留），
+ * 导航到当前地址并重新建立帧推流——彻底消除滚动/弹层/半渲染等残留.
+ */
+async function cmdResetPage(params) {
+  if (!state.browser || !state.context) {
+    return { ok: false, error: '录制会话未启动' };
+  }
+  const url = (params && params.url) || state.lastNavUrl || state.startedUrl || 'about:blank';
+  stopFrameStream();
+  try {
+    if (state.page) {
+      await state.page.close();
+    }
+    state.page = await state.context.newPage();
+    state.page.on('framenavigated', (frame) => {
+      if (frame === state.page.mainFrame()) {
+        recordNavigation(frame.url());
+        ensureInjection();
+      }
+    });
+    await ensureInjection();
+  } catch (e) {
+    return { ok: false, error: '重建页面失败: ' + (e && e.message ? e.message : String(e)) };
+  }
+  try {
+    await state.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (e) {
+    serverLog('重建后导航失败:', e && e.message ? e.message : String(e));
+  }
+  try {
+    await state.page.keyboard.press('Escape');
+  } catch (_) {}
+  try {
+    await state.page.evaluate(() => window.scrollTo(0, 0));
+  } catch (_) {}
+  const streamed = await startFrameStream(state.page);
+  if (streamed) {
+    startFrameLoop(400, 300);
+  } else {
+    startFrameLoop(250, 0);
+  }
+  try {
+    const shot = await state.page.screenshot({ type: 'jpeg', quality: 60 });
+    pushEvent('frame', {
+      mime: 'image/jpeg',
+      data: shot.toString('base64'),
+      w: state.viewport.width,
+      h: state.viewport.height,
+    });
+    state.lastFrameTs = Date.now();
+  } catch (_) {}
+  return { ok: true, state: { url: url, page_url: state.page.url() } };
+}
+
 // 断言模式分类（与平台执行器 assert_* 词汇表对齐）
 const ASSERT_ELEMENT_STATE = ['visible', 'hidden', 'enabled', 'disabled', 'checked'];
 const ASSERT_CONTENT = ['text', 'contain_text', 'value', 'count'];
@@ -1116,6 +1203,8 @@ rl.on('line', (line) => {
           return respond(await cmdRemoveAction(msg.params || {}));
         case 'add_wait':
           return respond(await cmdAddWait(msg.params || {}));
+        case 'reset_page':
+          return respond(await cmdResetPage(msg.params || {}));
         case 'assert':
           return respond(await cmdAssert(msg.params || {}));
         case 'eval': {
