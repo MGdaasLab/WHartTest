@@ -5,7 +5,7 @@
     :footer="false"
     :mask-closable="!recording && !starting"
     :closable="!starting"
-    :width="phase === 'setup' ? 620 : 'min(1180px, calc(100vw - 40px))'"
+    :width="phase === 'setup' ? 620 : 'min(1400px, calc(100vw - 24px))'"
     @cancel="handleCancel"
   >
     <!-- 阶段1：录制参数表单 -->
@@ -185,6 +185,15 @@
           >
             {{ assertActive ? text.assertPickElement : text.assert }}
           </a-button>
+          <a-dropdown :disabled="!recording" @select="handleAddWait">
+            <a-button size="small" :disabled="!recording">
+              <template #icon><icon-clock-circle /></template>
+              {{ text.wait }}
+            </a-button>
+            <template #content>
+              <a-doption v-for="sec in waitOptions" :key="sec" :value="sec">{{ text.waitSeconds(sec) }}</a-doption>
+            </template>
+          </a-dropdown>
           <a-button
             type="outline"
             status="danger"
@@ -225,7 +234,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconClockCircle } from '@arco-design/web-vue/es/icon'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../api'
@@ -285,6 +294,8 @@ const text = computed(() => (
         assertValueRequired: 'Enter the content to check',
         assertModeHint: 'Assert mode: click the target element in the browser view',
         preFailed: 'Pre-step failed, please check its definition',
+        wait: 'Wait',
+        waitSeconds: (sec: number) => `${sec}s`,
         addPage: 'New page',
         addPageStep: 'New page step',
         module: 'Module',
@@ -356,6 +367,8 @@ const text = computed(() => (
         assertValueRequired: '请输入要校验的内容',
         assertModeHint: '断言模式：请在左侧画面中点击要断言的元素',
         preFailed: '前置步骤执行失败，请检查步骤定义',
+        wait: '等待',
+        waitSeconds: (sec: number) => `${sec} 秒`,
         addPage: '新增页面',
         addPageStep: '新增页面步骤',
         module: '所属模块',
@@ -904,6 +917,15 @@ function unbindCanvasListeners() {
 // 断言 & 动作展示
 // ------------------------------------------------------------------
 
+const waitOptions = [2, 3, 5, 10]
+
+function handleAddWait(seconds: number) {
+  if (!recording.value) return
+  if (!uiWebSocket.recorderAddWait(seconds)) {
+    Message.error(text.value.finishFailed)
+  }
+}
+
 function handleAssert() {
   if (!recording.value) return
   // 页面校验（URL/标题）：不需要选元素，直接记录断言
@@ -966,6 +988,7 @@ function actionTagColor(type: string): string {
 
 function actionDesc(a: Record<string, any>): string {
   const sel = a.selector
+  if (a.type === 'wait') return `${a.seconds || 1} ${isEnglish.value ? 's' : '秒'}`
   if (a.type === 'goto') return String(a.url || '')
   if (a.type === 'fill') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
   if (a.type === 'press') return `${sel?.name || sel?.locator_value || ''} [${a.key || 'Enter'}]`
@@ -1066,8 +1089,8 @@ onUnmounted(() => {
 .recorder-live {
   display: flex;
   gap: 12px;
-  min-height: 560px;
-  max-height: 72vh;
+  min-height: 640px;
+  max-height: 86vh;
 }
 
 .recorder-canvas-wrap {
@@ -1129,7 +1152,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 480px;
+  max-height: 560px;
 }
 
 .recorder-action-item {

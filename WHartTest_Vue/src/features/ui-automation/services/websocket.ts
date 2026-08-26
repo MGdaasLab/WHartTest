@@ -21,6 +21,7 @@ export const UiSocketEnum = {
   RECORDER_INPUT: 'u_recorder_input',     // 浏览器输入事件
   RECORDER_ASSERT: 'u_recorder_assert',   // 记录断言动作
   RECORDER_REMOVE_ACTION: 'u_recorder_remove_action', // 删除已录动作
+  RECORDER_ADD_WAIT: 'u_recorder_add_wait', // 插入等待动作
   RECORDER_STOP: 'u_recorder_stop',       // 停止帧中继
   RECORDER_FRAME: 'u_recorder_frame',     // 浏览器画面帧
   RECORDER_ACTION: 'u_recorder_action',   // 录制动作增量
@@ -284,6 +285,11 @@ class UiWebSocketService {
   /** 删除已录动作 */
   recorderRemoveAction(seq: number): boolean {
     return this.send(UiSocketEnum.RECORDER_REMOVE_ACTION, { seq })
+  }
+
+  /** 插入等待动作（秒） */
+  recorderAddWait(seconds: number): boolean {
+    return this.send(UiSocketEnum.RECORDER_ADD_WAIT, { seconds })
   }
 
   /** 停止帧中继 */

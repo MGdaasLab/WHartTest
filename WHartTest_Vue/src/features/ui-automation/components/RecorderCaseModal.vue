@@ -5,7 +5,7 @@
     :footer="false"
     :mask-closable="!recording && !starting"
     :closable="!starting"
-    :width="phase === 'setup' ? 620 : 'min(1180px, calc(100vw - 40px))'"
+    :width="phase === 'setup' ? 620 : 'min(1400px, calc(100vw - 24px))'"
     @cancel="handleCancel"
   >
     <!-- 阶段1：录制参数表单 -->
@@ -119,6 +119,15 @@
           >
             {{ assertActive ? text.assertPickElement : text.assert }}
           </a-button>
+          <a-dropdown :disabled="!recording" @select="handleAddWait">
+            <a-button size="small" :disabled="!recording">
+              <template #icon><icon-clock-circle /></template>
+              {{ text.wait }}
+            </a-button>
+            <template #content>
+              <a-doption v-for="sec in waitOptions" :key="sec" :value="sec">{{ text.waitSeconds(sec) }}</a-doption>
+            </template>
+          </a-dropdown>
           <a-button
             type="outline"
             status="danger"
@@ -260,7 +269,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete, IconPlus, IconDragDotVertical } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
@@ -302,6 +311,8 @@ const text = computed(() => (
         preparing: 'Preparing browser...',
         assert: 'Assert',
         finishRecord: 'Finish',
+        wait: 'Wait',
+        waitSeconds: (sec: number) => `${sec}s`,
         recordHint: 'Operate in the browser view. Use "Add step" to group later actions before recording.',
         noActions: 'No actions yet in this step.',
         addStep: 'Add step',
@@ -404,6 +415,8 @@ const text = computed(() => (
         assertModeHint: '断言模式：请在左侧画面中点击要断言的元素',
         removeAction: '删除此操作',
         preFailed: '前置步骤执行失败，请检查步骤定义',
+        wait: '等待',
+        waitSeconds: (sec: number) => `${sec} 秒`,
         needGroupFirst: '存在未分组的动作，请先添加步骤',
         selectStepToGroup: '请先添加步骤',
         confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
@@ -922,6 +935,15 @@ function unbindCanvasListeners() {
 // 断言按钮
 // ------------------------------------------------------------------
 
+const waitOptions = [2, 3, 5, 10]
+
+function handleAddWait(seconds: number) {
+  if (!recording.value) return
+  if (!uiWebSocket.recorderAddWait(seconds)) {
+    Message.error(text.value.finishFailed)
+  }
+}
+
 function handleAssert() {
   if (!recording.value) return
   if (assertMode.value === 'url' || assertMode.value === 'title') {
@@ -979,6 +1001,7 @@ function actionTagColor(type: string): string {
 
 function actionDesc(a: Record<string, any>): string {
   const sel = a.selector
+  if (a.type === 'wait') return `${a.seconds || 1} ${isEnglish.value ? 's' : '秒'}`
   if (a.type === 'goto') return String(a.url || '')
   if (a.type === 'fill') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
   if (a.type === 'press') return `${sel?.name || sel?.locator_value || ''} [${a.key || 'Enter'}]`
@@ -1081,8 +1104,8 @@ onUnmounted(() => {
 .recorder-live {
   display: flex;
   gap: 12px;
-  min-height: 560px;
-  max-height: 72vh;
+  min-height: 640px;
+  max-height: 86vh;
 }
 
 .recorder-canvas-wrap {
@@ -1115,7 +1138,7 @@ onUnmounted(() => {
 }
 
 .recorder-side {
-  flex: 0 1 300px;
+  flex: 0 1 320px;
   min-width: 240px;
   display: flex;
   flex-direction: column;
@@ -1164,7 +1187,7 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 420px;
+  max-height: 560px;
 }
 
 .recorder-action-item {

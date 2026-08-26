@@ -97,24 +97,72 @@ const INIT_SCRIPT = () => {
     return String(v).replace(/["']/g, '');
   }
 
-  // 元素自身是否具备唯一性高的定位属性
-  function selfAnchor(el) {
-    var attrs = {};
-    if (el.getAttribute) {
-      attrs.id = el.getAttribute('id') || '';
-      attrs.name = el.getAttribute('name') || '';
-      attrs.placeholder = el.getAttribute('placeholder') || '';
-      attrs.testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-test-id') || '';
+  // 动态 id 识别：框架运行时生成、刷新即变的 id 不能用作定位锚点。
+  // 覆盖 Element Plus 各类实例/容器 id（el-id-920-7、el-popper-container-226、
+  // el-select-xxx、el-popper-xxx 等）、构建工具前缀、纯数字与长随机串。
+  function isDynamicId(id) {
+    if (!id) return true;
+    if (/^el-[a-z0-9-]+-\d+$/.test(id)) return true;          // Element Plus / 类 EP 运行时 id
+    if (/^(vite|webpack|ember|app)-/.test(id)) return true;    // 构建工具前缀
+    if (/^\d+$/.test(id)) return true;                          // 纯数字 id（易冲突且常为生成）
+    if (id.length >= 24 && id.indexOf('-') >= 0) return true;   // 长随机串
+    return false;
+  }
+
+  // 带标签的属性锚点：//input[@placeholder="x"] 而非 //*[...]，
+  // 避免不同标签共享同名属性时匹配到多个元素。
+  function anchorXPath(tag, attr, value) {
+    var t = tag ? tag.toLowerCase() : '*';
+    return '//' + t + '[@' + attr + '="' + escAttr(value) + '"]';
+  }
+
+  // xpath 唯一性校验：页面中恰好匹配 1 个才允许作为锚点。
+  function isUniqueXPath(xp) {
+    try {
+      var res = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+      return res.snapshotLength === 1;
+    } catch (_) {
+      return false;
     }
-    if (attrs.id) return '//*[@id="' + escAttr(attrs.id) + '"]';
-    if (attrs.testId) return '//*[@data-testid="' + escAttr(attrs.testId) + '"]';
-    if (attrs.name) return '//*[@name="' + escAttr(attrs.name) + '"]';
-    if (attrs.placeholder) return '//*[@placeholder="' + escAttr(attrs.placeholder) + '"]';
+  }
+
+  // 分层锚点：data-testid → 稳定 id → name（表单）→ placeholder（input/textarea/select）。
+  // 每个候选都带元素标签且校验唯一，不唯一自动降级。
+  function pickAnchor(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (!el.getAttribute) return null;
+    var testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-test-id');
+    if (testId) {
+      var xp1 = anchorXPath(tag, 'data-testid', testId);
+      if (isUniqueXPath(xp1)) return xp1;
+    }
+    var id = el.getAttribute('id');
+    if (id && !isDynamicId(id)) {
+      var xp2 = anchorXPath(tag, 'id', id);
+      if (isUniqueXPath(xp2)) return xp2;
+    }
+    var name = el.getAttribute('name');
+    if (name && (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button' || tag === 'form')) {
+      var xp3 = anchorXPath(tag, 'name', name);
+      if (isUniqueXPath(xp3)) return xp3;
+    }
+    var ph = el.getAttribute('placeholder');
+    if (ph && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+      var xp4 = anchorXPath(tag, 'placeholder', ph);
+      if (isUniqueXPath(xp4)) return xp4;
+    }
     return null;
   }
 
-  // 某 class token 是否在文档中唯一（可安全用作锚点）
+  // 交互状态 class（聚焦/悬停/选中/禁用等）变化无常，禁止作定位锚点
+  function isStateClass(token) {
+    if (/^(is-|is_)/.test(token)) return true;  // Element Plus 等框架状态类：is-focused/is-active...
+    return /(hover|focus|active|open|disabled|checked|selected|expanded|loading|collapsed)/.test(token);
+  }
+
+  // 某 class token 是否在文档中唯一且非状态类（可安全用作锚点）
   function isUniqueClassToken(token) {
+    if (isStateClass(token)) return false;
     try {
       return document.querySelectorAll('[class~="' + token.replace(/["\\]/g, '') + '"]').length === 1;
     } catch (_) {
@@ -122,19 +170,20 @@ const INIT_SCRIPT = () => {
     }
   }
 
-  // 角色+文本 xpath 锚点：仅当元素为按钮/链接且该（标签+精确文本）在文档中唯一时使用，
-  // 避免文本歧义（多个同文本元素）；不唯一时走结构化相对路径。
+  // 角色+文本 xpath 锚点：仅当该（标签+精确文本）在文档中唯一时使用。
+  // 覆盖按钮/链接/标签、下拉项及文本载体（li/option/td/span 等），
+  // 下拉选择项用文本定位最稳定；文本不唯一时自动降级，避免歧义。
   function textAnchor(el) {
     var tag = el.tagName || '';
     var role = el.getAttribute && el.getAttribute('role');
-    if (tag !== 'BUTTON' && tag !== 'A' && tag !== 'LABEL' && tag !== 'SUMMARY' &&
-        role !== 'button' && role !== 'link' && role !== 'tab') {
-      return null;
-    }
+    var textLike = (tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY' ||
+      tag === 'LI' || tag === 'OPTION' || tag === 'TD' || tag === 'SPAN' ||
+      role === 'button' || role === 'link' || role === 'tab' || role === 'option' ||
+      role === 'menuitem' || role === 'listitem');
+    if (!textLike) return null;
     var text = cleanText(el.textContent, 40);
     if (!text || text.length < 1 || text.length > 30) return null;
-    var selector = tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY'
-      ? tag.toLowerCase() : '*';
+    var selector = tag.toLowerCase();
     try {
       var matched = Array.prototype.filter.call(document.querySelectorAll(selector), function (n) {
         return cleanText(n.textContent, 50) === text;
@@ -146,11 +195,31 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
-  // 生成相对定位 xpath：优先属性锚点，
-  // 其次角色+文本锚点（唯一时），否则向上找唯一 class 祖先锚点，
-  // 从锚点向下写相对路径（避免 /html/body[...] 绝对路径，元素位置变动容错更好）。
+  // 短文本唯一锚点：任意标签、文本 ≤15 字符且在文档中唯一时使用。
+  // 用于结构路径兜底前的一次机会（如动态渲染容器内的文本项）。
+  function looseTextAnchor(el) {
+    var text = cleanText(el.textContent, 16);
+    if (!text || text.length < 1 || text.length > 15) return null;
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    try {
+      var selector = tag ? tag : '*';
+      var matched = Array.prototype.filter.call(document.querySelectorAll(selector), function (n) {
+        return cleanText(n.textContent, 20) === text;
+      });
+      if (matched.length === 1) {
+        return '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 生成相对定位 xpath：
+  // ① 自身分层锚点（data-testid/稳定id/name/placeholder，带标签+唯一性校验）；
+  // ② 角色+文本锚点（唯一时，带标签）；
+  // ③ 向上找最近的唯一锚点祖先（属性锚点 / 唯一 class），从锚点向下写相对路径；
+  // ④ 兜底短绝对路径（index 保证唯一）。
   function buildXPath(el) {
-    var self = selfAnchor(el);
+    var self = pickAnchor(el);
     if (self) return self;
     var textSelf = textAnchor(el);
     if (textSelf) return textSelf;
@@ -171,7 +240,7 @@ const INIT_SCRIPT = () => {
       if (hops > 6 || !node || node.nodeType !== 1 || node === document.documentElement || node === document.body) {
         break;
       }
-      var anchor = selfAnchor(node);
+      var anchor = pickAnchor(node);
       if (anchor) return anchor + '/' + parts.join('/');
       var cls = node.getAttribute && node.getAttribute('class');
       if (typeof cls === 'string' && cls.trim()) {
@@ -184,6 +253,9 @@ const INIT_SCRIPT = () => {
         }
       }
     }
+    // 兜底前最后一次机会：短文本唯一锚点（动态容器内的文本项）
+    var looseText = looseTextAnchor(el);
+    if (looseText) return looseText;
     // 兜底：短绝对路径（一般最多到第 7 层）
     return '/html/' + parts.join('/');
   }
@@ -197,26 +269,12 @@ const INIT_SCRIPT = () => {
       attrs.name = el.getAttribute('name') || '';
       attrs.placeholder = el.getAttribute('placeholder') || '';
       attrs.testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-test-id') || '';
-      attrs.role = el.getAttribute('role') || '';
     }
     var text = cleanText(el.textContent, 40);
     var label = text || attrs.id || attrs.name || attrs.placeholder || 'element';
-
-    if (attrs.testId) {
-      return { locator_type: 'css', locator_value: '[data-testid="' + attrs.testId + '"]', name: label.slice(0, 24) };
-    }
-    if (attrs.id) {
-      return { locator_type: 'id', locator_value: attrs.id, name: label.slice(0, 24) };
-    }
-    if (attrs.name) {
-      return { locator_type: 'name', locator_value: attrs.name, name: label.slice(0, 24) };
-    }
-    if (attrs.placeholder) {
-      return { locator_type: 'placeholder', locator_value: attrs.placeholder, name: label.slice(0, 24) };
-    }
-    var tag = el.tagName || '';
-    // 统一走 xpath 定位（含角色+文本锚点 / 结构化相对路径），
-    // 不再使用 getByText/getByRole，避免页面上同文本/同角色元素歧义。
+    // 一律输出 xpath 相对定位：
+    // 动态 id（el-id-920-7 等）会被过滤，稳定的 id/name/placeholder/data-testid
+    // 作为 xpath 锚点保留，其余走唯一 class 锚点 / 结构化相对路径。
     return { locator_type: 'xpath', locator_value: buildXPath(el), name: label.slice(0, 24) };
   }
 
@@ -309,7 +367,7 @@ const state = {
 };
 
 // 连续输入合并窗口：同一元素在该窗口内多次 input 事件合并为一次 fill
-const FILL_MERGE_WINDOW = 1000;
+const FILL_MERGE_WINDOW = 1500;
 
 function recordAction(action) {
   state.seq += 1;
@@ -331,20 +389,19 @@ function handleReport(payload) {
       state.lastClick = { sel: selKey, ts: now };
       recordAction({ type: 'click', selector: payload.el });
     } else if (payload.t === 'fill') {
-      // 连续输入合并：同一元素 1 秒内的多次 input 事件合并为一次 fill，
-      // 用最新值原地更新上一条动作（逐字输入只留最终值）。
+      // 连续输入合并：同一元素窗口内的多次 input 事件合并为一次 fill。
+      // 按元素回溯最近一条同元素 fill 原地更新（期间混入 click/断言等记录也不断链）。
       const selKey = JSON.stringify(payload.el);
-      if (
-        selKey === state.lastFill.sel &&
-        now - state.lastFill.ts < FILL_MERGE_WINDOW &&
-        state.recorded.length > 0
-      ) {
-        const prev = state.recorded[state.recorded.length - 1];
-        if (prev.type === 'fill') {
-          prev.value = payload.value;
-          state.lastFill = { sel: selKey, value: payload.value, ts: now };
-          pushEvent('actions', prev);
-          return;
+      if (selKey === state.lastFill.sel && now - state.lastFill.ts < FILL_MERGE_WINDOW) {
+        for (let i = state.recorded.length - 1; i >= 0; i--) {
+          const prev = state.recorded[i];
+          if (prev.type === 'fill' && JSON.stringify(prev.selector) === selKey) {
+            prev.value = payload.value;
+            state.lastFill = { sel: selKey, value: payload.value, ts: now };
+            pushEvent('actions', prev);
+            return;
+          }
+          if (i < state.recorded.length - 8) break;
         }
       }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
@@ -363,14 +420,9 @@ function handleReport(payload) {
 }
 
 function recordNavigation(url) {
-  if (!state.running || state.finished || state.preRunning) return;
-  if (!url || !url.startsWith('http')) return;
-  if (url === state.lastNavUrl) return;
-  const prev = state.lastNavUrl || state.startedUrl || '';
-  state.lastNavUrl = url;
-  if (prev && prev !== url) {
-    recordAction({ type: 'goto', url });
-  }
+  // 不单独记录 goto：页面跳转是前面操作（点击/提交等）的自然结果，
+  // 额外记录反而会在执行时产生与真实流程冲突的硬导航。
+  state.lastNavUrl = url || state.lastNavUrl;
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +548,10 @@ function buildScript(actions, startUrl) {
   for (const a of actions) {
     if (a.type === 'goto') {
       lines.push(`  await page.goto('${String(a.url || '').replace(/'/g, "\\'")}');`);
+      continue;
+    }
+    if (a.type === 'wait') {
+      lines.push(`  await page.waitForTimeout(${Math.round((Number(a.seconds) || 1) * 1000)});`);
       continue;
     }
     // 页面校验断言（URL/标题）不需要元素定位
@@ -802,6 +858,13 @@ async function runOneStep(page, step) {
   }
 }
 
+async function cmdAddWait(params) {
+  // 在录制位置插入等待动作（0.5s ~ 60s），用于步骤间隔控制
+  const seconds = Math.max(0.5, Math.min(60, Number(params && params.seconds) || 3));
+  recordAction({ type: 'wait', seconds });
+  return { ok: true, state: { action: 'wait' } };
+}
+
 async function cmdRemoveAction(params) {
   const seq = Number(params && params.seq);
   if (!Number.isFinite(seq)) {
@@ -845,6 +908,29 @@ async function cmdRunSteps(params) {
     }
   } finally {
     state.preRunning = false;
+    // 前置执行往往会把元素滚动到可视区，并留下焦点与下拉/弹层（popper 为 fixed 定位，
+    // 归位后仍悬浮遮挡画面）。结束后统一归位：
+    // ① Escape 收起下拉/菜单等弹层；② 滚回顶部；③ 清除焦点；④ 立即推一帧干净画面。
+    try {
+      await state.page.keyboard.press('Escape');
+    } catch (_) {}
+    try {
+      await state.page.evaluate(() => {
+        window.scrollTo(0, 0);
+        var ae = document.activeElement;
+        if (ae && typeof ae.blur === 'function') ae.blur();
+      });
+    } catch (_) {}
+    try {
+      const shot = await state.page.screenshot({ type: 'jpeg', quality: 60 });
+      pushEvent('frame', {
+        mime: 'image/jpeg',
+        data: shot.toString('base64'),
+        w: state.viewport.width,
+        h: state.viewport.height,
+      });
+      state.lastFrameTs = Date.now();
+    } catch (_) {}
   }
   if (failedStep >= 0) {
     return { ok: false, error: errorMsg, state: { executed, failed_step: failedStep + 1 } };
@@ -1028,6 +1114,8 @@ rl.on('line', (line) => {
           return respond(await cmdRunSteps(msg.params || {}));
         case 'remove_action':
           return respond(await cmdRemoveAction(msg.params || {}));
+        case 'add_wait':
+          return respond(await cmdAddWait(msg.params || {}));
         case 'assert':
           return respond(await cmdAssert(msg.params || {}));
         case 'eval': {

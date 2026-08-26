@@ -342,3 +342,82 @@ class RecorderCaseApiTests(TestCase):
         other_page = UiPage.objects.create(project=other, module=other_module, name='P', url='/x', creator=self.user)
         resp = self.client.post(self.base, self._payload(page_id=other_page.id), format='json')
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+class RecorderCoalesceTests(TestCase):
+    """入库兜底：连续同元素 fill 合并为一条。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='coalesce', password='secret')
+        self.project = Project.objects.create(name='Coalesce Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+
+    def test_consecutive_fills_coalesced(self):
+        sel = {'locator_type': 'xpath', 'locator_value': '//input[@placeholder="账号"]', 'name': '账号'}
+        actions = [
+            {'seq': 1, 'type': 'click', 'selector': sel},
+            {'seq': 2, 'type': 'fill', 'selector': sel, 'value': 'a'},
+            {'seq': 3, 'type': 'fill', 'selector': sel, 'value': 'ad'},
+            {'seq': 4, 'type': 'fill', 'selector': sel, 'value': 'adm'},
+            {'seq': 5, 'type': 'fill', 'selector': sel, 'value': 'admin'},
+            {'seq': 6, 'type': 'press', 'selector': sel, 'key': 'Enter'},
+        ]
+        stats = apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user, actions=actions)
+        from ui_automation.models import UiPageStepsDetailed
+        details = list(UiPageStepsDetailed.objects.filter(page_step=self.page_step).order_by('step_sort'))
+        fill_steps = [d for d in details if d.ope_key == 'fill']
+        self.assertEqual(len(fill_steps), 1)
+        self.assertEqual(fill_steps[0].ope_value, {'value': 'admin'})
+        self.assertEqual(stats['steps_created'], 3)  # click + fill + press
+
+    def test_different_element_fills_not_coalesced(self):
+        sel_a = {'locator_type': 'xpath', 'locator_value': '//input[@placeholder="A"]', 'name': 'A'}
+        sel_b = {'locator_type': 'xpath', 'locator_value': '//input[@placeholder="B"]', 'name': 'B'}
+        actions = [
+            {'seq': 1, 'type': 'fill', 'selector': sel_a, 'value': '1'},
+            {'seq': 2, 'type': 'fill', 'selector': sel_b, 'value': '2'},
+        ]
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user, actions=actions)
+        from ui_automation.models import UiPageStepsDetailed
+        self.assertEqual(
+            UiPageStepsDetailed.objects.filter(page_step=self.page_step, ope_key='fill').count(),
+            2,
+        )
+
+
+class RecorderWaitApplyTests(TestCase):
+    """等待动作入库：无元素 wait 步骤，timeout 毫秒入 ope_value。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='wait-rec', password='secret')
+        self.project = Project.objects.create(name='Wait Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+
+    def test_wait_action_apply(self):
+        sel = {'locator_type': 'text', 'locator_value': '提交', 'name': '提交'}
+        actions = [
+            {'seq': 1, 'type': 'click', 'selector': sel},
+            {'seq': 2, 'type': 'wait', 'seconds': 3},
+            {'seq': 3, 'type': 'assert', 'mode': 'visible', 'selector': sel},
+        ]
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user, actions=actions)
+        from ui_automation.models import UiPageStepsDetailed
+        details = list(UiPageStepsDetailed.objects.filter(page_step=self.page_step).order_by('step_sort'))
+        wait_step = details[1]
+        self.assertEqual(wait_step.ope_key, 'wait')
+        self.assertEqual(wait_step.ope_value, {'timeout': 3})
+        self.assertIsNone(wait_step.element)

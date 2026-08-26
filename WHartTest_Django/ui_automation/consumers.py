@@ -260,6 +260,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.RECORDER_INPUT: self.handle_recorder_input,
                 UiSocketEnum.RECORDER_ASSERT: self.handle_recorder_assert,
                 UiSocketEnum.RECORDER_REMOVE_ACTION: self.handle_recorder_remove_action,
+                UiSocketEnum.RECORDER_ADD_WAIT: self.handle_recorder_add_wait,
                 UiSocketEnum.RECORDER_STOP: self.handle_recorder_stop,
             }
         
@@ -385,6 +386,21 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             {'status': 'asserted', 'action': state.get('action')},
             msg='断言已记录',
         )
+
+    async def handle_recorder_add_wait(self, args, user):
+        """录制位置插入等待动作。args: {seconds}"""
+        from .recorder.session_manager import recorder_manager
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            await sync_to_async(session.request)(
+                'add_wait', {'seconds': args.get('seconds') or 3}, timeout=10,
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'插入等待失败: {exc}')
 
     async def handle_recorder_stop(self, args, user):
         """停止帧中继（结束录制走 REST finish）。"""

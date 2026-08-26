@@ -99,6 +99,26 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
     return element, True
 
 
+def _coalesce_consecutive_fills(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """兜底规整：连续同元素的 fill 动作合并为一条（取最终值）。
+
+    录制端已做实时合并，此处防御极端场景（输入过快/事件乱序等）导致的碎片，
+    保证入库的步骤明细不会出现 a→ad→adm… 多条 fill。
+    """
+    merged: list[dict[str, Any]] = []
+    for action in actions:
+        if (
+            action.get('type') == 'fill'
+            and merged
+            and merged[-1].get('type') == 'fill'
+            and merged[-1].get('selector') == action.get('selector')
+        ):
+            merged[-1] = {**merged[-1], 'value': action.get('value')}
+            continue
+        merged.append(action)
+    return merged
+
+
 @transaction.atomic
 def apply_recorded_actions(
     *,
@@ -112,6 +132,7 @@ def apply_recorded_actions(
     返回统计：
         {'elements_created', 'elements_updated', 'steps_created', 'actions_count'}
     """
+    actions = _coalesce_consecutive_fills(actions)
     elements_created = 0
     elements_updated = 0
     steps_created = 0
@@ -133,6 +154,20 @@ def apply_recorded_actions(
                 step_type=STEP_TYPE_ELEMENT,
                 ope_key='goto',
                 ope_value={'url': str(action.get('url') or '')},
+                step_sort=next_sort,
+            )
+            next_sort += 1
+            steps_created += 1
+            continue
+
+        if action_type == 'wait':
+            seconds = float(action.get('seconds') or 1)
+            UiPageStepsDetailed.objects.create(
+                page_step=page_step,
+                step_type=STEP_TYPE_ELEMENT,
+                ope_key='wait',
+                # 平台 wait 步骤 timeout 单位为秒（执行器 _parse_wait_timeout）
+                ope_value={'timeout': int(seconds)},
                 step_sort=next_sort,
             )
             next_sort += 1
