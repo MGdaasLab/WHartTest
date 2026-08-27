@@ -48,6 +48,7 @@ CRUD_RESOURCES = [
     ('testcase_tag', 'testcase_tags', 'api-testcase-tags', 'tag_id'),
     ('testcase_group', 'testcase_groups', 'api-testcase-groups', 'group_id'),
     ('testcase', 'testcases', 'api-testcases', 'testcase_id'),
+    ('interface_case', 'interface_cases', 'api-interface-cases', 'interface_case_id'),
     ('sync_config', 'sync_configs', 'api-sync-configs', 'sync_config_id'),
     ('global_sync_config', 'global_sync_configs', 'api-global-sync-configs', 'global_sync_config_id'),
     ('task_suite', 'task_suites', 'api-task-suites', 'task_suite_id'),
@@ -55,6 +56,7 @@ CRUD_RESOURCES = [
 READ_ONLY_RESOURCES = [
     ('interface_result', 'interface_results', 'api-interface-results', 'interface_result_id'),
     ('test_report', 'test_reports', 'api-test-reports', 'test_report_id'),
+    ('interface_case_report', 'interface_case_reports', 'api-interface-case-reports', 'interface_case_report_id'),
     ('sync_history', 'sync_histories', 'api-sync-histories', 'sync_history_id'),
     ('task_execution', 'task_executions', 'api-task-executions', 'task_execution_id'),
 ]
@@ -69,14 +71,17 @@ ID_ARGUMENTS = [
     ('interface_result_id', '接口调试结果 ID'),
     ('tag_id', '用例标签 ID'),
     ('group_id', '用例分组 ID'),
-    ('testcase_id', '测试用例 ID'),
-    ('test_report_id', '测试报告 ID'),
+    ('testcase_id', '场景用例 ID'),
+    ('interface_case_id', '单接口用例 ID'),
+    ('test_report_id', '场景用例报告 ID'),
+    ('interface_case_report_id', '单接口用例报告 ID'),
     ('step_id', '测试步骤 ID'),
     ('sync_config_id', '同步配置 ID'),
     ('sync_history_id', '同步历史 ID'),
     ('global_sync_config_id', '全局同步配置 ID'),
     ('task_suite_id', '任务套件 ID'),
     ('task_execution_id', '任务执行 ID'),
+    ('case_id', '任务套件中的用例 ID'),
 ]
 
 
@@ -201,6 +206,13 @@ def _require(value, label):
     return value
 
 
+def _require_case_type(value):
+    value = _require(value, 'case_type')
+    if value not in {'scenario', 'interface'}:
+        raise ValueError('case_type 必须是 scenario 或 interface')
+    return value
+
+
 def _list_resource(args, base_path):
     return _request('GET', _project_url(args.project_id, f'{base_path}/'), params=args.params_obj)
 
@@ -257,6 +269,9 @@ def _build_actions():
         {
             'get_module_tree': lambda args: _get_action(args, 'api-modules/tree/'),
             'search_modules': lambda args: _get_action(args, 'api-modules/search/'),
+            'move_module': lambda args: _post_action(
+                args, f'api-modules/{_require(args.module_id, "module_id")}/move/'
+            ),
             'test_saved_database_connection': lambda args: _post_action(
                 args, f'api-database-configs/{_require(args.database_config_id, "database_config_id")}/test-connection/'
             ),
@@ -274,6 +289,9 @@ def _build_actions():
             'execute_function': lambda args: _post_action(args, 'api-functions/execute/'),
             'run_interface': lambda args: _post_action(
                 args, f'api-interfaces/{_require(args.interface_id, "interface_id")}/run/'
+            ),
+            'duplicate_interface': lambda args: _post_action(
+                args, f'api-interfaces/{_require(args.interface_id, "interface_id")}/duplicate/'
             ),
             'quick_debug_interface': lambda args: _post_action(args, 'api-interfaces/quick_debug/'),
             'get_tag_statistics': lambda args: _get_action(args, 'api-testcase-tags/statistics/'),
@@ -306,6 +324,16 @@ def _build_actions():
             'get_history_reports': lambda args: _get_action(
                 args, f'api-testcases/{_require(args.testcase_id, "testcase_id")}/history_reports/'
             ),
+            'copy_interface_case': lambda args: _post_action(
+                args, f'api-interface-cases/{_require(args.interface_case_id, "interface_case_id")}/copy/'
+            ),
+            'run_interface_case': lambda args: _post_action(
+                args, f'api-interface-cases/{_require(args.interface_case_id, "interface_case_id")}/run/'
+            ),
+            'get_interface_case_history_reports': lambda args: _get_action(
+                args,
+                f'api-interface-cases/{_require(args.interface_case_id, "interface_case_id")}/history_reports/',
+            ),
             'sync_now': lambda args: _post_action(
                 args, f'api-sync-configs/{_require(args.sync_config_id, "sync_config_id")}/sync_now/'
             ),
@@ -325,6 +353,16 @@ def _build_actions():
                 args,
                 f'api-task-suites/{_require(args.task_suite_id, "task_suite_id")}/remove-testcase/'
                 f'{_require(args.testcase_id, "testcase_id")}/',
+            ),
+            'remove_suite_interface_case': lambda args: _delete_action(
+                args,
+                f'api-task-suites/{_require(args.task_suite_id, "task_suite_id")}/remove-case/'
+                f'interface/{_require(args.interface_case_id, "interface_case_id")}/',
+            ),
+            'remove_suite_case': lambda args: _delete_action(
+                args,
+                f'api-task-suites/{_require(args.task_suite_id, "task_suite_id")}/remove-case/'
+                f'{_require_case_type(args.case_type)}/{_require(args.case_id, "case_id")}/',
             ),
             'execute_task_suite': lambda args: _post_action(args, 'api-task-executions/'),
             'get_task_case_results': lambda args: _get_action(
@@ -352,6 +390,7 @@ def main():
 
     for arg_name, help_text in ID_ARGUMENTS:
         parser.add_argument(f'--{arg_name}', type=int, help=help_text)
+    parser.add_argument('--case_type', help='任务套件用例类型：scenario 或 interface')
 
     args = parser.parse_args()
 
