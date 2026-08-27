@@ -1455,25 +1455,34 @@ _DEFAULT_RECORDER_VIEWPORT = {'width': 1400, 'height': 900}
 
 
 def _resolve_recorder_skill_dir() -> str:
-    """定位 playwright npm 依赖所在的 skill 目录。
+    """定位 playwright npm 依赖所在目录（录制器运行目录）。
 
-    优先级：环境变量 RECORDER_SKILL_DIR > DB 中已部署的 playwright skill
-    （docker 下可写，支持首次自动 npm install）> 仓库内 WHartTest_Skills 兜底。
+    优先级：环境变量 RECORDER_SKILL_DIR（兼容旧配置）> 录制器自身目录
+    （ui_automation/recorder/，自带 package.json，首次自动 npm install）>
+    DB 中已部署的 playwright skill > 仓库内 WHartTest_Skills 兜底。
+    录制器不再依赖可卸载的 skill 资产。
     """
     env_dir = os.environ.get('RECORDER_SKILL_DIR', '').strip()
     if env_dir and os.path.isdir(env_dir):
         return env_dir
 
-    from skills.models import Skill
-    skill = (
-        Skill.objects.filter(name__in=['playwright-skill', 'playwright-cli'], is_active=True)
-        .order_by('id')
-        .first()
-    )
-    if skill:
-        full = skill.get_full_path()
-        if full and os.path.isdir(full):
-            return full
+    own_dir = Path(__file__).parent / 'recorder'
+    if (own_dir / 'package.json').is_file():
+        return str(own_dir)
+
+    try:
+        from skills.models import Skill
+        skill = (
+            Skill.objects.filter(name__in=['playwright-skill', 'playwright-cli'], is_active=True)
+            .order_by('id')
+            .first()
+        )
+        if skill:
+            full = skill.get_full_path()
+            if full and os.path.isdir(full):
+                return full
+    except Exception:
+        pass  # skills 应用不可用/被移除时忽略
 
     fallback = Path(settings.BASE_DIR).parent / 'WHartTest_Skills' / 'playwright-skill'
     if fallback.is_dir():
