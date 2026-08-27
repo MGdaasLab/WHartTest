@@ -78,6 +78,13 @@
           @pointermove="onPointerMove"
           @wheel="onWheel"
         />
+        <!-- 隐藏输入法载体：保持聚焦让中文输入法正常组合（compositionend 拿到最终文本） -->
+        <input
+          ref="imeInputRef"
+          class="recorder-ime-input"
+          @keydown.stop
+          @keyup.stop
+        />
         <div v-if="!firstFrame" class="recorder-loading-overlay">
           <a-spin :loading="true" />
           <span>{{ text.connecting }}</span>
@@ -544,6 +551,7 @@ const sessionId = ref('')
 const viewport = reactive({ width: 1400, height: 900 })
 const firstFrame = ref(false)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const imeInputRef = ref<HTMLInputElement | null>(null)
 
 // ---- 录制动作与步骤分组 ----
 const allActions = ref<Array<Record<string, any>>>([])
@@ -753,6 +761,7 @@ async function handleStart() {
       canvas.height = viewport.height
     }
     bindCanvasListeners()
+    keepImeFocused()
   } catch (e: any) {
     Message.error(e?.error || e?.message || text.value.startFailed)
   } finally {
@@ -873,6 +882,7 @@ let lastMoveSent = 0
 
 function onPointerDown(e: PointerEvent) {
   if (!recording.value) return
+  keepImeFocused()
   const { x, y } = canvasPoint(e)
   if (assertActive.value) {
     assertActive.value = false
@@ -915,8 +925,18 @@ function onWheel(e: WheelEvent) {
 
 function onKeyDown(e: KeyboardEvent) {
   if (!recording.value) return
+  // 输入法组合期间/Process 等组合键不转发（最终文本走 compositionend 通道）
+  if (e.isComposing || e.key === 'Process' || e.key === 'Unidentified' || e.key === 'Dead') return
   uiWebSocket.recorderInput({ type: 'key', event: 'down', key: e.key, code: e.code })
   if (['Enter', 'Tab', ' '].includes(e.key)) e.preventDefault()
+}
+
+function onCompositionEnd(e: CompositionEvent) {
+  if (!recording.value) return
+  const text = e.data || ''
+  if (text) {
+    uiWebSocket.recorderInput({ type: 'text', text })
+  }
 }
 
 function onKeyUp(e: KeyboardEvent) {
@@ -924,14 +944,24 @@ function onKeyUp(e: KeyboardEvent) {
   uiWebSocket.recorderInput({ type: 'key', event: 'up', key: e.key, code: e.code })
 }
 
+function keepImeFocused() {
+  // 保持隐藏输入框聚焦：浏览器输入法需要真实输入框才会进入组合模式
+  requestAnimationFrame(() => {
+    if (imeInputRef.value) imeInputRef.value.focus({ preventScroll: true })
+  })
+}
+
 function bindCanvasListeners() {
   window.addEventListener('keydown', onKeyDown, true)
   window.addEventListener('keyup', onKeyUp, true)
+  window.addEventListener('compositionend', onCompositionEnd, true)
+  keepImeFocused()
 }
 
 function unbindCanvasListeners() {
   window.removeEventListener('keydown', onKeyDown, true)
   window.removeEventListener('keyup', onKeyUp, true)
+  window.removeEventListener('compositionend', onCompositionEnd, true)
 }
 
 // ------------------------------------------------------------------
@@ -1029,6 +1059,7 @@ function removeAction(a: Record<string, any>) {
 // ------------------------------------------------------------------
 
 function onRecorderFrame(data: any) {
+  if (!props.visible) return
   const frame = data?.data?.func_args?.frame
   if (!frame?.data) return
   firstFrame.value = true
@@ -1040,6 +1071,9 @@ function onRecorderFrame(data: any) {
 }
 
 function onRecorderAction(data: any) {
+  // 只处理本弹窗打开时的动作广播：tab 常驻渲染，隐藏的用例录制弹窗
+  // 不能响应其它录制会话（如页面步骤录制）的动作，否则会误弹"请先创建步骤"
+  if (!props.visible) return
   const action = data?.data?.func_args?.action
   if (!action) return
   // 未创建步骤时拦截：撤销该动作并提示先添加步骤（提示节流 3 秒一次）
@@ -1066,6 +1100,7 @@ function onRecorderAction(data: any) {
 }
 
 function onRecorderStatus(data: any) {
+  if (!props.visible) return
   const args = data?.data?.func_args || {}
   const status = args.status
   if (status === 'error') {
@@ -1130,6 +1165,19 @@ onUnmounted(() => {
   border-radius: 6px;
   overflow: hidden;
   background: #111;
+}
+
+.recorder-ime-input {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .recorder-canvas {

@@ -27,43 +27,50 @@
       </div>
     </div>
 
-    <a-table
-      v-model:selectedKeys="selectedRowKeys"
-      :columns="columns"
-      :data="elementData"
-      :loading="loading"
-      :pagination="false"
-      size="small"
-      :scroll="{ y: 400 }"
-      :row-selection="rowSelection"
-      row-key="id"
-    >
-      <template #locator_type="{ record }">
-        <a-tag>{{ record.locator_type }}</a-tag>
-      </template>
-      <template #locator_value="{ record }">
-        <a-tooltip :content="record.locator_value" position="top">
-          <div class="ellipsis-text">{{ record.locator_value }}</div>
-        </a-tooltip>
-      </template>
-      <template #is_iframe="{ record }">
-        <a-tag :color="record.is_iframe ? 'orange' : 'gray'">
-          {{ record.is_iframe ? '是' : '否' }}
-        </a-tag>
-      </template>
-      <template #operations="{ record }">
-        <a-space :size="4">
-          <a-button type="text" size="mini" @click="editElement(record)">
-            <template #icon><icon-edit /></template>
-          </a-button>
-          <a-popconfirm content="确定删除该元素？若被页面步骤引用则无法删除，请先删除相关步骤。" @ok="deleteElement(record)">
-            <a-button type="text" status="danger" size="mini">
-              <template #icon><icon-delete /></template>
+    <div ref="tableWrapRef" class="element-table-wrap">
+      <a-table
+        v-model:selectedKeys="selectedRowKeys"
+        :columns="columns"
+        :data="elementData"
+        :loading="loading"
+        :pagination="false"
+        size="small"
+        :scroll="{ y: tableScrollY }"
+        :row-selection="rowSelection"
+        row-key="id"
+      >
+        <template #locator_type="{ record }">
+          <a-tag>{{ record.locator_type }}</a-tag>
+        </template>
+        <template #name="{ record }">
+          <a-tooltip :content="record.name" position="top">
+            <div class="name-ellipsis">{{ record.name }}</div>
+          </a-tooltip>
+        </template>
+        <template #locator_value="{ record }">
+          <a-tooltip :content="record.locator_value" position="top">
+            <div class="ellipsis-text">{{ record.locator_value }}</div>
+          </a-tooltip>
+        </template>
+        <template #is_iframe="{ record }">
+          <a-tag :color="record.is_iframe ? 'orange' : 'gray'">
+            {{ record.is_iframe ? '是' : '否' }}
+          </a-tag>
+        </template>
+        <template #operations="{ record }">
+          <a-space :size="4">
+            <a-button type="text" size="mini" @click="editElement(record)">
+              <template #icon><icon-edit /></template>
             </a-button>
-          </a-popconfirm>
-        </a-space>
-      </template>
-    </a-table>
+            <a-popconfirm content="确定删除该元素？若被页面步骤引用则无法删除，请先删除相关步骤。" @ok="deleteElement(record)">
+              <a-button type="text" status="danger" size="mini">
+                <template #icon><icon-delete /></template>
+              </a-button>
+            </a-popconfirm>
+          </a-space>
+        </template>
+      </a-table>
+    </div>
 
     <!-- 新增/编辑弹窗 -->
     <a-modal
@@ -150,7 +157,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, watch, computed } from 'vue'
+import { ref, reactive, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { IconPlus, IconEdit, IconDelete } from '@arco-design/web-vue/es/icon'
 import { elementApi } from '../api'
@@ -167,6 +174,30 @@ const isEdit = ref(false)
 const currentElement = ref<UiElement | null>(null)
 const formRef = ref()
 const searchKey = ref('')
+const tableWrapRef = ref<HTMLDivElement | null>(null)
+const tableScrollY = ref(400)
+let resizeObserver: ResizeObserver | null = null
+
+function measureTableHeight() {
+  const el = tableWrapRef.value
+  if (!el) return
+  // 容器高度 - 表头(~40px)，最小 240
+  tableScrollY.value = Math.max(240, el.clientHeight - 40)
+}
+
+onMounted(() => {
+  nextTick(() => {
+    measureTableHeight()
+    if (typeof ResizeObserver !== 'undefined' && tableWrapRef.value) {
+      resizeObserver = new ResizeObserver(() => measureTableHeight())
+      resizeObserver.observe(tableWrapRef.value)
+    }
+  })
+})
+
+onUnmounted(() => {
+  resizeObserver?.disconnect()
+})
 const selectedRowKeys = ref<(string | number)[]>([])
 const rowSelection = { showCheckedAll: true }
 
@@ -207,7 +238,7 @@ const rules = {
 }
 
 const columns = [
-  { title: '名称', dataIndex: 'name', width: 120, ellipsis: true, align: 'center' as const },
+  { title: '名称', dataIndex: 'name', width: 120, align: 'center' as const },
   { title: '定位类型', slotName: 'locator_type', width: 90, align: 'center' as const },
   { title: '定位表达式', slotName: 'locator_value', width: 200, align: 'center' as const },
   { title: '等待(秒)', dataIndex: 'wait_time', width: 80, align: 'center' as const },
@@ -367,6 +398,16 @@ watch(() => props.page, fetchElements, { immediate: true })
 <style scoped>
 .element-list {
   padding: 8px 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.element-table-wrap {
+  flex: 1;
+  min-height: 280px;
+  overflow: hidden;
 }
 .element-header {
   display: flex;
@@ -381,7 +422,15 @@ watch(() => props.page, fetchElements, { immediate: true })
   gap: 8px;
 }
 .ellipsis-text {
-  max-width: 180px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.name-ellipsis {
+  max-width: 116px;
+  margin: 0 auto;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

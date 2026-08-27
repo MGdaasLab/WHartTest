@@ -63,14 +63,34 @@ _VALID_LOCATOR_TYPES = {t for t, _label in UiElement.LOCATOR_TYPE_CHOICES}
 
 
 def _element_name(action_type: str, selector: dict | None) -> str:
-    label = 'element'
+    """元素命名：优先录制端生成的语义名（业务语义+控件类型，如"用户名输入框"），
+    无语义名时按操作类型兜底（"点击-提交"）。名称不含用户输入值与页面名。"""
+    label = ''
     if selector:
-        label = str(selector.get('name') or selector.get('locator_value') or 'element')
-    label = ' '.join(label.split())
+        label = str(selector.get('name') or '').strip()
+    if label:
+        return label[:_MAX_NAME]
+    fallback = 'element'
+    if selector:
+        fallback = str(selector.get('locator_value') or 'element')[:20]
     op = {'click': '点击', 'fill': '输入', 'check': '勾选', 'uncheck': '取消勾选',
-          'press': '按键'}.get(action_type, action_type)
-    name = f'录制-{op}-{label}'
-    return name[:_MAX_NAME]
+          'press': '按键', 'assert': '断言'}.get(action_type, action_type)
+    return f'{op}-{fallback}'[:_MAX_NAME]
+
+
+def _dedupe_element_name(page: UiPage, name: str) -> str:
+    """同页面元素名称唯一：冲突时追加序号（"提交按钮 2"）。"""
+    base = name[:_MAX_NAME]
+    if not UiElement.objects.filter(page=page, name=base).exists():
+        return base
+    suffix = 2
+    while True:
+        text = f'{base} {suffix}'
+        if len(text) > _MAX_NAME:
+            text = f'{base[:_MAX_NAME - len(text)]}{suffix}'
+        if not UiElement.objects.filter(page=page, name=text).exists():
+            return text
+        suffix += 1
 
 
 def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: dict) -> tuple[UiElement, bool]:
@@ -79,7 +99,7 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
     locator_value = str(selector.get('locator_value') or '')
     locator_type = locator_type if locator_type in _VALID_LOCATOR_TYPES else 'xpath'
     if not locator_value:
-        return None, False  # 无选择器的动作（如 goto）不走元素
+        return None, False  # 无选择器的动作（如 goto/wait）不走元素
 
     existing = UiElement.objects.filter(
         page=page,
@@ -89,9 +109,10 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
     if existing:
         return existing, False
 
+    name = _dedupe_element_name(page, _element_name(action_type, selector))
     element = UiElement.objects.create(
         page=page,
-        name=_element_name(action_type, selector),
+        name=name,
         locator_type=locator_type,
         locator_value=locator_value,
         creator=user,

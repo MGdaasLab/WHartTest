@@ -1079,3 +1079,11 @@ body[arco-theme='dark'] .arco-table-th {
 .arco-modal.recorder-confirm-modal .arco-modal-footer {
   border-top: none !important;
 }
+
+/* 元素管理抽屉：body 撑满高度，让内部表格自适应填充 */
+.arco-drawer.element-drawer .arco-drawer-body {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}

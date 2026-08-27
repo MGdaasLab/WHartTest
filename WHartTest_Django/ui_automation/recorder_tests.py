@@ -467,3 +467,42 @@ class BatchDeleteApiTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(resp.data['deleted'], 2)
         self.assertEqual(UiPageStepsDetailed.objects.filter(page_step=self.page_step).count(), 0)
+
+
+class ElementNamingTests(TestCase):
+    """元素命名：录制端语义名优先 + 同页面唯一去重。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='naming', password='secret')
+        self.project = Project.objects.create(name='Naming Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+
+    def test_semantic_name_from_recorder(self):
+        sel = {'locator_type': 'xpath', 'locator_value': '//input[1]', 'name': '用户名输入框'}
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'fill', 'selector': sel, 'value': 'x'}])
+        el = UiElement.objects.get(page=self.page)
+        self.assertEqual(el.name, '用户名输入框')
+
+    def test_same_name_elements_get_suffix(self):
+        sel_a = {'locator_type': 'xpath', 'locator_value': '//button[1]', 'name': '提交按钮'}
+        sel_b = {'locator_type': 'xpath', 'locator_value': '//button[2]', 'name': '提交按钮'}
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'click', 'selector': sel_a},
+                                        {'seq': 2, 'type': 'click', 'selector': sel_b}])
+        names = sorted(UiElement.objects.filter(page=self.page).values_list('name', flat=True))
+        self.assertEqual(names, ['提交按钮', '提交按钮 2'])
+
+    def test_fallback_name_without_semantic(self):
+        sel = {'locator_type': 'xpath', 'locator_value': '//div[3]'}
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'click', 'selector': sel}])
+        el = UiElement.objects.get(page=self.page)
+        self.assertEqual(el.name, '点击-//div[3]')

@@ -154,6 +154,58 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
+  // 选择框场景：占位文本 span 只是视觉层，EP 的只读 input 会拦截所有指针事件
+  // （点 span 必超时）。定位必须落在 input 自身 / 选择框 wrapper 的稳定 class 上。
+  function selectBoxAnchor(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    if (tag !== 'input') return null;
+    var t = ((el.getAttribute && el.getAttribute('type')) || '').toLowerCase();
+    if (t === 'password' || t === 'checkbox' || t === 'radio' || t === 'file') return null;
+
+    // ① input 自身的唯一 class（如 el-select__input）
+    var own = selfClassAnchor(el);
+    if (own && isUniqueXPath(own)) return own;
+
+    // ② 祖先选择框容器（el-select / select-box 等）的唯一 class 锚点 + 相对路径
+    var node = el;
+    for (var hop = 0; hop < 4 && node; hop++) {
+      node = node.parentElement;
+      if (!node || node === document.body) break;
+      var cls = (node.getAttribute && node.getAttribute('class')) || '';
+      var tokens = cls.trim().split(/\s+/);
+      for (var i = 0; i < tokens.length; i++) {
+        var tk = tokens[i];
+        if (!tk || isStateClass(tk)) continue;
+        var cand = '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]';
+        if (isUniqueXPath(cand)) {
+          // 相对路径回到 input 自身（若无中间层级则直接用容器）
+          var rel = relativePath(el, node);
+          return rel ? cand + rel : cand;
+        }
+      }
+    }
+    return null;
+  }
+
+  // 从 ancestor 到 el 的相对路径（不含 ancestor 自身）
+  function relativePath(el, ancestor) {
+    var parts = [];
+    var node = el;
+    var guard = 0;
+    while (node && node !== ancestor && guard < 16) {
+      var idx = 1;
+      var sib = node.previousElementSibling;
+      while (sib) {
+        if (sib.tagName === node.tagName) idx++;
+        sib = sib.previousElementSibling;
+      }
+      parts.unshift('/' + node.tagName.toLowerCase() + '[' + idx + ']');
+      node = node.parentElement;
+      guard++;
+    }
+    return parts.join('');
+  }
+
   // 交互状态 class（聚焦/悬停/选中/禁用等）变化无常，禁止作定位锚点
   function isStateClass(token) {
     if (/^(is-|is_)/.test(token)) return true;  // Element Plus 等框架状态类：is-focused/is-active...
@@ -173,11 +225,13 @@ const INIT_SCRIPT = () => {
   // 角色+文本 xpath 锚点：仅当该（标签+精确文本）在文档中唯一时使用。
   // 覆盖按钮/链接/标签、下拉项及文本载体（li/option/td/span 等），
   // 下拉选择项用文本定位最稳定；文本不唯一时自动降级，避免歧义。
+  // 注意：div 容器的 textContent 会聚合子元素文本（多层父级同文本），
+  // 因此容器类标签要求"无元素子节点"（叶子文本载体）才算数。
   function textAnchor(el) {
     var tag = el.tagName || '';
     var role = el.getAttribute && el.getAttribute('role');
     var textLike = (tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY' ||
-      tag === 'LI' || tag === 'OPTION' || tag === 'TD' || tag === 'SPAN' ||
+      tag === 'LI' || tag === 'OPTION' || tag === 'TD' ||
       role === 'button' || role === 'link' || role === 'tab' || role === 'option' ||
       role === 'menuitem' || role === 'listitem');
     if (!textLike) return null;
@@ -189,7 +243,8 @@ const INIT_SCRIPT = () => {
         return cleanText(n.textContent, 50) === text;
       });
       if (matched.length === 1) {
-        return '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+        var xp = '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+        return isUniqueXPath(xp) ? xp : null;
       }
     } catch (_) {}
     return null;
@@ -207,7 +262,8 @@ const INIT_SCRIPT = () => {
         return cleanText(n.textContent, 20) === text;
       });
       if (matched.length === 1) {
-        return '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+        var xp = '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+        return isUniqueXPath(xp) ? xp : null;
       }
     } catch (_) {}
     return null;
@@ -221,7 +277,8 @@ const INIT_SCRIPT = () => {
     for (var i = 0; i < tokens.length; i++) {
       var tk = tokens[i];
       if (tk && isUniqueClassToken(tk)) {
-        return '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]';
+        var cand = '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]';
+        if (isUniqueXPath(cand)) return cand;
       }
     }
     return null;
@@ -254,10 +311,14 @@ const INIT_SCRIPT = () => {
     if (textSelf) return textSelf;
     var childText = childTextAnchor(el);
     if (childText) return childText;
+    // 下拉选择框：只读 input 无锚点时，用容器内"请选择xx"占位文本锚点
+    var selectBox = selectBoxAnchor(el);
+    if (selectBox) return selectBox;
 
+    // 结构路径：完整回溯到 body（不限层数）——截断的路径在真实 DOM 中不存在，
+    // 宁长勿断；途中遇到唯一锚点祖先则提前短路为相对路径。
     var parts = [];
     var node = el;
-    var hops = 0;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
       var idx = 1;
       var sib = node.previousElementSibling;
@@ -266,29 +327,84 @@ const INIT_SCRIPT = () => {
         sib = sib.previousElementSibling;
       }
       parts.unshift(node.tagName.toLowerCase() + '[' + idx + ']');
-      node = node.parentElement;
-      hops++;
-      if (hops > 6 || !node || node.nodeType !== 1 || node === document.documentElement || node === document.body) {
+      var parent = node.parentElement;
+      if (!parent || parent.nodeType !== 1 || parent === document.documentElement || parent === document.body) {
         break;
       }
-      var anchor = pickAnchor(node);
+      var anchor = pickAnchor(parent);
       if (anchor) return anchor + '/' + parts.join('/');
-      var cls = node.getAttribute && node.getAttribute('class');
+      var cls = parent.getAttribute && parent.getAttribute('class');
       if (typeof cls === 'string' && cls.trim()) {
         var tokens = cls.trim().split(/\s+/);
         for (var i = 0; i < tokens.length; i++) {
           var tk = tokens[i];
           if (tk && isUniqueClassToken(tk)) {
-            return '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]/' + parts.join('/');
+            var cand = '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]/' + parts.join('/');
+            if (isUniqueXPath(cand)) return cand;
           }
         }
       }
+      node = parent;
     }
     // 兜底前最后一次机会：短文本唯一锚点（动态容器内的文本项）
     var looseText = looseTextAnchor(el);
     if (looseText) return looseText;
-    // 兜底：短绝对路径（一般最多到第 7 层）
-    return '/html/' + parts.join('/');
+    // 兜底：完整绝对路径（含 body 层级），唯一性由 index 链保证
+    return '/html/body/' + parts.join('/');
+  }
+
+  // 控件类型识别：tag + type + class/role 特征 → 平台控件词表
+  function detectControlType(el) {
+    var tag = el.tagName || '';
+    var type = (el.getAttribute && el.getAttribute('type')) || '';
+    var cls = (el.getAttribute && el.getAttribute('class')) || '';
+    var role = (el.getAttribute && el.getAttribute('role')) || '';
+    if (tag === 'TEXTAREA') return '文本域';
+    if (tag === 'SELECT') return '下拉框';
+    if (tag === 'INPUT') {
+      var t = type.toLowerCase();
+      if (t === 'password') return '密码框';
+      if (t === 'checkbox') return '复选框';
+      if (t === 'radio') return '单选框';
+      if (t === 'button' || t === 'submit' || t === 'reset') return '按钮';
+      if (t === 'file') return '上传';
+      return '输入框';
+    }
+    if (tag === 'BUTTON' || role === 'button' ||
+        (type && /button|submit|reset/i.test(type))) return '按钮';
+    if (tag === 'A' || role === 'link') return '链接';
+    if (/el-pagination|ant-pagination|pagination/i.test(cls)) return '分页';
+    if (/el-dialog|modal|ant-modal/i.test(cls) || role === 'dialog') return '弹窗';
+    if (/el-tabs__item|ant-tabs-tab|tab\b/i.test(cls) || role === 'tab') return '标签页';
+    if (/el-table|ant-table|datagrid/i.test(cls) || tag === 'TABLE') return '表格';
+    if (/el-select|ant-select|select\b|combobox/i.test(cls) || role === 'combobox') return '下拉框';
+    return '元素';
+  }
+
+  // 元素命名：业务语义 + 控件类型（如"用户名输入框"）。
+  // 语义优先级：aria-label → placeholder → 关联 label → name → 可见文本（均不含用户输入值）。
+  function elementLabel(el) {
+    var tag = el.tagName || '';
+    var type = ((el.getAttribute && el.getAttribute('type')) || '').toLowerCase();
+    var aria = (el.getAttribute && el.getAttribute('aria-label')) || '';
+    var ph = (el.getAttribute && el.getAttribute('placeholder')) || '';
+    var name = (el.getAttribute && el.getAttribute('name')) || '';
+    var semantic = '';
+    if (aria) {
+      semantic = aria;
+    } else if (ph) {
+      semantic = ph;
+    } else if (el.labels && el.labels.length && el.labels[0].textContent) {
+      semantic = cleanText(el.labels[0].textContent, 20);
+    } else if (name && /^[a-z0-9_\-\u4e00-\u9fa5]+$/i.test(name)) {
+      // name 属性仅在具备可读性（含中文/单词式命名）时使用，避免 base64 串
+      semantic = name;
+    } else if (tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY' ||
+               tag === 'LI' || tag === 'OPTION' || tag === 'TD' || tag === 'SPAN') {
+      semantic = cleanText(el.textContent, 20);
+    }
+    semantic = (semantic || '').replace(/^(请)?(输入|选择|填写)/, '').trim();
+    return semantic;
   }
 
   function describe(el) {
@@ -302,11 +418,23 @@ const INIT_SCRIPT = () => {
       attrs.testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-test-id') || '';
     }
     var text = cleanText(el.textContent, 40);
-    var label = text || attrs.id || attrs.name || attrs.placeholder || 'element';
+    var ctrlType = detectControlType(el);
+    var semantic = elementLabel(el);
+    // 无语义时用类型本身（"输入框"→"输入框"不重复拼），或退回原 label 逻辑
+    var name;
+    if (semantic) {
+      // 语义已完整包含控件类型词（如"密码"含"密码框"的"密码"）时直接用语义，
+      // 避免出现"密码密码框"这类重复
+      name = semantic.indexOf(ctrlType.replace(/框|域|页/g, '')) >= 0 ? semantic : semantic + ctrlType;
+    } else if (ctrlType !== '元素') {
+      name = ctrlType;
+    } else {
+      name = text || attrs.id || attrs.name || attrs.placeholder || '元素';
+    }
     // 一律输出 xpath 相对定位：
     // 动态 id（el-id-920-7 等）会被过滤，稳定的 id/name/placeholder/data-testid
     // 作为 xpath 锚点保留，其余走唯一 class 锚点 / 结构化相对路径。
-    return { locator_type: 'xpath', locator_value: buildXPath(el), name: label.slice(0, 24) };
+    return { locator_type: 'xpath', locator_value: buildXPath(el), name: name.slice(0, 24), ctrl_type: ctrlType };
   }
 
   window.__whart.describe = describe;
@@ -760,6 +888,10 @@ async function cmdInput(params) {
       await state.page.mouse.wheel(Number(params.deltaX) || 0, Number(params.deltaY) || 0);
     } else if (type === 'key') {
       const key = String(params.key || '');
+      // 输入法组合键（Process/Dead/Unidentified）不产生可输入字符，直接忽略
+      if (key === 'Process' || key === 'Unidentified' || key === 'Dead') {
+        return { ok: true };
+      }
       if (params.event === 'down') {
         if (key.length === 1 && key >= ' ' && key !== '\u0000') {
           await state.page.keyboard.type(key);
@@ -770,6 +902,12 @@ async function cmdInput(params) {
         if (key && key.length > 1) {
           await state.page.keyboard.up(key);
         }
+      }
+    } else if (type === 'text') {
+      // 输入法组合完成后的最终文本（compositionend.data），直接插入聚焦元素
+      const text = String(params.text || '');
+      if (text) {
+        await state.page.keyboard.insertText(text);
       }
     }
     return { ok: true };
