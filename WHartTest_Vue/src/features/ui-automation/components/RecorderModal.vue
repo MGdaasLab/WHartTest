@@ -134,11 +134,11 @@
 
     <!-- 阶段2：录制视图 -->
     <div v-if="phase !== 'setup'" class="recorder-live">
-      <div class="recorder-canvas-wrap">
+      <div ref="canvasWrapRef" class="recorder-canvas-wrap">
         <canvas
           ref="canvasRef"
           class="recorder-canvas"
-          :style="{ aspectRatio: `${viewport.width} / ${viewport.height}` }"
+          :style="canvasStyle"
           @pointerdown="onPointerDown"
           @pointerup="onPointerUp"
           @pointermove="onPointerMove"
@@ -576,6 +576,18 @@ const viewport = reactive({ width: 1400, height: 900 })
 const actions = ref<Array<Record<string, any>>>([])
 const firstFrame = ref(false)
 const canvasRef = ref<HTMLCanvasElement | null>(null)
+const canvasWrapRef = ref<HTMLElement | null>(null)
+// 画布显示尺寸：录制视图高度固定（见 .recorder-live），画布按视口比例
+// letterbox 自适应宽度并居中，避免 canvas 按宽度撑高溢出产生右侧纵向滚动条。
+const canvasSize = reactive({ width: 0, height: 0 })
+const canvasStyle = computed(() => ({
+  aspectRatio: `${viewport.width} / ${viewport.height}`,
+  width: canvasSize.width ? `${canvasSize.width}px` : '100%',
+  height: canvasSize.height ? `${canvasSize.height}px` : 'auto',
+}))
+// 画布区高度约束：全局主题把 .arco-modal-body 限高 70vh 且 overflow-y:auto
+// （arco-theme-override.css），画布区必须 ≤ 70vh - body 内边距(上下 20px×2)，
+// 否则弹窗 body 出现右侧滚动条。70vh 上限同时保证弹窗整体不超出视口、垂直居中不受影响。
 const imeInputRef = ref<HTMLInputElement | null>(null)
 const lastFrameData = ref('')
 
@@ -773,6 +785,7 @@ async function handleStart() {
       canvas.width = viewport.width
       canvas.height = viewport.height
     }
+    fitCanvas()
     bindCanvasListeners()
     keepImeFocused()
   } catch (e: any) {
@@ -871,6 +884,24 @@ function drawFrame(imageSrc: string) {
     ctx.drawImage(img, 0, 0, viewport.width, viewport.height)
   }
   img.src = imageSrc
+}
+
+// 画布布局：容器高度固定，宽度按 viewport 比例自适应（超高时收缩并居中）。
+// canvas 元素尺寸即实际绘制区域，canvasPoint 的坐标换算不受影响。
+function fitCanvas() {
+  const wrap = canvasWrapRef.value
+  if (!wrap) return
+  const rect = wrap.getBoundingClientRect()
+  if (rect.width < 2 || rect.height < 2 || !viewport.width || !viewport.height) return
+  const ratio = viewport.width / viewport.height
+  let cw = rect.width
+  let ch = cw / ratio
+  if (ch > rect.height) {
+    ch = rect.height
+    cw = ch * ratio
+  }
+  canvasSize.width = Math.floor(cw)
+  canvasSize.height = Math.floor(ch)
 }
 
 function canvasPoint(e: PointerEvent | WheelEvent) {
@@ -1082,6 +1113,7 @@ function onRecorderFrame(data: any) {
   if (viewport.width !== frame.w || viewport.height !== frame.h) {
     viewport.width = frame.w || viewport.width
     viewport.height = frame.h || viewport.height
+    fitCanvas()
   }
   drawFrame(`data:image/jpeg;base64,${frame.data}`)
 }
@@ -1114,17 +1146,23 @@ function onRecorderStatus(data: any) {
 let offFrame: (() => void) | null = null
 let offAction: (() => void) | null = null
 let offStatus: (() => void) | null = null
+let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   offFrame = uiWebSocket.on(UiSocketEnum.RECORDER_FRAME, onRecorderFrame as any)
   offAction = uiWebSocket.on(UiSocketEnum.RECORDER_ACTION, onRecorderAction as any)
   offStatus = uiWebSocket.on(UiSocketEnum.RECORDER_STATUS, onRecorderStatus as any)
+  resizeObserver = new ResizeObserver(() => fitCanvas())
+  if (canvasWrapRef.value) resizeObserver.observe(canvasWrapRef.value)
+  nextTick(fitCanvas)
 })
 
 onUnmounted(() => {
   offFrame?.()
   offAction?.()
   offStatus?.()
+  resizeObserver?.disconnect()
+  resizeObserver = null
   unbindCanvasListeners()
 })
 </script>
@@ -1160,19 +1198,27 @@ onUnmounted(() => {
 .recorder-live {
   display: flex;
   gap: 12px;
-  min-height: 640px;
-  max-height: 86vh;
+  /* 高固定 700px：受全局 .arco-modal-body 限高（70vh，arco-theme-override.css）
+     约束自动收缩——400 屏上画布区 ≤ 70vh-44px，弹窗 body 永不出现右侧滚动条；
+     画布由 fitCanvas 自适应 letterbox */
+  height: min(700px, calc(70vh - 44px));
+  min-height: 0;
+  overflow: hidden;
 }
 
 .recorder-canvas-wrap {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-  align-self: flex-start;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--color-border-2);
   border-radius: 6px;
   overflow: hidden;
-  background: #111;
+  /* 留白处与弹窗面板同色（深浅主题自适应），避免 letterbox 黑条 */
+  background: var(--color-bg-2);
 }
 
 .recorder-ime-input {
@@ -1190,8 +1236,8 @@ onUnmounted(() => {
 
 .recorder-canvas {
   display: block;
-  width: 100%;
-  height: auto;
+  max-width: 100%;
+  max-height: 100%;
   cursor: crosshair;
 }
 
