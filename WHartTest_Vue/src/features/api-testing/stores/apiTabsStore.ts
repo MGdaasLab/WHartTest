@@ -153,6 +153,11 @@ export const useApiTabsStore = defineStore('apiTabs', () => {
     } catch { /* ignore parse errors */ }
   }
 
+  function clearInterfaceTabs() {
+    tabs.value = [];
+    activeTabId.value = null;
+  }
+
   return {
     // Top-level nav
     activeTab,
@@ -172,5 +177,6 @@ export const useApiTabsStore = defineStore('apiTabs', () => {
     findTabByInterface,
     saveToLocalStorage,
     loadFromLocalStorage,
+    clearInterfaceTabs,
   };
 });

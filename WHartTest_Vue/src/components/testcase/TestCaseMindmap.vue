@@ -283,7 +283,7 @@ expandBtnMethods.createExpandNodeContent = function patchedCreateExpandNodeConte
   const gap = EXPAND_COUNT_BADGE_GAP;
   // Prefer rx/ry over radius: modular Rect exports may not include the sugar radius() helper.
   const oldFill = this._fillExpandNode;
-  const rect = new Rect().size(size, size).rx(3).ry(3);
+  const rect = new Rect().size(size, size).attr({ rx: 3, ry: 3 });
   // Offset into the reserved slot so there is visible space between node and badge.
   rect.x(gap).y(-size / 2);
   rect.fill({ color: fillColor });

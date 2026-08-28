@@ -90,3 +90,5 @@ export interface ApiInterfaceResult {
   executed_at: string;
   [key: string]: any;
 }
+
+export type InterfaceStatus = string;

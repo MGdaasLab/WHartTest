@@ -733,7 +733,7 @@ const stepTypeLabels = computed<Record<StepType, string>>(() => isEnglish.value
       2: 'SQL Action',
       3: 'Custom Variable',
       4: 'Condition',
-      // 5: 'Python Code',
+      5: 'Python Code',
       10: 'AI Action',
     }
   : STEP_TYPE_LABELS

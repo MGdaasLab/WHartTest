@@ -195,3 +195,5 @@ export const parseToolResultDisplayPayload = (rawToolOutput: unknown): ToolResul
 
   return { content: safeStringify(normalized), fileAttachments: [] };
 };
+
+export type TodoDisplayPayload = ToolResultDisplayPayload;
