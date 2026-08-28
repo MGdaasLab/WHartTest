@@ -4,6 +4,7 @@ api_url = "http://172.31.69.83:5173"
 use_gui = true
 api_username = "admin"
 api_password = "admin123456"
+api_key = "wharttest-default-mcp-key-2025"
 
 [actuator]
 name = "WHarttest001"

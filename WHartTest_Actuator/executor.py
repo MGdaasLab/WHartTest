@@ -696,6 +696,8 @@ class PlaywrightExecutor:
             'placeholder': lambda: container.get_by_placeholder(locator_value),
             'label': lambda: container.get_by_label(locator_value),
             'testid': lambda: container.get_by_test_id(locator_value),
+            # 模型/前端词汇表为 test_id（区别于旧数据遗留的 testid，两者等价）
+            'test_id': lambda: container.get_by_test_id(locator_value),
         }
         return locator_map.get(locator_type, lambda: container.locator(locator_value))()
 

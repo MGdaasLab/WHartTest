@@ -94,12 +94,24 @@ def _dedupe_element_name(page: UiPage, name: str) -> str:
 
 
 def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: dict) -> tuple[UiElement, bool]:
-    """按 (page, locator_type, locator_value) 复用元素。"""
+    """按 (page, locator_type, locator_value) 复用元素。
+
+    录制端候选链的第 2/3 位（locator_type_2/3）作为备用定位一并入库，
+    执行器按 主→备1→备2 依次尝试；复用已有元素时仅补全缺失的备用定位，
+    不覆盖手工维护的现有值。
+    """
     locator_type = str(selector.get('locator_type') or 'xpath')
     locator_value = str(selector.get('locator_value') or '')
     locator_type = locator_type if locator_type in _VALID_LOCATOR_TYPES else 'xpath'
     if not locator_value:
         return None, False  # 无选择器的动作（如 goto/wait）不走元素
+
+    backups: list[tuple[int, str, str]] = []
+    for idx in (2, 3):
+        l_type = str(selector.get(f'locator_type_{idx}') or '')
+        l_value = str(selector.get(f'locator_value_{idx}') or '').strip()
+        if l_type in _VALID_LOCATOR_TYPES and l_value:
+            backups.append((idx, l_type, l_value))
 
     existing = UiElement.objects.filter(
         page=page,
@@ -107,6 +119,18 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
         locator_value=locator_value,
     ).order_by('id').first()
     if existing:
+        updates = {
+            f'locator_type_{idx}': l_type
+            for idx, l_type, _v in backups
+            if not getattr(existing, f'locator_type_{idx}')
+        }
+        updates.update({
+            f'locator_value_{idx}': l_value
+            for idx, _t, l_value in backups
+            if not getattr(existing, f'locator_type_{idx}')
+        })
+        if updates:
+            UiElement.objects.filter(id=existing.id).update(**updates)
         return existing, False
 
     name = _dedupe_element_name(page, _element_name(action_type, selector))
@@ -116,6 +140,8 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
         locator_type=locator_type,
         locator_value=locator_value,
         creator=user,
+        **{f'locator_type_{idx}': l_type for idx, l_type, _v in backups},
+        **{f'locator_value_{idx}': l_value for idx, _t, l_value in backups},
     )
     return element, True
 

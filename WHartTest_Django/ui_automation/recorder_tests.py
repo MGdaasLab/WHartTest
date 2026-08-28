@@ -173,6 +173,65 @@ class RecorderApplyTests(TestCase):
         self.assertEqual(details[0].step_sort, 0)
         self.assertEqual(details[-1].step_sort, 7)  # 5 条新步骤从 3 开始：3..7
 
+    def _selector_with_backups(self):
+        # 录制端候选链：主定位 + 两个同 xpath 备用定位
+        return {
+            'locator_type': 'xpath',
+            'locator_value': '//button[normalize-space()="登录"]',
+            'name': '登录按钮',
+            'locator_type_2': 'xpath',
+            'locator_value_2': '//button[@id="login-btn"]',
+            'locator_type_3': 'xpath',
+            'locator_value_3': '/html/body/div[1]/button[1]',
+        }
+
+    def test_apply_persists_backup_locators(self):
+        stats = apply_recorded_actions(
+            page=self.page, page_step=self.page_step, user=self.user,
+            actions=[{'type': 'click', 'selector': self._selector_with_backups()}],
+        )
+        self.assertEqual(stats['elements_created'], 1)
+        element = UiElement.objects.get(page=self.page)
+        self.assertEqual(element.locator_type, 'xpath')
+        self.assertEqual(element.locator_value, '//button[normalize-space()="登录"]')
+        self.assertEqual(element.locator_type_2, 'xpath')
+        self.assertEqual(element.locator_value_2, '//button[@id="login-btn"]')
+        self.assertEqual(element.locator_type_3, 'xpath')
+        self.assertEqual(element.locator_value_3, '/html/body/div[1]/button[1]')
+
+    def test_apply_reuse_fills_missing_backup_locators(self):
+        # 老数据：仅主定位，无备用
+        existing = UiElement.objects.create(
+            page=self.page, name='登录按钮', creator=self.user,
+            locator_type='xpath', locator_value='//button[normalize-space()="登录"]',
+        )
+        apply_recorded_actions(
+            page=self.page, page_step=self.page_step, user=self.user,
+            actions=[{'type': 'click', 'selector': self._selector_with_backups()}],
+        )
+        existing.refresh_from_db()
+        self.assertEqual(existing.locator_type_2, 'xpath')
+        self.assertEqual(existing.locator_value_2, '//button[@id="login-btn"]')
+        self.assertEqual(existing.locator_type_3, 'xpath')
+        self.assertEqual(existing.locator_value_3, '/html/body/div[1]/button[1]')
+
+    def test_apply_reuse_keeps_manual_backup_locators(self):
+        # 已有备用定位时不得覆盖（手工维护优先）
+        existing = UiElement.objects.create(
+            page=self.page, name='登录按钮', creator=self.user,
+            locator_type='xpath', locator_value='//button[normalize-space()="登录"]',
+            locator_type_2='text', locator_value_2='登录',
+        )
+        apply_recorded_actions(
+            page=self.page, page_step=self.page_step, user=self.user,
+            actions=[{'type': 'click', 'selector': self._selector_with_backups()}],
+        )
+        existing.refresh_from_db()
+        self.assertEqual(existing.locator_type_2, 'text')
+        self.assertEqual(existing.locator_value_2, '登录')
+        self.assertEqual(existing.locator_type_3, 'xpath')
+        self.assertEqual(existing.locator_value_3, '/html/body/div[1]/button[1]')
+
 
 class RecorderApiValidationTests(TestCase):
     """REST 层参数校验（不触发浏览器启动）。"""

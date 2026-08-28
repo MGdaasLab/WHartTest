@@ -20,7 +20,10 @@
  *
  * 录制动作来源：页面注入脚本上报（click/fill/press/check/uncheck）+ 主 frame 导航（goto）+
  * 前端断言命令（assert）。动作点击目标自动生成 UiElement 兼容的选择器
- * （id/name/placeholder/test_id→css/text/role/xpath）。
+ * （id/name/placeholder/test_id→css/text/role/xpath），主定位 + 两个备用定位
+ * （locator_type_2/3，同 xpath 候选链降级），入库后执行器可依次回退。
+ * 复选框/单选框点击收敛为一次"点击可见 label"（浏览器合成的隐藏 input 点击
+ * 与 change 触发的 check/uncheck 不再重复录制，避免回放隐藏元素失败）。
  */
 
 const fs = require('fs');
@@ -88,7 +91,7 @@ function installPlaywright(skillDir) {
 
 const INIT_SCRIPT = () => {
   if (window.__whart) return;
-  window.__whart = { hovered: null, describe: null };
+  window.__whart = { hovered: null, describe: null, lastZoneClick: null };
 
   function cleanText(s, max) {
     return (s || '').replace(/\\s+/g, ' ').trim().slice(0, max || 40);
@@ -127,8 +130,8 @@ const INIT_SCRIPT = () => {
     }
   }
 
-  // 分层锚点：data-testid → 稳定 id → name（表单）→ placeholder（input/textarea/select）。
-  // 每个候选都带元素标签且校验唯一，不唯一自动降级。
+  // 分层锚点：data-testid → 稳定 id → name（表单）→ placeholder（input/textarea/select）→
+  // img 的 alt（语义文本）。每个候选都带元素标签且校验唯一，不唯一自动降级。
   function pickAnchor(el) {
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     if (!el.getAttribute) return null;
@@ -151,6 +154,12 @@ const INIT_SCRIPT = () => {
     if (ph && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
       var xp4 = anchorXPath(tag, 'placeholder', ph);
       if (isUniqueXPath(xp4)) return xp4;
+    }
+    // img 用 alt（业务语义，可点击图片/logo/图标钮），同样带标签+唯一性校验
+    var alt = el.getAttribute('alt');
+    if (alt && tag === 'img') {
+      var xp5 = anchorXPath(tag, 'alt', alt);
+      if (isUniqueXPath(xp5)) return xp5;
     }
     return null;
   }
@@ -176,7 +185,7 @@ const INIT_SCRIPT = () => {
       var tokens = cls.trim().split(/\s+/);
       for (var i = 0; i < tokens.length; i++) {
         var tk = tokens[i];
-        if (!tk || isStateClass(tk)) continue;
+        if (!tk || isStateClass(tk) || isDynamicClassToken(tk)) continue;
         var cand = '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]';
         if (isUniqueXPath(cand)) {
           // 相对路径回到 input 自身（若无中间层级则直接用容器）
@@ -188,19 +197,96 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
-  // 从 ancestor 到 el 的相对路径（不含 ancestor 自身）
+  // 节点自身唯一文本语义步：文本在文档中唯一且非子元素聚合时，
+  // 用 tag[normalize-space()="文本"] 直接表示该节点。菜单项（容器 li 承载
+  // 可见文本）是典型场景——同级增删 li、子菜单展开收起都不影响文本锚点，
+  // 比兄弟锚点/下标计数更稳；聚合文本（el-submenu 等）按 textAnchor 同规则排除。
+  function uniqueNodeText(node) {
+    var tag = node.tagName ? node.tagName.toLowerCase() : '';
+    if (!tag) return null;
+    var text = cleanText(node.textContent, 30);
+    if (!text || text.length < 1 || text.length > 30) return null;
+    if (node.children && node.children.length) {
+      for (var i = 0; i < node.children.length; i++) {
+        var cText = cleanText(node.children[i].textContent, 40);
+        if (cText && cText !== text) return null;
+      }
+    }
+    try {
+      var matched = Array.prototype.filter.call(document.querySelectorAll(tag), function (n) {
+        return cleanText(n.textContent, 40) === text;
+      });
+      if (matched.length === 1) {
+        var pred = '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
+        // 用绝对形式校验唯一性，返回相对步（与前段路径拼接）
+        return isUniqueXPath('//' + tag + pred) ? tag + pred : null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  // 兄弟锚点相对定位：同级节点（先前向后向，各 ≤5 跳）中找带唯一锚点
+  // （属性/文本/短文本/唯一 class）的兄弟，用 following-sibling::tag[k] /
+  // preceding-sibling::tag[k] 语义步代替纯 tag[n] 序号——页面插入节点时
+  // 锚点兄弟的相对位置不变，比纯序号抗页面微调；序号仅作最后兜底。
+  function siblingAnchor(n) {
+    if (!n || n.nodeType !== 1) return null;
+    return pickAnchor(n) || textAnchor(n) || looseTextAnchor(n) || selfClassAnchor(n);
+  }
+
+  // from 与 to 之间（不含两端）与 tag 同标签的元素个数
+  function countSameTagBetween(from, to, tag) {
+    var n = 0;
+    var cur = from.nextElementSibling;
+    while (cur && cur !== to) {
+      if (cur.tagName && cur.tagName.toLowerCase() === tag) n++;
+      cur = cur.nextElementSibling;
+    }
+    return n;
+  }
+
+  function siblingStep(node) {
+    var tag = node.tagName ? node.tagName.toLowerCase() : '';
+    if (!tag || !node.parentElement) return null;
+    for (var pass = 0; pass < 2; pass++) {
+      var backward = pass === 0;  // 前向（previousElementSibling 方向）优先
+      var sib = backward ? node.previousElementSibling : node.nextElementSibling;
+      var hops = 0;
+      while (sib && hops < 5) {
+        var anchor = siblingAnchor(sib);
+        if (anchor) {
+          var k = countSameTagBetween(sib, node, tag) + 1;
+          var dir = backward ? 'following-sibling' : 'preceding-sibling';
+          // 锚点是文档级绝对 xpath，去掉 // 前缀转为相对步与前段路径拼接
+          return anchor.replace(/^\/\//, '') + '/' + dir + '::' + tag + '[' + k + ']';
+        }
+        sib = backward ? sib.previousElementSibling : sib.nextElementSibling;
+        hops++;
+      }
+    }
+    return null;
+  }
+
+  // 从 ancestor 到 el 的相对路径（不含 ancestor 自身）；
+  // 每层优先兄弟锚点语义步，无锚点兄弟时退回 tag[n] 序号。
   function relativePath(el, ancestor) {
     var parts = [];
     var node = el;
     var guard = 0;
     while (node && node !== ancestor && guard < 16) {
-      var idx = 1;
-      var sib = node.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === node.tagName) idx++;
-        sib = sib.previousElementSibling;
+      var step = siblingStep(node);
+      if (!step) {
+        var idx = 1;
+        var sib = node.previousElementSibling;
+        while (sib) {
+          if (sib.tagName === node.tagName) idx++;
+          sib = sib.previousElementSibling;
+        }
+        step = '/' + node.tagName.toLowerCase() + '[' + idx + ']';
+      } else {
+        step = '/' + step;
       }
-      parts.unshift('/' + node.tagName.toLowerCase() + '[' + idx + ']');
+      parts.unshift(step);
       node = node.parentElement;
       guard++;
     }
@@ -213,9 +299,23 @@ const INIT_SCRIPT = () => {
     return /(hover|focus|active|open|disabled|checked|selected|expanded|loading|collapsed)/.test(token);
   }
 
-  // 某 class token 是否在文档中唯一且非状态类（可安全用作锚点）
+  // 构建产物/哈希类名识别：Vue scoped（v-xxxxxx）、CSS Modules（css-xxxxx / _name_hash）、
+  // 纯字母数字长哈希。此类名当前构建恰好唯一（可通过唯一性校验），但每次构建变化，
+  // 代码更新即失效；el-select__input、el-button--primary 等稳定类不受影响。
+  function isDynamicClassToken(token) {
+    if (/^v-[0-9a-f]{4,}$/i.test(token)) return true;              // Vue scoped（v-029384a）
+    if (/^css-[a-zA-Z0-9]{5,}$/.test(token)) return true;          // CSS Modules（css-1a2b3c）
+    // CSS Modules 局部类（_nav_abc123_7）：_名称_哈希，哈希段 ≥4 位且含数字（哈希可含 _/-）
+    if (/^_[a-zA-Z0-9]+_(?=[a-zA-Z0-9_]*\d)[a-zA-Z0-9_]{4,}$/.test(token)) return true;
+    // 其余纯字母数字混杂长串视为哈希（8 位起，同时含字母与数字）
+    if (/^[a-zA-Z0-9]{8,}$/.test(token) && /[A-Za-z]/.test(token) && /[0-9]/.test(token)) return true;
+    return false;
+  }
+
+  // 某 class token 是否在文档中唯一且非状态/非构建哈希类（可安全用作锚点）
   function isUniqueClassToken(token) {
     if (isStateClass(token)) return false;
+    if (isDynamicClassToken(token)) return false;
     try {
       return document.querySelectorAll('[class~="' + token.replace(/["\\]/g, '') + '"]').length === 1;
     } catch (_) {
@@ -226,8 +326,9 @@ const INIT_SCRIPT = () => {
   // 角色+文本 xpath 锚点：仅当该（标签+精确文本）在文档中唯一时使用。
   // 覆盖按钮/链接/标签、下拉项及文本载体（li/option/td/span 等），
   // 下拉选择项用文本定位最稳定；文本不唯一时自动降级，避免歧义。
-  // 注意：div 容器的 textContent 会聚合子元素文本（多层父级同文本），
-  // 因此容器类标签要求"无元素子节点"（叶子文本载体）才算数。
+  // 聚合文本排除：子元素携带与自身不同的文本（如 el-submenu 的 li 聚合了
+  // 标题+全部子菜单项文本，展开/收起即变）不作为锚点；同文本子元素
+  // （如 按钮>span）不构成聚合，仍可用。
   function textAnchor(el) {
     var tag = el.tagName || '';
     var role = el.getAttribute && el.getAttribute('role');
@@ -238,6 +339,12 @@ const INIT_SCRIPT = () => {
     if (!textLike) return null;
     var text = cleanText(el.textContent, 40);
     if (!text || text.length < 1 || text.length > 30) return null;
+    if (el.children && el.children.length) {
+      for (var i = 0; i < el.children.length; i++) {
+        var cText = cleanText(el.children[i].textContent, 40);
+        if (cText && cText !== text) return null;
+      }
+    }
     var selector = tag.toLowerCase();
     try {
       var matched = Array.prototype.filter.call(document.querySelectorAll(selector), function (n) {
@@ -253,9 +360,18 @@ const INIT_SCRIPT = () => {
 
   // 短文本唯一锚点：任意标签、文本 ≤15 字符且在文档中唯一时使用。
   // 用于结构路径兜底前的一次机会（如动态渲染容器内的文本项）。
+  // 与 textAnchor 同规则排除聚合文本（子元素携带不同文本）——
+  // 否则 el-submenu 的 li（标题+子项拼接）展开/收起时文本变化，
+  // 录制态与执行态的锚点会失配。
   function looseTextAnchor(el) {
     var text = cleanText(el.textContent, 16);
     if (!text || text.length < 1 || text.length > 15) return null;
+    if (el.children && el.children.length) {
+      for (var i = 0; i < el.children.length; i++) {
+        var cText = cleanText(el.children[i].textContent, 20);
+        if (cText && cText !== text) return null;
+      }
+    }
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     try {
       var selector = tag ? tag : '*';
@@ -296,44 +412,59 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
-  // 生成相对定位 xpath：
-  // ① 自身分层锚点（data-testid/稳定id/name/placeholder，带标签+唯一性校验）；
-  // ② 角色+文本锚点（唯一时，带标签）；
-  // ③ 自身唯一 class 锚点（此前只检查父级，漏掉了元素自身）；
+  // 生成相对定位 xpath（候选链，按优先级收集）：
+  // ① 自身分层锚点（data-testid/稳定id/name/placeholder/img-alt，带标签+唯一性校验）；
+  // ② 自身唯一 class 锚点（非状态类、非构建哈希类）；
+  // ③ 角色+文本锚点（唯一时，带标签）；
   // ④ 子元素文本锚点（点击 div、文本在子 span 时直接指向子元素，运行时可点击等价）；
   // ⑤ 向上找最近的唯一锚点祖先（属性锚点 / 唯一 class），从锚点向下写相对路径；
+  //    路径各层优先兄弟锚点语义步（preceding/following-sibling），序号仅兜底；
   // ⑥ 兜底短绝对路径（index 保证唯一）。
-  function buildXPath(el) {
+  // 全部候选校验唯一后按序收集：首位为主定位，第 2/3 位作为备用定位
+  // （执行器按 主→备1→备2 依次尝试，主定位失效时自动回退）。
+  function buildXPathCandidates(el) {
+    var out = [];
+    function add(xp) {
+      if (xp && out.indexOf(xp) < 0) out.push(xp);
+    }
+
     var self = pickAnchor(el);
-    if (self) return self;
+    if (self) add(self);
     var selfClass = selfClassAnchor(el);
-    if (selfClass) return selfClass;
+    if (selfClass) add(selfClass);
     var textSelf = textAnchor(el);
-    if (textSelf) return textSelf;
+    if (textSelf) add(textSelf);
     var childText = childTextAnchor(el);
-    if (childText) return childText;
+    if (childText) add(childText);
     // 下拉选择框：只读 input 无锚点时，用容器内"请选择xx"占位文本锚点
     var selectBox = selectBoxAnchor(el);
-    if (selectBox) return selectBox;
+    if (selectBox) add(selectBox);
 
     // 结构路径：完整回溯到 body（不限层数）——截断的路径在真实 DOM 中不存在，
-    // 宁长勿断；途中遇到唯一锚点祖先则提前短路为相对路径。
+    // 宁长勿断；途中每个唯一锚点祖先都短路收集为相对路径候选（近的先收）。
+    // 每层节点优先兄弟锚点语义步（siblingStep），无锚点兄弟时退回 tag[n] 序号。
     var parts = [];
     var node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
-      var idx = 1;
-      var sib = node.previousElementSibling;
-      while (sib) {
-        if (sib.tagName === node.tagName) idx++;
-        sib = sib.previousElementSibling;
+      // ① 节点自身唯一文本语义步（菜单项等，抗同级增删）；② 兄弟锚点语义步；③ 下标兜底
+      var step = uniqueNodeText(node);
+      if (!step) step = siblingStep(node);
+      if (!step) {
+        var idx = 1;
+        var sib = node.previousElementSibling;
+        while (sib) {
+          if (sib.tagName === node.tagName) idx++;
+          sib = sib.previousElementSibling;
+        }
+        step = node.tagName.toLowerCase() + '[' + idx + ']';
       }
-      parts.unshift(node.tagName.toLowerCase() + '[' + idx + ']');
+      parts.unshift(step);
       var parent = node.parentElement;
       if (!parent || parent.nodeType !== 1 || parent === document.documentElement || parent === document.body) {
         break;
       }
       var anchor = pickAnchor(parent);
-      if (anchor) return anchor + '/' + parts.join('/');
+      if (anchor) add(anchor + '/' + parts.join('/'));
       var cls = parent.getAttribute && parent.getAttribute('class');
       if (typeof cls === 'string' && cls.trim()) {
         var tokens = cls.trim().split(/\s+/);
@@ -341,17 +472,25 @@ const INIT_SCRIPT = () => {
           var tk = tokens[i];
           if (tk && isUniqueClassToken(tk)) {
             var cand = '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]/' + parts.join('/');
-            if (isUniqueXPath(cand)) return cand;
+            if (isUniqueXPath(cand)) {
+              add(cand);
+              break;
+            }
           }
         }
       }
       node = parent;
     }
     // 兜底前最后一次机会：短文本唯一锚点（动态容器内的文本项）
-    var looseText = looseTextAnchor(el);
-    if (looseText) return looseText;
+    add(looseTextAnchor(el));
     // 兜底：完整绝对路径（含 body 层级），唯一性由 index 链保证
-    return '/html/body/' + parts.join('/');
+    if (parts.length) add('/html/body/' + parts.join('/'));
+    return out;
+  }
+
+  function buildXPath(el) {
+    var cands = buildXPathCandidates(el);
+    return cands.length ? cands[0] : null;
   }
 
   // 控件类型识别：tag + type + class/role 特征 → 平台控件词表
@@ -379,6 +518,11 @@ const INIT_SCRIPT = () => {
     if (/el-tabs__item|ant-tabs-tab|tab\b/i.test(cls) || role === 'tab') return '标签页';
     if (/el-table|ant-table|datagrid/i.test(cls) || tag === 'TABLE') return '表格';
     if (/el-select|ant-select|select\b|combobox/i.test(cls) || role === 'combobox') return '下拉框';
+    if (tag === 'LABEL' && el.querySelector) {
+      // 复选/单选组件的 label 容器（EP: label.el-checkbox / label.el-radio）
+      if (el.querySelector('input[type="checkbox"]')) return '复选框';
+      if (el.querySelector('input[type="radio"]')) return '单选框';
+    }
     return '元素';
   }
 
@@ -435,11 +579,48 @@ const INIT_SCRIPT = () => {
     // 一律输出 xpath 相对定位：
     // 动态 id（el-id-920-7 等）会被过滤，稳定的 id/name/placeholder/data-testid
     // 作为 xpath 锚点保留，其余走唯一 class 锚点 / 结构化相对路径。
-    return { locator_type: 'xpath', locator_value: buildXPath(el), name: name.slice(0, 24), ctrl_type: ctrlType };
+    // 候选链第 2/3 位写入备用定位（locator_type_2/3），执行时主定位失效自动回退。
+    var cands = buildXPathCandidates(el);
+    var out = {
+      locator_type: 'xpath',
+      locator_value: cands.length ? cands[0] : '',
+      name: name.slice(0, 24),
+      ctrl_type: ctrlType,
+    };
+    if (cands.length > 1) {
+      out.locator_type_2 = 'xpath';
+      out.locator_value_2 = cands[1];
+    }
+    if (cands.length > 2) {
+      out.locator_type_3 = 'xpath';
+      out.locator_value_3 = cands[2];
+    }
+    return out;
   }
 
   window.__whart.describe = describe;
   window.__whart.buildXPath = buildXPath;
+
+  // 复选框/单选框的"可见点击目标"：浏览器会为 label 关联的隐藏原生 input
+  // 补发一次 click，随后 change 事件再报一次 check/uncheck——EP 等组件库的
+  // 原始 input（el-checkbox__original / el-radio__original）被 CSS 隐藏
+  // （宽高 0/opacity 0），原样录制会得到 点击视觉层/点击隐藏input/勾选input
+  // 三个动作，其中隐藏 input 回放时"不可见"必失败。统一收敛为一次
+  // "点击可见 label（无 label 时用 input 自身）"，回放即完成勾选。
+  function checkboxZoneTarget(el) {
+    if (!el || el.nodeType !== 1 || !el.closest) return null;
+    var t = (el.getAttribute && el.getAttribute('type')) || '';
+    if (el.tagName === 'INPUT' && (t === 'checkbox' || t === 'radio')) {
+      var lab = el.closest('label');
+      return lab || el;
+    }
+    var lab = el.closest('label');
+    if (lab && lab.querySelector &&
+        lab.querySelector('input[type="checkbox"], input[type="radio"]')) {
+      return lab;
+    }
+    return null;
+  }
 
   document.addEventListener('pointermove', function (e) {
     if (e.target && e.target.nodeType === 1) {
@@ -450,6 +631,22 @@ const INIT_SCRIPT = () => {
   document.addEventListener('click', function (e) {
     var el = e.target;
     if (!el || el.nodeType !== 1) return;
+    // 复选框/单选框：收敛为点击可见 label 的单动作
+    var zone = checkboxZoneTarget(el);
+    if (zone) {
+      var dz = window.__whart.describe(zone);
+      if (!dz) return;
+      var zsel = JSON.stringify(dz);
+      var znow = Date.now();
+      // 同 zone 的合成 click（label→隐藏 input）与键盘空格触发只录一次
+      if (window.__whart.lastZoneClick && window.__whart.lastZoneClick.sel === zsel &&
+          znow - window.__whart.lastZoneClick.ts < 250) return;
+      window.__whart.lastZoneClick = { sel: zsel, ts: znow };
+      if (window.__whartReport) {
+        window.__whartReport({ t: 'click', el: dz });
+      }
+      return;
+    }
     var d = window.__whart.describe(el);
     if (!d) return;
     if (window.__whartReport) {
@@ -481,6 +678,16 @@ const INIT_SCRIPT = () => {
       if (tag === 'SELECT') {
         window.__whartReport({ t: 'fill', el: d, value: String(el.value || '') });
       } else if (el.type === 'checkbox' || el.type === 'radio') {
+        // 点击已收敛录制（勾选动作由可见 label 的 click 承担）时不再重复报
+        var zone = checkboxZoneTarget(el);
+        if (zone) {
+          var zsel = JSON.stringify(window.__whart.describe(zone));
+          var znow = Date.now();
+          if (window.__whart.lastZoneClick && window.__whart.lastZoneClick.sel === zsel &&
+              znow - window.__whart.lastZoneClick.ts < 1000) {
+            return;
+          }
+        }
         window.__whartReport({ t: el.checked ? 'check' : 'uncheck', el: d });
       }
     }
@@ -1278,10 +1485,15 @@ async function optimizeXpathSelectors() {
   for (const action of state.recorded) {
     const sel = action.selector;
     if (!sel || sel.locator_type !== 'xpath' || !sel.locator_value) continue;
+    // 只升级录制时无可用锚点的绝对路径兜底（/html/body/...）：
+    // 已带属性/文本/class/锚点祖先的表达式保持原样。收尾重解析用的是结束时刻的
+    // 实时 DOM，positional 计数（following-sibling::li[6] 等）在菜单展开/收起、
+    // 弹层销毁等状态变化后会解析到其它元素，无条件重写会错位覆盖正确表达式。
+    if (!/^\/html\/body\//.test(sel.locator_value)) continue;
     try {
       const improved = await state.page.evaluate((xpath) => {
         const w = window.__whart;
-        if (!w || !w.describe || !w.buildXPath) return null;
+        if (!w || !w.describe) return null;
         let el = null;
         try {
           const res = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
@@ -1290,12 +1502,14 @@ async function optimizeXpathSelectors() {
           return null;
         }
         if (!el || !(el instanceof Element)) return null;
-        // 优先升级为属性/文本/role 定位；否则用带锚相对 xpath
+        // 把录制时的绝对路径升级为属性锚点 / 带锚祖先的相对路径
         const d = w.describe(el);
-        if (d && d.locator_type !== 'xpath') return d;
-        return { locator_type: 'xpath', locator_value: w.buildXPath(el), name: d && d.name ? d.name : sel.name };
+        if (d && d.locator_value) return d;
+        return null;
       }, sel.locator_value);
       if (improved) {
+        // 语义名不一致说明绝对路径已错位解析到其它元素，保留原值不覆盖
+        if (sel.name && improved.name && sel.name !== improved.name) continue;
         action.selector = improved;
       }
     } catch (_) {
