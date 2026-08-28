@@ -149,6 +149,11 @@ class PlaywrightExecutor:
         self._stop_requested = False
         self._current_trace_path: Optional[str] = None
         self._page_errors = []
+
+        # AI Agent 配置（用于 step_type=10「AI操作」），由 consumer 注入
+        self.model_config = None
+        # AI 单步骤总超时（秒），独立于 Playwright action_timeout
+        self.ai_action_timeout = 300
         
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -792,7 +797,56 @@ class PlaywrightExecutor:
         file_chooser = await file_chooser_info.value
         await file_chooser.set_files(file_path)
         logger.info(f"步骤 {step.step_id}: 已通过 file chooser 设置上传文件")
-    
+
+    async def _execute_ai_action(
+        self,
+        page: Page,
+        step: StepConfig,
+    ) -> tuple[bool, str, str | None]:
+        """执行 AI操作(step_type=10)：把自然语言 prompt 交给 AI Agent 驱动 Playwright。
+
+        Returns:
+            tuple: (成功与否, 消息, 截图路径(可选))
+        """
+        if not self.model_config:
+            logger.error(f"步骤 {step.step_id}: AI 模型未配置（缺少 [model] 段）")
+            return False, "AI 操作失败：未配置 AI 模型（config.toml 缺少 [model] 段）", None
+
+        goal = (step.input_value or '').strip() or (step.description or '').strip()
+        if not goal:
+            return False, "AI 操作失败：缺少自然语言描述(ai_prompt)", None
+
+        logger.info(f"步骤 {step.step_id}: 开始 AI 操作 -> {goal[:200]}")
+        try:
+            from agent import run_agent_loop  # 延迟导入，避免影响启动
+        except ImportError as e:
+            logger.error(f"agent 模块导入失败: {e}", exc_info=True)
+            return False, f"AI 操作失败：agent 模块不可用 ({e})", None
+
+        try:
+            success, message, screenshot_path = await asyncio.wait_for(
+                run_agent_loop(
+                    page=page,
+                    goal=goal,
+                    model_config=self.model_config,
+                    step_id=step.step_id,
+                    screenshot_dir=self.screenshot_dir,
+                ),
+                timeout=self.ai_action_timeout,
+            )
+            return success, message, screenshot_path
+        except asyncio.TimeoutError:
+            logger.error(f"步骤 {step.step_id}: AI 操作超时({self.ai_action_timeout}s)")
+            screenshot_path = f"{self.screenshot_dir}/ai_timeout_{step.step_id}.png"
+            try:
+                await page.screenshot(path=screenshot_path)
+            except Exception:
+                screenshot_path = None
+            return False, f"AI 操作超时({self.ai_action_timeout}s)", screenshot_path
+        except Exception as e:
+            logger.error(f"步骤 {step.step_id}: AI 操作异常: {e}", exc_info=True)
+            return False, f"AI 操作异常: {e}", None
+
     async def _execute_step(
         self,
         page: Page,
@@ -807,6 +861,10 @@ class PlaywrightExecutor:
         if step.step_type == 2:
             success, message = await asyncio.to_thread(self._execute_sql_step, step, env_config)
             return success, message, None
+
+        # step_type == 10：AI操作，交给 AI Agent 驱动 Playwright
+        if step.step_type == 10:
+            return await self._execute_ai_action(page, step)
 
         operation = (step.operation_type or '').lower()
         screenshot_path: str | None = None

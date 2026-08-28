@@ -55,6 +55,19 @@ class LLMConfig(models.Model):
         help_text="请求失败时的自动重试次数，默认3次。设为0禁用重试"
     )
 
+    # 模型能力分层（强模型/弱模型）：弱模型启用更激进的上下文压缩与循环步数限制
+    MODEL_TIER_CHOICES = [
+        ('strong', '强模型'),
+        ('weak', '弱模型'),
+    ]
+    model_tier = models.CharField(
+        max_length=16,
+        choices=MODEL_TIER_CHOICES,
+        default='strong',
+        verbose_name="模型能力分层",
+        help_text="弱模型（如 qwen3-coder 等短上下文模型）启用更激进的上下文压缩与步数限制，避免长循环导致上下文超限与页面卡死"
+    )
+
     # v2.0.0: 中间件配置
     enable_summarization = models.BooleanField(
         default=True,

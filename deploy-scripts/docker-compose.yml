@@ -1,0 +1,213 @@
+# Offline deployment configuration.
+# Usage:
+#   1. load-images.bat (load all tar archives)
+#   2. docker compose up -d
+#
+# Image format: wharttest-{container_name}:${VERSION}
+# VERSION is read from .env in the same directory.
+
+services:
+  postgres:
+    image: wharttest-postgres:${VERSION:-latest}
+    container_name: wharttest-postgres
+    command: postgres -c max_connections=500
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-wharttest}
+    ports:
+      - "8919:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: wharttest-redis:${VERSION:-latest}
+    container_name: wharttest-redis
+    ports:
+      - "8911:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command: redis-server --appendonly yes
+
+  backend:
+    image: wharttest-backend:${VERSION:-latest}
+    container_name: wharttest-backend
+    ports:
+      - "8912:8000"
+    volumes:
+      - ./data:/app/data
+      - backend-static:/app/static
+      - ./WHartTest_Skills:/app/bundled_skills:ro
+    environment:
+      - DATABASE_TYPE=${DATABASE_TYPE:-postgres}
+      - DATABASE_PATH=${DATABASE_PATH:-/app/data/db.sqlite3}
+      - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
+      - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+      - POSTGRES_DB=${POSTGRES_DB:-wharttest}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - MEDIA_ROOT=${MEDIA_ROOT:-/app/data/media}
+      - LANGGRAPH_CHECKPOINT_SQLITE_PATH=${LANGGRAPH_CHECKPOINT_SQLITE_PATH:-/app/data/chat_history.sqlite}
+      - DJANGO_DEBUG=True
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
+      - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
+      - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80
+      - USER_AGENT=${USER_AGENT:-WHartTest/2.6.0-ce}
+      - DJANGO_ADMIN_USERNAME=${DJANGO_ADMIN_USERNAME:-admin}
+      - DJANGO_ADMIN_EMAIL=${DJANGO_ADMIN_EMAIL:-admin@example.com}
+      - DJANGO_ADMIN_PASSWORD=${DJANGO_ADMIN_PASSWORD:-admin123456}
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - QDRANT_URL=http://qdrant:6333
+      - DJANGO_BASE_URL=http://localhost:8000
+      - WEIXIN_PLUGIN_HOST_URL=http://weixin-plugin-host:3001
+      - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://huggingface.co}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      weixin-plugin-host:
+        condition: service_started
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  weixin-plugin-host:
+    image: wharttest-weixin-plugin-host:${VERSION:-latest}
+    container_name: wharttest-weixin-plugin-host
+    ports:
+      - "8922:3001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3001
+      - HOST=0.0.0.0
+      - WHARTTEST_BACKEND_URL=http://backend:8000
+      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}
+      - WHARTTEST_SHARED_DATA_DIR=/app/data
+      - OPENCLAW_STATE_DIR=/app/data/openclaw-state
+      - OPENCLAW_CONFIG=/app/data/openclaw-state/openclaw.json
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    image: wharttest-frontend:${VERSION:-latest}
+    container_name: wharttest-frontend
+    ports:
+      - "8913:80"
+    depends_on:
+      - backend
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  mcp:
+    image: wharttest-mcp:${VERSION:-latest}
+    container_name: wharttest-mcp
+    user: root
+    environment:
+      - WHARTTEST_BACKEND_URL=${WHARTTEST_BACKEND_URL:-http://backend:8000}
+      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}
+      - MS_API_HOST=${MS_API_HOST:-http://ms.example.com}
+      - MS_ACCESS_KEY=${MS_ACCESS_KEY:-your_16byte_key1}
+      - MS_SECRET_KEY=${MS_SECRET_KEY:-your_16byte_key2}
+    ports:
+      - "8914:8006"
+      - "8915:8007"
+    volumes:
+      - ./data/playwright-screenshots:/tmp/playwright-output
+    depends_on:
+      - backend
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8006/')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  playwright-mcp:
+    image: wharttest-playwright-mcp:${VERSION:-latest}
+    container_name: wharttest-playwright-mcp
+    user: root
+    entrypoint: [ "node", "/app/cli.js" ]
+    command: [ "--no-sandbox", "--host", "0.0.0.0", "--allowed-hosts", "*", "--config", "/app/playwright-mcp-config.json" ]
+    ports:
+      - "8916:8931"
+    volumes:
+      - ./data/playwright-screenshots:/tmp/playwright-output
+      - ./WHartTest_MCP/playwright-mcp-config.json:/app/playwright-mcp-config.json:ro
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "node", "-e", "require('http').get('http://localhost:8931/mcp', res => process.exit(res.statusCode ? 0 : 1)).on('error', () => process.exit(1))" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  qdrant:
+    image: wharttest-qdrant:${VERSION:-latest}
+    container_name: wharttest-qdrant
+    ports:
+      - "8918:6333"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+networks:
+  wharttest-network:
+    driver: bridge
+
+volumes:
+  backend-static:
+  redis-data:
+  qdrant-data:
+  postgres-data:

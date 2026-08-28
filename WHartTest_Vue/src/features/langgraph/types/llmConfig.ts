@@ -11,6 +11,7 @@ export interface LlmConfig {
   system_prompt?: string; // 系统提示词
   supports_vision?: boolean; // 是否支持图片/多模态输入
   context_limit?: number; // 上下文Token限制
+  model_tier?: 'strong' | 'weak'; // 模型能力分层：弱模型启用更激进的上下文压缩与步数限制
   // v2.0.0: 中间件配置
   enable_summarization?: boolean; // 启用上下文摘要
   enable_hitl?: boolean; // 启用人工审批（Human-in-the-Loop）
@@ -32,6 +33,7 @@ export interface CreateLlmConfigRequest {
   system_prompt?: string; // 系统提示词（可选）
   supports_vision?: boolean; // 是否支持图片/多模态输入（可选）
   context_limit?: number; // 上下文Token限制（可选，默认128000）
+  model_tier?: 'strong' | 'weak'; // 模型能力分层（可选，默认 strong）
   // v2.0.0: 中间件配置
   enable_summarization?: boolean; // 启用上下文摘要（可选，默认true）
   enable_hitl?: boolean; // 启用人工审批（可选，默认false）
@@ -56,6 +58,7 @@ export interface PartialUpdateLlmConfigRequest {
   system_prompt?: string; // 系统提示词（可选）
   supports_vision?: boolean; // 是否支持图片/多模态输入（可选）
   context_limit?: number; // 上下文Token限制（可选）
+  model_tier?: 'strong' | 'weak'; // 模型能力分层（可选）
   // v2.0.0: 中间件配置
   enable_summarization?: boolean; // 启用上下文摘要
   enable_hitl?: boolean; // 启用人工审批

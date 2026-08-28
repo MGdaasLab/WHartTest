@@ -143,6 +143,68 @@ export const clearStreamState = (sessionId: string) => {
 };
 // --- 全局流式状态管理结束 ---
 
+/**
+ * ⭐ 弱模型长循环节流：将逐 token 的流式内容累积到缓冲，
+ * 通过 requestAnimationFrame 批量 flush 到响应式 activeStreams，
+ * 避免每个 token 触发一次 Vue 重渲染 + markdown 渲染卡死主线程（issue.md 页面卡死）。
+ *
+ * 后台标签页 rAF 不触发，额外加 50ms 兜底定时器保障可见后立即刷新。
+ * 流结束/工具消息插入前必须调用 flush() 末尾 flush，防止末尾丢字。
+ */
+interface StreamFlushThrottle {
+  push: (chunk: string) => void;
+  flush: () => void;
+  cancel: () => void;
+}
+
+function createStreamFlushThrottle(
+  resolveSessionId: () => string | null
+): StreamFlushThrottle {
+  let pendingDelta = '';
+  let rafId = 0;
+  let fallbackTimer: ReturnType<typeof setTimeout> | 0 = 0;
+  const FALLBACK_FLUSH_MS = 50;
+
+  const flush = () => {
+    rafId = 0;
+    if (fallbackTimer) {
+      clearTimeout(fallbackTimer as ReturnType<typeof setTimeout>);
+      fallbackTimer = 0;
+    }
+    const sessionId = resolveSessionId();
+    if (sessionId && pendingDelta && activeStreams.value[sessionId]) {
+      activeStreams.value[sessionId].content += pendingDelta;
+    }
+    pendingDelta = '';
+  };
+
+  const push = (chunk: string) => {
+    if (!chunk) return;
+    pendingDelta += chunk;
+    if (rafId) return;
+    if (typeof requestAnimationFrame !== 'undefined') {
+      rafId = requestAnimationFrame(flush);
+    }
+    if (!fallbackTimer) {
+      fallbackTimer = setTimeout(flush, FALLBACK_FLUSH_MS);
+    }
+  };
+
+  const cancel = () => {
+    if (rafId) {
+      cancelAnimationFrame(rafId);
+      rafId = 0;
+    }
+    if (fallbackTimer) {
+      clearTimeout(fallbackTimer as ReturnType<typeof setTimeout>);
+      fallbackTimer = 0;
+    }
+    pendingDelta = '';
+  };
+
+  return { push, flush, cancel };
+}
+
 const API_BASE_URL = '/lg/chat';
 // Agent Loop API 端点 - 解决 Token 累积问题
 const AGENT_LOOP_API_URL = '/orchestrator/agent-loop';
@@ -418,6 +480,9 @@ export async function sendChatMessageStream(
   }
 
   try {
+    // ⭐ 弱模型长循环节流：逐 token 内容累积到缓冲，rAF 批量 flush 到响应式对象
+    const throttle = createStreamFlushThrottle(() => streamSessionId);
+
     let response = await fetch(`${getApiBaseUrl()}${AGENT_LOOP_API_URL}/`, {
       method: 'POST',
       headers: {
@@ -465,6 +530,9 @@ export async function sendChatMessageStream(
       const { done, value } = await reader.read();
       
       if (done) {
+        // ⭐ 收尾：先 flush 缓冲的 token，再取消未触发的 rAF/兜底定时器，防止末尾丢字
+        throttle.flush();
+        throttle.cancel();
         // 流结束时，处理buffer中剩余的数据
         if (buffer.trim()) {
           const remainingLines = buffer.split('\n');
@@ -632,6 +700,8 @@ export async function sendChatMessageStream(
             const toolPayload = parseToolResultDisplayPayload(toolOutput);
             if (toolPayload.content || toolPayload.imageDataUrl) {
               const time = formatStreamTime();
+              // ⭐ 先 flush 缓冲的 token，避免 AI 流式内容被截断丢失
+              throttle.flush();
               // 如果当前有AI流式内容,先将其固化为独立消息
               if (activeStreams.value[streamSessionId].content && activeStreams.value[streamSessionId].content.trim()) {
                 activeStreams.value[streamSessionId].messages.push({
@@ -668,7 +738,9 @@ export async function sendChatMessageStream(
                   if (contentMatch) {
                     const toolContent = contentMatch[1].replace(/\\'/g, "'").replace(/\\n/g, '\n');
                     const time = formatStreamTime();
-                    
+
+                    // ⭐ 先 flush 缓冲的 token，避免 AI 流式内容被截断丢失
+                    throttle.flush();
                     // 如果当前有AI流式内容,先将其固化为独立消息
                     if (activeStreams.value[streamSessionId].content && activeStreams.value[streamSessionId].content.trim()) {
                       activeStreams.value[streamSessionId].messages.push({
@@ -699,7 +771,8 @@ export async function sendChatMessageStream(
           if (parsed.type === 'stream' && streamSessionId && activeStreams.value[streamSessionId]) {
             const content = parsed.data;
             if (content) {
-              activeStreams.value[streamSessionId].content += content;
+              // ⭐ 弱模型节流：累积到缓冲，rAF 批量 flush
+              throttle.push(content);
             }
           }
 
@@ -713,12 +786,15 @@ export async function sendChatMessageStream(
           if (parsed.type === 'message' && streamSessionId && activeStreams.value[streamSessionId]) {
             const content = parseMessageContent(parsed.data);
             if (content) {
-              activeStreams.value[streamSessionId].content += content;
+              // ⭐ 弱模型节流：累积到缓冲，rAF 批量 flush
+              throttle.push(content);
             }
           }
 
           // ⭐ 处理 HITL 中断事件
           if (parsed.type === 'interrupt' && streamSessionId && activeStreams.value[streamSessionId]) {
+            // ⭐ 先 flush 缓冲的 token，确保中断前已生成的文本可见
+            throttle.flush();
             console.log('[ChatService] Interrupt event received:', parsed);
             activeStreams.value[streamSessionId].interrupt = {
               id: parsed.interrupt_id || parsed.id,
@@ -729,6 +805,8 @@ export async function sendChatMessageStream(
           }
 
           if (parsed.type === 'complete' && streamSessionId && activeStreams.value[streamSessionId]) {
+            // ⭐ 先 flush 缓冲的末尾 token，防止末尾丢字
+            throttle.flush();
             // ✅ 修复：标记完成，保持content不变（Vue组件会从content读取最终消息）
             // 不清空content，因为displayedMessages和watch都依赖stream.content来显示最终AI回复
             activeStreams.value[streamSessionId].isComplete = true;
@@ -1107,6 +1185,9 @@ export async function resumeAgentLoop(
     }
   };
 
+  // ⭐ 弱模型长循环节流：逐 token 内容累积到缓冲，rAF 批量 flush 到响应式对象
+  const throttle = createStreamFlushThrottle(() => sessionId);
+
   if (!token) {
     handleError(new Error('未登录或登录已过期'));
     return;
@@ -1179,6 +1260,9 @@ export async function resumeAgentLoop(
       const { done, value } = await reader.read();
 
       if (done) {
+        // ⭐ 收尾：先 flush 缓冲的 token，再取消未触发的 rAF/兜底定时器，防止末尾丢字
+        throttle.flush();
+        throttle.cancel();
         // 流结束，处理剩余数据
         if (buffer.trim()) {
           const remainingLines = buffer.split('\n');
@@ -1278,6 +1362,8 @@ export async function resumeAgentLoop(
             const toolPayload = parseToolResultDisplayPayload(toolOutput);
             if (toolPayload.content || toolPayload.imageDataUrl) {
               const time = formatStreamTime();
+              // ⭐ 先 flush 缓冲的 token，避免 AI 流式内容被截断丢失
+              throttle.flush();
               // 先固化当前 AI 内容
               if (activeStreams.value[sessionId].content?.trim()) {
                 activeStreams.value[sessionId].messages.push({
@@ -1304,12 +1390,15 @@ export async function resumeAgentLoop(
           if (parsed.type === 'stream' && activeStreams.value[sessionId]) {
             const content = parsed.data;
             if (content) {
-              activeStreams.value[sessionId].content += content;
+              // ⭐ 弱模型节流：累积到缓冲，rAF 批量 flush
+              throttle.push(content);
             }
           }
 
           // 处理新的 HITL 中断（resume 后可能又触发新中断）
           if (parsed.type === 'interrupt' && activeStreams.value[sessionId]) {
+            // ⭐ 先 flush 缓冲的 token，确保中断前已生成的文本可见
+            throttle.flush();
             console.log('[ChatService] New interrupt after resume:', parsed);
             activeStreams.value[sessionId].interrupt = {
               id: parsed.interrupt_id || parsed.id,
@@ -1321,6 +1410,8 @@ export async function resumeAgentLoop(
 
           // 处理完成事件
           if (parsed.type === 'complete' && activeStreams.value[sessionId]) {
+            // ⭐ 先 flush 缓冲的末尾 token，防止末尾丢字
+            throttle.flush();
             activeStreams.value[sessionId].isComplete = true;
           }
         } catch (e) {

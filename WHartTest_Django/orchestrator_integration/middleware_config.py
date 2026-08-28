@@ -31,6 +31,33 @@ from requirements.context_limits import (
 logger = logging.getLogger(__name__)
 
 
+# ============== 模型能力分层（强模型/弱模型）==============
+#
+# 弱模型（如 qwen3-coder 等短上下文模型）启用更激进的上下文压缩与步数限制，
+# 避免长循环导致上下文超限、provider 重试、页面卡死。
+# 见 issue.md「Agent Loop 对于弱模型优化」。
+#
+# 默认调优参数（可在 LLMConfig.model_tier 切换，表单不暴露）：
+WEAK_MODEL_TRIGGER_RATIO = 0.5       # 摘要触发阈值占 context_limit 的比例（强模型 0.75）
+WEAK_MODEL_KEEP_MESSAGES = 2        # 摘要后保留最近消息数（强模型 4）
+WEAK_MODEL_TRIM_FLOOR = 4000        # 待摘要消息裁剪下限 token（强模型 8000）
+DEFAULT_MODEL_TIER = "strong"
+VALID_MODEL_TIERS = ("strong", "weak")
+
+
+def get_model_tier(llm_config) -> str:
+    """
+    从 LLMConfig 实例解析模型能力分层。
+
+    返回 'strong' 或 'weak'，默认 'strong'。未知值或缺失字段降级为 'strong'，
+    保证已有强模型配置行为零变化。
+    """
+    tier = getattr(llm_config, "model_tier", DEFAULT_MODEL_TIER)
+    if tier not in VALID_MODEL_TIERS:
+        return DEFAULT_MODEL_TIER
+    return tier
+
+
 _CONTENT_AUDIT_ERROR_CODES = {"CHAT_HANDLER_INPUT_AUDIT_FAIL"}
 _CONTENT_AUDIT_FRIENDLY_MSG = (
     "当前输入内容触发了模型服务商的内容安全审核，请尝试调整输入内容后重试。"
@@ -725,6 +752,7 @@ def get_summarization_middleware(
     model_name: str = "gpt-4o",  # 用于精确 Token 计数
     tools: Optional[list] = None,  # 工具对象列表，用于计算真实开销
     system_prompt: Optional[str] = None,  # 系统提示词，用于计算真实开销
+    trim_floor: int = 8000,  # 待摘要消息裁剪下限 token（弱模型下调）
 ) -> Optional[SummarizationMiddleware]:
     """
     获取摘要中间件
@@ -764,7 +792,8 @@ def get_summarization_middleware(
     # trim_tokens_to_summarize：裁剪待摘要消息的上限。
     # 按 effective_trigger 的 50% 设置，确保摘要 LLM 调用不会超限。
     # 同时不能超过摘要模型自身的上下文能力（保守估计，取 trigger 的 50%）。
-    trim_limit = max(effective_trigger // 2, 8000)
+    # 弱模型上下文短，8000 下限会撑爆摘要调用，故下限参数化（弱模型传更小值）。
+    trim_limit = max(effective_trigger // 2, trim_floor)
 
     logger.info(
         "SummarizationMiddleware config: trigger=%d (raw=%d - overhead=%d), trim_limit=%d",
@@ -1038,6 +1067,7 @@ def get_standard_middleware(
     summarization_model=None,  # 需显式传入 LLM 实例或模型名
     summarization_trigger_tokens: int = 96000,
     summarization_keep_messages: int = 4,
+    summarization_trim_floor: int = 8000,  # 待摘要消息裁剪下限（弱模型下调）
     model_name: str = "gpt-4o",  # 用于精确 Token 计数
     tools: Optional[list] = None,  # 工具对象列表，用于精确计算 token 开销
     system_prompt: Optional[str] = None,  # 系统提示词，用于精确计算 token 开销
@@ -1082,6 +1112,7 @@ def get_standard_middleware(
             model_name=model_name,
             tools=tools,
             system_prompt=system_prompt,
+            trim_floor=summarization_trim_floor,
         )
         if summarization_mw is not None:
             middleware.append(summarization_mw)
@@ -1272,8 +1303,19 @@ def get_middleware_from_config(
     if agent_type == "automation":
         enable_hitl = True
 
-    # 计算摘要触发阈值（上下文限制的 75%）
-    trigger_tokens = max(1, int(context_limit * 0.75))
+    # 模型能力分层：弱模型用更激进的摘要触发阈值与保留消息数，避免长循环撑爆上下文
+    tier = get_model_tier(llm_config)
+    if tier == "weak":
+        trigger_ratio = WEAK_MODEL_TRIGGER_RATIO
+        keep_messages = WEAK_MODEL_KEEP_MESSAGES
+        trim_floor = WEAK_MODEL_TRIM_FLOOR
+    else:
+        trigger_ratio = 0.75
+        keep_messages = 4
+        trim_floor = 8000
+
+    # 计算摘要触发阈值
+    trigger_tokens = max(1, int(context_limit * trigger_ratio))
 
     # 决定摘要模型
     summarization_model = llm if enable_summarization else None
@@ -1293,12 +1335,14 @@ def get_middleware_from_config(
         }
 
     logger.info(
-        "从 LLMConfig 构建中间件: agent_type=%s, summarization=%s, hitl=%s, context_limit=%d, trigger_tokens=%d, model=%s, user=%s, all_tools=%d",
+        "从 LLMConfig 构建中间件: agent_type=%s, tier=%s, summarization=%s, hitl=%s, context_limit=%d, trigger_tokens=%d, keep_messages=%d, model=%s, user=%s, all_tools=%d",
         agent_type,
+        tier,
         enable_summarization,
         enable_hitl,
         context_limit,
         trigger_tokens,
+        keep_messages,
         model_name,
         user.username if user else None,
         len(all_tool_names) if all_tool_names else 0,
@@ -1315,7 +1359,8 @@ def get_middleware_from_config(
         hitl_all_tool_names=all_tool_names,
         summarization_model=summarization_model,
         summarization_trigger_tokens=trigger_tokens,
-        summarization_keep_messages=4,
+        summarization_keep_messages=keep_messages,
+        summarization_trim_floor=trim_floor,
         model_name=model_name,
         tools=tools,
         system_prompt=system_prompt,
@@ -1466,6 +1511,7 @@ async def get_standard_middleware_async(
     summarization_model=None,
     summarization_trigger_tokens: int = 96000,
     summarization_keep_messages: int = 4,
+    summarization_trim_floor: int = 8000,  # 待摘要消息裁剪下限（弱模型下调）
     model_name: str = "gpt-4o",
     tools: Optional[list] = None,
     system_prompt: Optional[str] = None,
@@ -1489,6 +1535,7 @@ async def get_standard_middleware_async(
             model_name=model_name,
             tools=tools,
             system_prompt=system_prompt,
+            trim_floor=summarization_trim_floor,
         )
         if summarization_mw is not None:
             middleware.append(summarization_mw)
@@ -1548,7 +1595,18 @@ async def get_middleware_from_config_async(
     if agent_type == "automation":
         enable_hitl = True
 
-    trigger_tokens = max(1, int(context_limit * 0.75))
+    # 模型能力分层：弱模型用更激进的摘要触发阈值与保留消息数
+    tier = get_model_tier(llm_config)
+    if tier == "weak":
+        trigger_ratio = WEAK_MODEL_TRIGGER_RATIO
+        keep_messages = WEAK_MODEL_KEEP_MESSAGES
+        trim_floor = WEAK_MODEL_TRIM_FLOOR
+    else:
+        trigger_ratio = 0.75
+        keep_messages = 4
+        trim_floor = 8000
+
+    trigger_tokens = max(1, int(context_limit * trigger_ratio))
     summarization_model = llm if enable_summarization else None
 
     hitl_tools = None
@@ -1565,12 +1623,14 @@ async def get_middleware_from_config_async(
         }
 
     logger.info(
-        "从 LLMConfig 构建中间件（异步）: agent_type=%s, summarization=%s, hitl=%s, context_limit=%d, trigger_tokens=%d, model=%s, user=%s, all_tools=%d",
+        "从 LLMConfig 构建中间件（异步）: agent_type=%s, tier=%s, summarization=%s, hitl=%s, context_limit=%d, trigger_tokens=%d, keep_messages=%d, model=%s, user=%s, all_tools=%d",
         agent_type,
+        tier,
         enable_summarization,
         enable_hitl,
         context_limit,
         trigger_tokens,
+        keep_messages,
         model_name,
         user.username if user else None,
         len(all_tool_names) if all_tool_names else 0,
@@ -1587,7 +1647,8 @@ async def get_middleware_from_config_async(
         hitl_all_tool_names=all_tool_names,
         summarization_model=summarization_model,
         summarization_trigger_tokens=trigger_tokens,
-        summarization_keep_messages=4,
+        summarization_keep_messages=keep_messages,
+        summarization_trim_floor=trim_floor,
         model_name=model_name,
         tools=tools,
         system_prompt=system_prompt,
