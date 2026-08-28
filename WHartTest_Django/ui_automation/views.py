@@ -22,7 +22,7 @@ from file_management.services import maybe_cleanup_unreferenced_files, sync_file
 from .models import (
     UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed,
     UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig,
-    UiBatchExecutionRecord
+    UiBatchExecutionRecord, UiAuthState
 )
 from file_management.models import FileReference
 from .serializers import (
@@ -30,8 +30,9 @@ from .serializers import (
     UiElementSerializer, UiPageStepsSerializer, UiPageStepsListSerializer, UiPageStepsDetailSerializer,
     UiPageStepsDetailedSerializer, UiTestCaseSerializer, UiTestCaseListSerializer, UiTestCaseDetailSerializer,
     UiCaseStepsDetailedSerializer, UiExecutionRecordSerializer, UiExecutionRecordListSerializer,
-    UiPublicDataSerializer, UiEnvironmentConfigSerializer, UiTestCaseExecuteSerializer,
-    UiPageStepsExecuteSerializer, UiBatchExecutionRecordSerializer, UiBatchExecutionRecordDetailSerializer
+    UiPublicDataSerializer, UiEnvironmentConfigSerializer, UiAuthStateSerializer,
+    UiTestCaseExecuteSerializer, UiPageStepsExecuteSerializer, UiBatchExecutionRecordSerializer,
+    UiBatchExecutionRecordDetailSerializer
 )
 
 
@@ -987,7 +988,48 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
         serializer.save(creator=self.request.user)
 
 
-# 执行器可编辑配置字段白名单（与执行器 Config 属性一致）
+class UiAuthStateViewSet(viewsets.ModelViewSet):
+    """环境登录态管理视图（登录态绑定环境配置，执行时按环境自动注入）"""
+    queryset = UiAuthState.objects.select_related('env_config', 'creator')
+    serializer_class = UiAuthStateSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['env_config', 'is_active']
+    search_fields = ['name', 'description']
+    ordering_fields = ['updated_at', 'created_at']
+    ordering = ['-updated_at']
+
+    def perform_create(self, serializer):
+        serializer.save(creator=self.request.user)
+
+    def perform_update(self, serializer):
+        # 更新某环境的登录态时，其余同环境条目自动停用，保证"每环境一份生效登录态"
+        if serializer.instance and 'is_active' in serializer.validated_data:
+            state = serializer.instance
+            if serializer.validated_data.get('is_active') and state.env_config_id:
+                UiAuthState.objects.filter(
+                    env_config_id=state.env_config_id, is_active=True
+                ).exclude(pk=state.pk).update(is_active=False)
+        serializer.save()
+
+    @action(detail=False, methods=['get'], url_path='by-env/(?P<env_id>[^/.]+)')
+    def by_env(self, request, env_id=None):
+        """执行器/前端获取某环境当前生效的登录态快照。
+
+        返回 {id, name, state_json, updated_at}；环境无启用登录态时返回 200 + {}，
+        由调用方（执行器）决定不注入。
+        """
+        state = UiAuthState.objects.filter(
+            env_config_id=env_id, is_active=True
+        ).order_by('-updated_at').first()
+        if state is None:
+            return Response({'active': False})
+        return Response({
+            'active': True,
+            'id': state.id,
+            'name': state.name,
+            'state_json': state.state_json,
+            'updated_at': state.updated_at.isoformat() if state.updated_at else None,
+        })
 _ACTUATOR_CONFIG_FIELDS = frozenset({
     'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
     'retry_count', 'step_interval', 'max_concurrent', 'log_level',
@@ -1651,6 +1693,7 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             pre_page_step_id=(
                 int(pre_step_id) if pre_step_id not in (None, '') else None
             ),
+            env_config_id=env_config.id,
         )
 
         try:
@@ -1738,6 +1781,7 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             case_module_id=(
                 int(module_id) if module_id not in (None, '') else None
             ),
+            env_config_id=env_config.id,
         )
 
         try:
@@ -1869,3 +1913,65 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
         recorder_manager.close(session_id, graceful=False)
         return Response({'message': '录制已取消'})
+
+    @action(detail=True, methods=['post'], url_path='save-login-state')
+    def save_login_state(self, request, pk=None):
+        """POST recorder-sessions/{id}/save-login-state/
+        保存当前录制浏览器上下文登录态，绑定到录制会话所属的环境配置。
+        同环境旧登录态自动停用（每环境一份生效登录态），执行时由执行器
+        按环境自动拉取注入。
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError,
+        )
+
+        session_id = pk
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None or not self._owner_ok(request, meta):
+            return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not meta.env_config_id:
+            return Response(
+                {'detail': '该录制会话未关联环境配置，无法保存登录态（请使用新的录制会话）'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        env_config = UiEnvironmentConfig.objects.filter(id=meta.env_config_id).first()
+        if env_config is None:
+            return Response({'detail': '关联的环境配置不存在，无法保存登录态'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            storage_state = session.save_login_state()
+        except RecorderSessionError as exc:
+            return Response({'detail': f'保存登录态失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cookies = storage_state.get('cookies') or []
+        origins = storage_state.get('origins') or []
+        ls_total = sum(len(o.get('localStorage') or []) for o in origins)
+        if not cookies and ls_total == 0:
+            return Response(
+                {'detail': '当前浏览器没有捕获到任何登录凭据（cookies/localStorage），'
+                           '请先在录制画布中完成目标系统登录后再保存登录态'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        name = str(request.data.get('name') or '').strip() or f"录制登录态-{env_config.name}"
+        description = str(request.data.get('description') or '').strip()
+        # 每环境一份生效登录态：同环境旧条目自动停用
+        UiAuthState.objects.filter(env_config=env_config, is_active=True).update(is_active=False)
+        auth_state = UiAuthState.objects.create(
+            name=name,
+            env_config=env_config,
+            state_json=storage_state,
+            is_active=True,
+            description=description,
+            creator=request.user,
+        )
+        return Response({
+            'message': '登录态已保存到环境「%s」' % env_config.name,
+            'auth_state_id': auth_state.id,
+            'name': auth_state.name,
+            'env_config_id': env_config.id,
+            'cookies': len(cookies),
+            'local_storage_keys': ls_total,
+        }, status=status.HTTP_201_CREATED)

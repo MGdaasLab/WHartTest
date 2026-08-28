@@ -66,6 +66,7 @@ class RecorderSessionMeta:
         case_name: str = '',           # case 模式：用例名称
         pre_page_step_id: Optional[int] = None,  # case 模式：前置页面步骤（结束后加入用例）
         case_module_id: Optional[int] = None,    # case 模式：用例所属模块
+        env_config_id: Optional[int] = None,     # 所属环境配置（保存登录态时绑定到该环境）
     ):
         self.user_id = user_id
         self.project_id = project_id
@@ -79,6 +80,7 @@ class RecorderSessionMeta:
         self.case_name = case_name
         self.pre_page_step_id = pre_page_step_id
         self.case_module_id = case_module_id
+        self.env_config_id = env_config_id
 
 
 class RecorderSession:
@@ -191,6 +193,18 @@ class RecorderSession:
         if not result.get('ok'):
             raise RecorderSessionError(result.get('error') or f'{method} 失败')
         return result
+
+    def save_login_state(self, timeout: float = 30.0) -> dict:
+        """保存当前录制浏览器上下文的登录态快照（storageState）。
+
+        快照包含 cookies + localStorage，同时覆盖 Cookie/Session 会话系统
+        与 JWT(localStorage) 现代系统。由平台绑定到录制会话所属的环境配置。
+        """
+        result = self.request('save_login_state', {}, timeout=timeout)
+        storage_state = result.get('state', {}).get('storage_state')
+        if not isinstance(storage_state, dict):
+            raise RecorderSessionError('录制器未返回有效的登录态快照')
+        return storage_state
 
     def notify(self, method: str, params: dict) -> None:
         """fire-and-forget 写入（输入事件等高频率消息，不等待响应）。"""

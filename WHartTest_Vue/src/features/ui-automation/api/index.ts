@@ -25,6 +25,8 @@ import type {
   UiTestCaseForm,
   UiPublicDataForm,
   UiEnvironmentConfigForm,
+  UiAuthState,
+  UiAuthStateForm,
   PaginatedResponse,
   TraceData,
 } from '../types'
@@ -225,6 +227,23 @@ export const envConfigApi = {
   delete: (id: number) => request.delete(`${BASE_URL}/env-configs/${id}/`),
 }
 
+// ==================== 环境登录态管理 ====================
+export const authStateApi = {
+  /** 该环境的登录态列表（含已停用的历史条目） */
+  list: (params?: { env_config?: number; is_active?: boolean; search?: string }) =>
+    request.get<PaginatedResponse<UiAuthState>>(`${BASE_URL}/auth-states/`, { params }),
+
+  get: (id: number) => request.get<UiAuthState>(`${BASE_URL}/auth-states/${id}/`),
+
+  create: (data: UiAuthStateForm) =>
+    request.post<UiAuthState>(`${BASE_URL}/auth-states/`, data),
+
+  update: (id: number, data: Partial<UiAuthStateForm>) =>
+    request.patch<UiAuthState>(`${BASE_URL}/auth-states/${id}/`, data),
+
+  delete: (id: number) => request.delete(`${BASE_URL}/auth-states/${id}/`),
+}
+
 // ==================== 执行器管理 ====================
 export interface ActuatorInfo {
   id: string
@@ -351,6 +370,15 @@ export interface RecorderFinishBody {
   groups?: Array<{ name: string; seqs: number[] }>
 }
 
+export interface RecorderSaveLoginStateResult {
+  message: string
+  auth_state_id: number
+  name: string
+  env_config_id: number
+  cookies: number
+  local_storage_keys: number
+}
+
 export const recorderApi = {
   create: (data: RecorderSessionCreatePayload) =>
     request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/`, data),
@@ -360,6 +388,9 @@ export const recorderApi = {
 
   finish: (sessionId: string, body?: RecorderFinishBody) =>
     request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`, body ?? {}),
+
+  saveLoginState: (sessionId: string, body?: { name?: string }) =>
+    request.post<RecorderSaveLoginStateResult>(`${BASE_URL}/recorder-sessions/${sessionId}/save-login-state/`, body ?? {}),
 
   cancel: (sessionId: string) =>
     request.post(`${BASE_URL}/recorder-sessions/${sessionId}/cancel/`),

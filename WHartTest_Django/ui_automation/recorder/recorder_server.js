@@ -14,6 +14,7 @@
  *   - start { url, viewport: {width, height} }  启动无头浏览器并注入录制捕获脚本
  *   - input { type: 'mouse'|'wheel'|'key', ... } 回放前端转发来的浏览器输入
  *   - assert { mode: 'visible'|'contain_text'|'enabled'|'url' } 对"悬停元素"记录断言动作
+ *   - save_login_state  保存当前浏览器上下文登录态（storageState：cookies + localStorage）
  *   - finish  停止帧推流，返回动作列表 + 生成的可读 playwright JS 脚本
  *   - close   关闭浏览器并退出
  *
@@ -1257,6 +1258,21 @@ async function cmdFinish() {
   };
 }
 
+async function cmdSaveLoginState(params) {
+  // 保存当前浏览器上下文登录态（storageState：cookies + localStorage）。
+  // 一套快照同时覆盖 Cookie/Session 会话系统与 JWT(localStorage) 现代系统，
+  // 由平台绑定到当前录制会话所属的环境配置，执行时自动注入复用。
+  if (!state.context) {
+    return { ok: false, error: '录制会话未启动或已结束' };
+  }
+  try {
+    const snap = await state.context.storageState();
+    return { ok: true, state: { storage_state: snap } };
+  } catch (e) {
+    return { ok: false, error: '保存登录态失败: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 async function optimizeXpathSelectors() {
   if (!state.page || !state.recorded.length) return;
   for (const action of state.recorded) {
@@ -1345,6 +1361,8 @@ rl.on('line', (line) => {
           return respond(await cmdResetPage(msg.params || {}));
         case 'assert':
           return respond(await cmdAssert(msg.params || {}));
+        case 'save_login_state':
+          return respond(await cmdSaveLoginState(msg.params || {}));
         case 'eval': {
           // 调试命令：在页面上下文执行 JS 并返回结果
           const code = String((msg.params && msg.params.code) || '');

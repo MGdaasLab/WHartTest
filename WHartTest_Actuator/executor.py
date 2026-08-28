@@ -45,6 +45,21 @@ for (const key of [
 """
 
 
+class LoginStateError(RuntimeError):
+    """登录态失效或未正确注入（页面被重定向到登录页）。"""
+
+
+# 任务级认证配置（auth）字典结构：
+#   storage_state: 登录态快照。Playwright storageState 格式：文件路径(str) 或
+#                  {"cookies": [...], "origins": [...]} JSON。同时覆盖两类系统：
+#                  JWT 系（token 在 localStorage）与 Cookie/Session 系（会话 cookie）。
+#   headers:       可选。注入到上下文所有请求的请求头，如 {"Authorization": "Bearer xxx"}。
+#   local_storage: 可选。页面加载前写入 localStorage 的键值（用于 SPA 前端路由守卫校验）。
+#   login_check:   可选。登录失效检测：{"url_pattern": "login|signin", "selector": "#login-form"}。
+#                  页面导航后若命中被判定为登录页，抛出 LoginStateError 并给出明确提示。
+AUTH_CONFIG_KEYS = ("storage_state", "headers", "local_storage", "login_check")
+
+
 @dataclass
 class StepConfig:
     """步骤配置"""
@@ -149,6 +164,8 @@ class PlaywrightExecutor:
         self._stop_requested = False
         self._current_trace_path: Optional[str] = None
         self._page_errors = []
+        # 任务级认证配置（auth），通过 apply_runtime_options 注入，执行后随 restore 还原
+        self._auth_config: Optional[dict] = None
         
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -168,6 +185,7 @@ class PlaywrightExecutor:
             "user_data_dir": self.user_data_dir,
             "_runtime_viewport": getattr(self, "_runtime_viewport", None),
             "_viewport_explicit": getattr(self, "_viewport_explicit", False),
+            "_auth_config": getattr(self, "_auth_config", None),
         }
         if not runtime:
             return previous
@@ -204,6 +222,11 @@ class PlaywrightExecutor:
             self._runtime_viewport = None
             self._viewport_explicit = explicit
 
+        auth = runtime.get("auth")
+        if auth is not None:
+            # 任务级认证配置原样透传；None 表示无（恢复任务前状态由 restore 负责）
+            self._auth_config = auth if isinstance(auth, dict) else None
+
         return previous
 
     def restore_runtime_options(self, previous: dict | None) -> None:
@@ -216,6 +239,7 @@ class PlaywrightExecutor:
         self.user_data_dir = previous.get("user_data_dir", self.user_data_dir)
         self._runtime_viewport = previous.get("_runtime_viewport")
         self._viewport_explicit = previous.get("_viewport_explicit", False)
+        self._auth_config = previous.get("_auth_config")
 
 
     def _build_browser_launch_options(self) -> dict:
@@ -245,6 +269,15 @@ class PlaywrightExecutor:
     def _build_browser_context_options(self) -> dict:
         """构建浏览器上下文参数。"""
         context_options: dict = {}
+
+        auth = getattr(self, "_auth_config", None) or {}
+        if auth.get("storage_state"):
+            # 登录态快照：文件路径(str) 或 storageState JSON(dict)。
+            # Playwright new_context 原生支持，Cookie/Session 与 JWT(localStorage) 一并恢复。
+            context_options["storage_state"] = auth["storage_state"]
+        if auth.get("headers"):
+            # 注入到上下文全部请求（含页面导航）的请求头，JWT Bearer 双保险
+            context_options["extra_http_headers"] = auth["headers"]
 
         runtime_viewport = getattr(self, "_runtime_viewport", None)
         viewport_explicit = getattr(self, "_viewport_explicit", False)
@@ -279,11 +312,121 @@ class PlaywrightExecutor:
 
         return context_options
 
+    @staticmethod
+    def _build_local_storage_init_script(entries: dict) -> str:
+        """生成页面加载前写入 localStorage 的初始化脚本（SPA 路由守卫/请求拦截器读取用）。"""
+        try:
+            payload = json.dumps(entries, ensure_ascii=False)
+        except (TypeError, ValueError):
+            payload = json.dumps({})
+        return (
+            "(() => {"
+            "try { const d = " + payload + ";"
+            "for (const k in d) { localStorage.setItem(k, d[k]); }"
+            "} catch (_) {}"
+            "})();"
+        )
+
+    @staticmethod
+    def _build_origin_local_storage_init_script(origin: str, entries: dict) -> str:
+        """生成按 origin 匹配的 localStorage 初始化脚本（storageState origins 恢复用）。"""
+        try:
+            payload = json.dumps(entries, ensure_ascii=False)
+            target = json.dumps(origin)
+        except (TypeError, ValueError):
+            return ""
+        return (
+            "(() => {"
+            "try { if (location.origin === " + target + ") { const d = " + payload + ";"
+            "for (const k in d) { localStorage.setItem(k, d[k]); }"
+            "} } catch (_) {}"
+            "})();"
+        )
+
+    async def _apply_storage_state(self, context: BrowserContext, state: Any) -> None:
+        """手动应用登录态快照（持久化上下文不支持 storage_state 参数，需手动注入）。
+
+        cookies 用 add_cookies 注入；localStorage 用按 origin 匹配的初始化脚本写入，
+        与浏览器原生 storage_state 复用的行为一致，覆盖 Cookie/Session 与 JWT 两类系统。
+        """
+        if isinstance(state, (str, os.PathLike)):
+            try:
+                with open(os.fspath(state), 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+            except Exception as e:
+                raise ValueError(f"读取登录态文件失败: {os.fspath(state)} ({e})") from e
+        if not isinstance(state, dict):
+            raise ValueError("登录态 storage_state 必须是文件路径或 storageState JSON 对象")
+
+        cookies = state.get("cookies") or []
+        if cookies:
+            await context.add_cookies(cookies)
+
+        origins = state.get("origins") or []
+        for origin in origins:
+            ls = origin.get("localStorage") or []
+            if not ls:
+                continue
+            entries = {item.get("name"): item.get("value") for item in ls if item.get("name") is not None}
+            if entries:
+                script = self._build_origin_local_storage_init_script(origin.get("origin", ""), entries)
+                if script:
+                    await context.add_init_script(script)
+
     async def _apply_context_init_scripts(self, context: BrowserContext) -> None:
         """注入上下文初始化脚本。"""
         if self.stealth_enabled:
             await context.add_init_script(STEALTH_INIT_SCRIPT)
+
+        auth = getattr(self, "_auth_config", None) or {}
+        local_storage = auth.get("local_storage")
+        if isinstance(local_storage, dict) and local_storage:
+            # 手动配置的 localStorage 键值：在任意页面加载前写入（通常为同源应用）
+            await context.add_init_script(self._build_local_storage_init_script(local_storage))
     
+    def _auth_login_check(self) -> Optional[dict]:
+        """当前任务配置的登录失效检测参数（未配置返回 None）。"""
+        auth = getattr(self, "_auth_config", None) or {}
+        check = auth.get("login_check")
+        return check if isinstance(check, dict) else None
+
+    async def _assert_logged_in(self, page: Page) -> None:
+        """导航后检测是否被重定向到登录页（登录态失效/未注入时给出明确提示）。
+
+        未配置 login_check 时不进行任何检测，不影响现有行为。
+        """
+        check = self._auth_login_check()
+        if not check:
+            return
+
+        url_pattern = str(check.get("url_pattern") or "").strip()
+        selector = str(check.get("selector") or "").strip()
+
+        current_url = page.url
+        if url_pattern and url_pattern.lower() in current_url.lower():
+            raise LoginStateError(
+                f"登录态失效或未正确注入：导航后检测到登录页（URL 包含 '{url_pattern}'，当前: {current_url}）。"
+                "请重新录制登录并保存登录态，或更新认证配置（storage_state/token 注入）后重试"
+            )
+
+        if selector:
+            try:
+                if await page.locator(selector).count() > 0:
+                    raise LoginStateError(
+                        f"登录态失效或未正确注入：导航后在页面中检测到登录页元素（{selector}，当前: {current_url}）。"
+                        "请重新录制登录并保存登录态，或更新认证配置后重试"
+                    )
+            except LoginStateError:
+                raise
+            except Exception:
+                # 定位器本身异常（如无权限）不作为登录失效判定
+                pass
+
+    async def _goto_with_login_check(self, page: Page, url: str, **kwargs) -> None:
+        """导航并执行登录失效检测（等价于 page.goto + _assert_logged_in）。"""
+        await page.goto(url, **kwargs)
+        await self._assert_logged_in(page)
+
     async def init_browser(self) -> None:
         """初始化浏览器"""
         # 若上次未正常关闭，先释放，避免叠加启动多个 Chromium
@@ -298,11 +441,17 @@ class PlaywrightExecutor:
         context_options = self._build_browser_context_options()
         
         if self.persistent:
+            # 持久化上下文不支持 storage_state 参数（登录态缓存在用户数据目录），
+            # 取出后手动注入 cookies + localStorage，保持与普通上下文一致的行为
+            ctx_options = dict(context_options)
+            storage_state = ctx_options.pop("storage_state", None)
             self._context = await browser_launcher.launch_persistent_context(
                 self.user_data_dir,
                 **launch_options,
-                **context_options,
+                **ctx_options,
             )
+            if storage_state is not None:
+                await self._apply_storage_state(self._context, storage_state)
             await self._apply_context_init_scripts(self._context)
             pages = self._context.pages
             self._page = pages[0] if pages else await self._context.new_page()
@@ -315,7 +464,28 @@ class PlaywrightExecutor:
             self._page = await self._context.new_page()
         
         self._page.set_default_timeout(self.action_timeout)
+        self._log_auth_injection()
         logger.info(f"浏览器已初始化: {self.browser_type}, headless={self.headless}")
+
+    def _log_auth_injection(self) -> None:
+        """打印本次任务的登录态注入摘要（不含凭据明文，便于确认是否生效）。"""
+        auth = getattr(self, "_auth_config", None) or {}
+        if not auth:
+            return
+        ss = auth.get("storage_state")
+        if isinstance(ss, dict):
+            cookies = len(ss.get("cookies") or [])
+            ls_keys = sum(
+                len(o.get("localStorage") or [])
+                for o in (ss.get("origins") or [])
+            )
+            logger.info(f"已注入登录态: cookies={cookies}, localStorage_keys={ls_keys}, login_check={'on' if auth.get('login_check') else 'off'}")
+        elif ss:
+            logger.info(f"已注入登录态: storage_state 文件={ss}, login_check={'on' if auth.get('login_check') else 'off'}")
+        if auth.get("headers"):
+            logger.info(f"已注入请求头: {sorted(auth['headers'].keys())}")
+        if auth.get("local_storage"):
+            logger.info(f"已注入 localStorage 键: {sorted(auth['local_storage'].keys())}")
     
     def _release_memory(self) -> None:
         """主动回收 Python 对象，并尽量将内存归还操作系统。"""
@@ -884,7 +1054,7 @@ class PlaywrightExecutor:
                 return 1000
 
         page_operations = {
-            'goto': lambda: page.goto(step.input_value),
+            'goto': lambda: self._goto_with_login_check(page, step.input_value),
             'reload': lambda: page.reload(),
             'go_back': lambda: page.go_back(),
             'go_forward': lambda: page.go_forward(),
@@ -1074,7 +1244,7 @@ class PlaywrightExecutor:
         try:
             async with self.browser_session() as page:
                 if page_url:
-                    await page.goto(page_url)
+                    await self._goto_with_login_check(page, page_url)
                 
                 success, message, step_screenshot = await self._execute_step_with_retry(page, step)
                 duration = time.time() - start_time
@@ -1125,7 +1295,7 @@ class PlaywrightExecutor:
                     base_url = config.env_config.get('base_url', '') or ''
                 if base_url:
                     logger.info(f"导航到环境 base_url: {base_url}")
-                    await self._page.goto(base_url, wait_until="networkidle")
+                    await self._goto_with_login_check(page, base_url, wait_until="networkidle")
 
                 for page_step in config.page_steps:
                     if self._stop_requested:
@@ -1288,7 +1458,7 @@ class PlaywrightExecutor:
                 # 导航到页面
                 if config.page_url:
                     nav_start = time.time()
-                    await page.goto(config.page_url)
+                    await self._goto_with_login_check(page, config.page_url)
                     await page.wait_for_load_state("domcontentloaded")
                     logger.debug(f"页面导航 {config.page_name} 耗时 {time.time() - nav_start:.2f}s")
                 
@@ -1400,7 +1570,7 @@ class PlaywrightExecutor:
                 base_url = config.env_config.get('base_url', '') or ''
             if base_url:
                 logger.info(f"[并发] 导航到环境 base_url: {base_url}")
-                await page.goto(base_url, wait_until="networkidle")
+                await self._goto_with_login_check(page, base_url, wait_until="networkidle")
 
             for page_step in config.page_steps:
                 if self._stop_requested:

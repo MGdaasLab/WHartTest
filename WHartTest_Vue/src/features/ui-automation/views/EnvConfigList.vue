@@ -32,11 +32,19 @@
         <a-tag v-if="record.is_default" color="arcoblue">默认</a-tag>
         <span v-else>-</span>
       </template>
+      <template #auth_state="{ record }">
+        <a-tag v-if="record.auth_state_active" color="green">有登录态</a-tag>
+        <a-tag v-else color="gray">未配置</a-tag>
+      </template>
       <template #operations="{ record }">
         <a-space :size="4">
           <a-button v-if="!record.is_default" type="text" size="mini" @click="setDefault(record)">
             <template #icon><icon-check /></template>
             设为默认
+          </a-button>
+          <a-button type="text" size="mini" @click="openAuthModal(record)">
+            <template #icon><icon-safe /></template>
+            登录态
           </a-button>
           <a-button type="text" size="mini" @click="editConfig(record)">
             <template #icon><icon-edit /></template>
@@ -51,6 +59,52 @@
         </a-space>
       </template>
     </a-table>
+
+    <!-- 环境登录态管理弹窗 -->
+    <a-modal
+      v-model:visible="authModalVisible"
+      title="环境登录态管理"
+      width="680px"
+      :footer="false"
+      @cancel="authModalVisible = false"
+    >
+      <a-alert type="info" style="margin-bottom: 12px">
+        执行任务时执行器会自动按环境注入此登录态（cookies + localStorage，兼容 Cookie/Session 与
+        JWT 系统），无需登录页与验证码。可在录制画布中登录后点「保存登录态」，也可上传采集的 auth.json。
+      </a-alert>
+      <div class="auth-toolbar">
+        <a-button type="primary" size="mini" :loading="authUploading" @click="triggerUpload">
+          <template #icon><icon-upload /></template>
+          上传快照 (auth.json)
+        </a-button>
+        <input ref="authFileInput" type="file" accept=".json,application/json" style="display: none" @change="onAuthFileChange" />
+        <span class="auth-tip">
+          同环境多份登录态仅启用一份；启用的那份会在执行时自动注入。
+        </span>
+      </div>
+      <a-table
+        :columns="authColumns"
+        :data="authStates"
+        :pagination="false"
+        :loading="authLoading"
+        :scroll="{ x: 620 }"
+      >
+        <template #is_active="{ record }">
+          <a-switch :model-value="record.is_active" @change="(val: unknown) => toggleAuthActive(record, Boolean(val))" />
+        </template>
+        <template #credentials="{ record }">
+          <span>{{ credentialSummary(record) }}</span>
+        </template>
+        <template #auth_operations="{ record }">
+          <a-popconfirm content="确定删除该登录态？" @ok="deleteAuthState(record)">
+            <a-button type="text" status="danger" size="mini">
+              <template #icon><icon-delete /></template>
+              删除
+            </a-button>
+          </a-popconfirm>
+        </template>
+      </a-table>
+    </a-modal>
 
     <!-- 新增/编辑弹窗 -->
     <a-modal
@@ -130,10 +184,10 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconCheck } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconEdit, IconDelete, IconCheck, IconSafe, IconUpload } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
-import { envConfigApi } from '../api'
-import type { UiEnvironmentConfig, UiEnvironmentConfigForm } from '../types'
+import { envConfigApi, authStateApi } from '../api'
+import type { UiEnvironmentConfig, UiEnvironmentConfigForm, UiAuthState } from '../types'
 import { extractPaginationData } from '../types'
 
 const projectStore = useProjectStore()
@@ -180,9 +234,115 @@ const columns = [
   { title: '环境名称', dataIndex: 'name', width: 150, align: 'center' as const },
   { title: '基础 URL', dataIndex: 'base_url', ellipsis: true, tooltip: true, width: 200, align: 'center' as const },
   { title: '默认', slotName: 'is_default', width: 70, align: 'center' as const },
+  { title: '登录态', slotName: 'auth_state', width: 90, align: 'center' as const },
   { title: '创建者', dataIndex: 'creator_name', width: 100, align: 'center' as const },
-  { title: '操作', slotName: 'operations', width: 200, fixed: 'right' as const, align: 'center' as const },
+  { title: '操作', slotName: 'operations', width: 250, fixed: 'right' as const, align: 'center' as const },
 ]
+
+// ---------------- 环境登录态管理 ----------------
+const authModalVisible = ref(false)
+const authLoading = ref(false)
+const authUploading = ref(false)
+const currentAuthEnv = ref<UiEnvironmentConfig | null>(null)
+const authStates = ref<UiAuthState[]>([])
+const authFileInput = ref<HTMLInputElement>()
+
+const authColumns = [
+  { title: '名称', dataIndex: 'name', ellipsis: true, tooltip: true, width: 160, align: 'center' as const },
+  { title: '凭据摘要', slotName: 'credentials', width: 180, align: 'center' as const },
+  { title: '启用', slotName: 'is_active', width: 70, align: 'center' as const },
+  { title: '更新时间', dataIndex: 'updated_at', width: 160, align: 'center' as const },
+  { title: '操作', slotName: 'auth_operations', width: 80, align: 'center' as const },
+]
+
+const credentialSummary = (record: UiAuthState) => {
+  const state = record.state_json || {}
+  const cookies = Array.isArray(state.cookies) ? state.cookies.length : 0
+  const origins = Array.isArray(state.origins) ? state.origins : []
+  const lsKeys = origins.reduce(
+    (sum: number, o: Record<string, unknown>) => sum + (Array.isArray(o.localStorage) ? o.localStorage.length : 0),
+    0,
+  )
+  if (!cookies && !lsKeys) return '无凭据'
+  return `cookies=${cookies}, localStorage=${lsKeys}`
+}
+
+const fetchAuthStates = async () => {
+  if (!currentAuthEnv.value) return
+  authLoading.value = true
+  try {
+    const res = await authStateApi.list({ env_config: currentAuthEnv.value.id })
+    const { items } = extractPaginationData(res)
+    authStates.value = items
+  } catch {
+    Message.error('获取登录态列表失败')
+  } finally {
+    authLoading.value = false
+  }
+}
+
+const openAuthModal = (record: UiEnvironmentConfig) => {
+  currentAuthEnv.value = record
+  authModalVisible.value = true
+  fetchAuthStates()
+}
+
+const toggleAuthActive = async (record: UiAuthState, val: boolean) => {
+  try {
+    await authStateApi.update(record.id, { is_active: val })
+    Message.success(val ? '已启用（该环境执行时自动注入）' : '已停用（执行时不再注入）')
+    fetchAuthStates()
+    fetchData()
+  } catch {
+    Message.error('更新失败')
+    fetchAuthStates()
+  }
+}
+
+const deleteAuthState = async (record: UiAuthState) => {
+  try {
+    await authStateApi.delete(record.id)
+    Message.success('删除成功')
+    if (authStates.value.length <= 1) fetchData()
+    fetchAuthStates()
+  } catch {
+    Message.error('删除失败')
+  }
+}
+
+const triggerUpload = () => {
+  authFileInput.value?.click()
+}
+
+const onAuthFileChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !currentAuthEnv.value) return
+  try {
+    const text = await file.text()
+    const state = JSON.parse(text)
+    if (!state || typeof state !== 'object' || !Array.isArray(state.cookies)) {
+      throw new Error('不是有效的 Playwright storageState JSON（需要包含 cookies 数组）')
+    }
+    authUploading.value = true
+    const name = file.name.replace(/\.json$/i, '') || `登录态-${currentAuthEnv.value.name}`
+    await authStateApi.create({
+      name,
+      env_config: currentAuthEnv.value.id,
+      state_json: state,
+    })
+    Message.success(`已上传登录态「${name}」`)
+    fetchAuthStates()
+    fetchData()
+  } catch (err) {
+    // 后端校验失败时 detail 报文优先展示
+    const detail = (err as { detail?: string })?.detail
+    Message.error(detail || (err instanceof Error ? err.message : '上传失败'))
+  } finally {
+    authUploading.value = false
+  }
+}
 
 const fetchData = async () => {
   if (!projectId.value) return
@@ -374,6 +534,16 @@ watch(projectId, () => {
   padding: 16px;
   border-radius: 6px;
   margin-top: 8px;
+}
+.auth-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.auth-tip {
+  font-size: 12px;
+  color: var(--color-text-3);
 }
 .mysql-config-form :deep(.arco-form-item) {
   margin-bottom: 16px;

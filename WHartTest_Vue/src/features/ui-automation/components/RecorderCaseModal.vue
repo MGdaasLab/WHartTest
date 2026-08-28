@@ -137,6 +137,16 @@
           </a-dropdown>
           <a-button
             type="outline"
+            size="small"
+            :loading="savingAuth"
+            :disabled="!recording"
+            @click="handleSaveLoginState"
+          >
+            <template #icon><icon-safe /></template>
+            {{ text.saveLoginState }}
+          </a-button>
+          <a-button
+            type="outline"
             status="danger"
             size="small"
             :loading="finishing"
@@ -276,12 +286,12 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle, IconSafe } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../api'
-import type { RecorderSessionInfo, RecorderCaseFinishResult } from '../api'
+import type { RecorderSessionInfo, RecorderCaseFinishResult, RecorderSaveLoginStateResult } from '../api'
 import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm } from '../types'
 import { extractListData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
@@ -318,6 +328,9 @@ const text = computed(() => (
         preparing: 'Preparing browser...',
         assert: 'Assert',
         finishRecord: 'Finish',
+        saveLoginState: 'Save Login State',
+        saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
+        saveLoginStateFailed: 'Failed to save login state',
         wait: 'Wait',
         waitSeconds: (sec: number) => `${sec}s`,
         recordHint: 'Operate in the browser view. Use "Add step" to group later actions before recording.',
@@ -393,6 +406,9 @@ const text = computed(() => (
         preparing: '正在准备浏览器…',
         assert: '断言',
         finishRecord: '结束录制',
+        saveLoginState: '保存登录态',
+        saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
+        saveLoginStateFailed: '保存登录态失败',
         recordHint: '在左侧浏览器画面中操作；录制前请先点击「添加步骤」分组后续动作。',
         noActions: '该步骤下暂无动作',
         addStep: '添加步骤',
@@ -458,6 +474,7 @@ const phase = ref<Phase>('setup')
 const starting = ref(false)
 const recording = ref(false)
 const finishing = ref(false)
+const savingAuth = ref(false)
 
 const form = reactive({
   case_name: '',
@@ -795,6 +812,28 @@ async function handleFinish() {
     Message.error(e?.error || e?.message || text.value.finishFailed)
   } finally {
     finishing.value = false
+  }
+}
+
+async function handleSaveLoginState() {
+  // 保存当前录制浏览器（已完成登录，含验证码）的登录态到所属环境
+  if (!sessionId.value) return
+  savingAuth.value = true
+  try {
+    const result = extractResponseData<RecorderSaveLoginStateResult>(
+      await recorderApi.saveLoginState(sessionId.value),
+    )
+    if (!result) throw new Error(text.value.saveLoginStateFailed)
+    Message.success(
+      text.value.saveLoginStateSuccess
+        .replace('{cookies}', String(result.cookies))
+        .replace('{keys}', String(result.local_storage_keys)),
+    )
+    emit('refresh')
+  } catch (e: any) {
+    Message.error(e?.detail || e?.error || e?.message || text.value.saveLoginStateFailed)
+  } finally {
+    savingAuth.value = false
   }
 }
 

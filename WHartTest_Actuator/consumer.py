@@ -56,6 +56,8 @@ class TaskConsumer:
                 'user_data_dir': getattr(config, 'user_data_dir', './data/browser'),
                 'launch_timeout': launch_timeout * 1000,  # 转毫秒
                 'action_timeout': action_timeout * 1000,  # 转毫秒
+                'stealth_enabled': getattr(config, 'stealth_enabled', True),
+                'stealth_user_agent': getattr(config, 'stealth_user_agent', None),
                 'screenshot_dir': getattr(config, 'screenshot_dir', './data/screenshots'),
                 'retry_count': getattr(config, 'retry_count', 3),
                 'step_interval': getattr(config, 'step_interval', 500),
@@ -236,22 +238,22 @@ class TaskConsumer:
                         files=files,
                         timeout=60.0  # Trace 文件可能较大
                     )
-                    if response.status_code == 201:
-                        resp_data = response.json()
-                        # 响应被中间件包装，path 在 data 字段中
-                        inner_data = resp_data.get('data', resp_data)
-                        server_path = inner_data.get('path')
-                        logger.info(f"Trace 上传成功: {server_path}")
-                        # 清理本地 Trace 文件
-                        try:
-                            os.remove(trace_path)
-                            logger.debug(f"已清理本地 Trace: {trace_path}")
-                        except Exception as e:
-                            logger.warning(f"清理 Trace 失败: {e}")
-                        return server_path
-                    else:
-                        logger.error(f"Trace 上传失败: {response.status_code}")
-                        return None
+                if response.status_code == 201:
+                    resp_data = response.json()
+                    # 响应被中间件包装，path 在 data 字段中
+                    inner_data = resp_data.get('data', resp_data)
+                    server_path = inner_data.get('path')
+                    logger.info(f"Trace 上传成功: {server_path}")
+                    # 清理本地 Trace 文件
+                    try:
+                        os.remove(trace_path)
+                        logger.debug(f"已清理本地 Trace: {trace_path}")
+                    except Exception as e:
+                        logger.warning(f"清理 Trace 失败: {e}")
+                    return server_path
+                else:
+                    logger.error(f"Trace 上传失败: {response.status_code}")
+                    return None
         except Exception as e:
             logger.error(f"Trace 上传异常: {e}")
             return None
@@ -482,6 +484,72 @@ class TaskConsumer:
         except Exception as e:
             logger.error(f"写回 config.toml 失败: {e}")
     
+
+    def _resolve_task_runtime(self, args: dict, env_config: dict | None = None) -> dict:
+        """Prefer backend effective_runtime; otherwise local merge with same rules."""
+        from runtime_config import resolve_from_env_and_actuator
+
+        effective = args.get("effective_runtime")
+        if isinstance(effective, dict) and effective.get("browser"):
+            effective = dict(effective)
+            effective.setdefault("source_mode", "backend_resolve")
+            return effective
+
+        actuator_info = {
+            "browser_type": getattr(self.config, "browser_type", "chromium") if self.config else "chromium",
+            "headless": getattr(self.config, "headless", False) if self.config else False,
+            "action_timeout": getattr(self.config, "action_timeout", 30) if self.config else 30,
+            "default_browser": getattr(self.config, "browser_type", "chromium") if self.config else "chromium",
+            "max_concurrent": getattr(self.config, "max_concurrent", 3) if self.config else 3,
+        }
+        run_options = args.get("run_options") if isinstance(args.get("run_options"), dict) else None
+        return resolve_from_env_and_actuator(
+            env=env_config,
+            actuator_info=actuator_info,
+            run_options=run_options,
+            source_mode="local_merge",
+        )
+
+    async def _resolve_env_auth(self, env_config_id) -> Optional[dict]:
+        """按环境配置自动拉取平台保存的生效登录态（storageState 快照）。
+
+        平台登录态绑定环境配置（UiAuthState），执行时未显式指定 auth 时自动注入，
+        无需调用方关心目标系统认证类型（Cookie/Session 或 JWT，快照一并覆盖）。
+        """
+        if not env_config_id:
+            return None
+        try:
+            data = await self._api_get(f"/api/ui-automation/auth-states/by-env/{env_config_id}/")
+        except Exception as exc:
+            logger.warning(f"拉取环境登录态失败: {exc}")
+            return None
+        if not isinstance(data, dict) or not data.get("active"):
+            logger.info(f"环境 {env_config_id} 未配置启用中的登录态，本次执行不注入登录态")
+            return None
+        state_json = data.get("state_json")
+        if not isinstance(state_json, dict):
+            return None
+        logger.info(f"已按环境 {env_config_id} 拉取登录态（auth_state_id={data.get('id')}）")
+        return {"storage_state": state_json}
+
+    async def _runtime_for_executor(self, effective: dict, args: dict | None = None) -> dict:
+        opts = {
+            "browser": effective.get("browser"),
+            "headless": effective.get("headless"),
+            "timeout": effective.get("timeout"),
+            "viewport_width": effective.get("viewport_width"),
+            "viewport_height": effective.get("viewport_height"),
+            "viewport_explicit": effective.get("viewport_explicit", False),
+        }
+        if args:
+            if "auth" in args:
+                # 显式指定（auth=None 表示不注入登录态；dict 为自定义认证配置）
+                opts["auth"] = args.get("auth")
+            else:
+                # 未指定时按环境配置自动拉取平台保存的生效登录态
+                opts["auth"] = await self._resolve_env_auth(args.get("env_config_id"))
+        return opts
+
     async def execute_page_steps(self, args: dict):
         """执行页面步骤"""
         page_step_id = args.get('page_step_id')
@@ -522,8 +590,12 @@ class TaskConsumer:
         
         step_results = None
         summary_result = None
+        start_time = time.time()
+        effective = self._resolve_task_runtime(args, env_config)
+        runtime_opts = await self._runtime_for_executor(effective, args)
+        previous = self.executor.apply_runtime_options(runtime_opts)
+        logger.info(f"runtime options: {runtime_opts}")
         try:
-            start_time = time.time()
             try:
                 await self._materialize_page_step_uploads(config, project_id)
             except Exception as e:
@@ -545,11 +617,11 @@ class TaskConsumer:
                 )
                 return
             step_results = await self.executor.execute_page_step(config)
-            
+
             # 统计结果
             passed_steps = sum(1 for r in step_results if r.status == 'success')
             failed_steps = len(step_results) - passed_steps
-            
+
             # 处理截图为 Base64 并发送步骤结果
             import os
             for result in step_results:
@@ -573,7 +645,7 @@ class TaskConsumer:
                     result.model_dump(),
                     self._current_user
                 )
-            
+
             # 发送页面步骤执行汇总结果
             summary_result = {
                 'page_step_id': page_step_id,
@@ -585,14 +657,20 @@ class TaskConsumer:
                 'duration': time.time() - start_time,
                 'steps': [r.model_dump() for r in step_results],
             }
-            
+            summary_result['effective_runtime'] = effective
+            summary_result['environment'] = effective
+            if isinstance(effective, dict) and effective.get('actuator_id'):
+                summary_result['actuator_id'] = effective.get('actuator_id')
+
             await self.ws_client.send_result(
                 'u_page_step_result',  # 新增的结果类型
                 summary_result,
                 self._current_user
             )
+
             logger.info("页面步骤执行完成")
         finally:
+            self.executor.restore_runtime_options(previous)
             # 异常路径也必须释放 base64 / 主动回收，避免 worker RSS 居高不下
             if step_results is not None:
                 self._release_result_payloads(steps=step_results)
@@ -639,7 +717,13 @@ class TaskConsumer:
         config = self._build_test_case_config(case_data, env_config, data_processor)
 
         # 执行
-        logger.info(f"开始执行用例: {config.case_name}")
+        effective = self._resolve_task_runtime(args, env_config)
+        runtime_opts = await self._runtime_for_executor(effective, args)
+        previous = self.executor.apply_runtime_options(runtime_opts)
+        logger.info(
+            f"开始执行用例: {config.case_name}, runtime="
+            f"{runtime_opts.get('browser')}/headless={runtime_opts.get('headless')}/timeout={runtime_opts.get('timeout')}"
+        )
         result = None
         result_data = None
         try:
@@ -675,6 +759,11 @@ class TaskConsumer:
 
             # 发送用例结果（包含 batch_id 和执行人信息）
             result_data = result.model_dump()
+            # attach effective runtime snapshot for backend environment field
+            result_data['effective_runtime'] = effective
+            result_data['environment'] = effective
+            if isinstance(effective, dict) and effective.get('actuator_id'):
+                result_data['actuator_id'] = effective.get('actuator_id')
             if batch_id:
                 result_data['batch_id'] = batch_id
             # 添加执行人信息
@@ -682,7 +771,7 @@ class TaskConsumer:
                 result_data['executor_id'] = executor_id
             if executor_name:
                 result_data['executor_name'] = executor_name
-                
+
             await self.ws_client.send_result(
                 UiSocketEnum.CASE_RESULT,
                 result_data,
@@ -691,6 +780,7 @@ class TaskConsumer:
 
             logger.info(f"用例执行完成: {result.status}")
         finally:
+            self.executor.restore_runtime_options(previous)
             # 结果已发送（或中途失败）：释放截图 base64 等大对象并回收内存
             if result is not None:
                 self._release_result_payloads(result)
@@ -776,6 +866,10 @@ class TaskConsumer:
 
                 # 发送结果
                 result_data = result.model_dump()
+                result_data['effective_runtime'] = effective
+                result_data['environment'] = effective
+                if effective.get('actuator_id'):
+                    result_data['actuator_id'] = effective.get('actuator_id')
                 if batch_id:
                     result_data['batch_id'] = batch_id
                 # 添加执行人信息
@@ -793,6 +887,10 @@ class TaskConsumer:
                 self._release_result_payloads(result)
 
         # 并发执行
+        effective = self._resolve_task_runtime(args, configs[0].env_config if configs else None)
+        runtime_opts = await self._runtime_for_executor(effective, args)
+        previous = self.executor.apply_runtime_options(runtime_opts)
+        logger.info(f"batch runtime options: {runtime_opts}")
         try:
             await self.executor.execute_batch_concurrent(
                 configs,
@@ -801,6 +899,7 @@ class TaskConsumer:
             )
             logger.info("批量执行完成")
         finally:
+            self.executor.restore_runtime_options(previous)
             await self._release_memory_after_task()
     
     async def stop_execution(self, args: dict):
@@ -1305,7 +1404,6 @@ class TaskConsumer:
                 input_value = str(input_value) if input_value else ''
             else:
                 input_value = str(ope_value) if ope_value else ''
-            
             # 定位器值也可能包含变量
             locator_value = detail.get('locator_value', '')
             locator_value_2 = detail.get('locator_value_2', '')
@@ -1326,19 +1424,19 @@ class TaskConsumer:
                 locator_value = data_processor.replace(locator_value)
                 if original_locator != locator_value:
                     logger.info(f"变量替换 (定位器): '{original_locator}' -> '{locator_value}'")
-
+                
                 if locator_value_2:
                     original_locator_2 = locator_value_2
                     locator_value_2 = data_processor.replace(locator_value_2)
                     if original_locator_2 != locator_value_2:
                         logger.info(f"变量替换 (定位器2): '{original_locator_2}' -> '{locator_value_2}'")
-
+                
                 if locator_value_3:
                     original_locator_3 = locator_value_3
                     locator_value_3 = data_processor.replace(locator_value_3)
                     if original_locator_3 != locator_value_3:
                         logger.info(f"变量替换 (定位器3): '{original_locator_3}' -> '{locator_value_3}'")
-                
+
                 # 确保替换后的值是字符串类型
                 if not isinstance(input_value, str):
                     input_value = str(input_value)
@@ -1362,12 +1460,12 @@ class TaskConsumer:
                 if not isinstance(iframe_locator, str):
                     iframe_locator = str(iframe_locator)
 
-            def _parse_index(value):
-                if value is None or value == '':
+            def _parse_index(val):
+                if val is None or val == '':
                     return None
                 try:
-                    return int(value)
-                except (TypeError, ValueError):
+                    return int(val)
+                except (ValueError, TypeError):
                     return None
 
 
@@ -1403,7 +1501,7 @@ class TaskConsumer:
                 wait_time=detail.get('wait_time', 0),
                 is_iframe=is_iframe,
                 iframe_locator=iframe_locator,
-                locator_index=detail.get('locator_index'),
+                locator_index=_parse_index(detail.get('locator_index')),
                 locator_type_2=detail.get('locator_type_2'),
                 locator_value_2=locator_value_2 or None,
                 locator_index_2=_parse_index(detail.get('locator_index_2')),

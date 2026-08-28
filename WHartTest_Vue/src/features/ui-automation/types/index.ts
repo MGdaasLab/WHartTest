@@ -361,6 +361,28 @@ export interface UiEnvironmentConfig extends TimeStampFields {
   creator_name?: string
 }
 
+/** 环境登录态（Playwright storageState 快照，绑定环境配置） */
+export interface UiAuthState extends TimeStampFields {
+  id: number
+  name: string
+  env_config: number
+  env_name?: string
+  project_id?: number
+  state_json?: Record<string, unknown>
+  is_active: boolean
+  description: string
+  creator: number | null
+  creator_name?: string
+}
+
+export interface UiAuthStateForm {
+  name: string
+  env_config: number
+  state_json?: Record<string, unknown>
+  is_active?: boolean
+  description?: string
+}
+
 /** API 分页响应 */
 export interface PaginatedResponse<T> {
   count: number

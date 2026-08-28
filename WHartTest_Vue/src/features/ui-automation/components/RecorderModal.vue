@@ -203,6 +203,16 @@
           </a-dropdown>
           <a-button
             type="outline"
+            size="small"
+            :loading="savingAuth"
+            :disabled="!recording"
+            @click="handleSaveLoginState"
+          >
+            <template #icon><icon-safe /></template>
+            {{ text.saveLoginState }}
+          </a-button>
+          <a-button
+            type="outline"
             status="danger"
             size="small"
             :loading="finishing"
@@ -241,11 +251,11 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete, IconClockCircle } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconClockCircle, IconSafe } from '@arco-design/web-vue/es/icon'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
 import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../api'
-import type { RecorderSessionInfo, RecorderFinishResult } from '../api'
+import type { RecorderSessionInfo, RecorderFinishResult, RecorderSaveLoginStateResult } from '../api'
 import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm, UiPageStepsForm } from '../types'
 import { extractListData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
@@ -321,6 +331,9 @@ const text = computed(() => (
         modulePageRequired: 'Select a module and enter a page name',
         selectPageFirst: 'Select a page first',
         finishRecord: 'Finish',
+        saveLoginState: 'Save Login State',
+        saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
+        saveLoginStateFailed: 'Failed to save login state',
         recordHint: 'Operate in the browser view below. Hover an element then click Assert to record an assertion.',
         noActions: 'No actions yet. Operate in the browser view.',
         confirmCancel: 'Cancel recording? The unfinished recording will be discarded.',
@@ -394,6 +407,9 @@ const text = computed(() => (
         modulePageRequired: '请选择模块并填写页面名称',
         selectPageFirst: '请先选择页面',
         finishRecord: '结束录制',
+        saveLoginState: '保存登录态',
+        saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
+        saveLoginStateFailed: '保存登录态失败',
         recordHint: '在左侧浏览器画面中操作；悬停目标元素后点击「断言」可记录断言。',
         noActions: '暂无动作，请在浏览器画面中操作',
         confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
@@ -417,6 +433,7 @@ const phase = ref<Phase>('setup')
 const starting = ref(false)
 const recording = ref(false)
 const finishing = ref(false)
+const savingAuth = ref(false)
 
 const form = reactive({
   page_id: undefined as number | undefined,
@@ -783,6 +800,28 @@ async function handleFinish() {
     Message.error(e?.error || e?.message || text.value.finishFailed)
   } finally {
     finishing.value = false
+  }
+}
+
+async function handleSaveLoginState() {
+  // 保存当前录制浏览器（已完成登录，含验证码）的登录态到所属环境
+  if (!sessionId.value) return
+  savingAuth.value = true
+  try {
+    const result = extractResponseData<RecorderSaveLoginStateResult>(
+      await recorderApi.saveLoginState(sessionId.value),
+    )
+    if (!result) throw new Error(text.value.saveLoginStateFailed)
+    Message.success(
+      text.value.saveLoginStateSuccess
+        .replace('{cookies}', String(result.cookies))
+        .replace('{keys}', String(result.local_storage_keys)),
+    )
+    emit('refresh')
+  } catch (e: any) {
+    Message.error(e?.detail || e?.error || e?.message || text.value.saveLoginStateFailed)
+  } finally {
+    savingAuth.value = false
   }
 }
 
