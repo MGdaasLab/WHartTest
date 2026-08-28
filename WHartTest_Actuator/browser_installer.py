@@ -45,15 +45,36 @@ def setup_playwright_env() -> None:
     logger.info(f"Playwright 浏览器路径: {browser_path}")
 
 
+# 各浏览器可执行文件名（按平台差异）
+_BROWSER_EXECUTABLES = {
+    'chromium': ('chrome', 'chrome.exe', 'chrome-headless-shell', 'chrome-headless-shell.exe'),
+    'firefox': ('firefox', 'firefox.exe'),
+    'webkit': ('MiniBrowser', 'MiniBrowser.exe', 'Playwright.exe'),
+}
+
+
+def _browser_dir_has_executable(browser_dir: Path, names: tuple) -> bool:
+    """目录内是否存在任一可执行文件（防下载中断导致空目录被误判为已安装）"""
+    for name in names:
+        if any(browser_dir.rglob(name)):
+            return True
+    return False
+
+
 def is_browser_installed(browser_type: str = 'chromium') -> bool:
-    """检查浏览器是否已安装"""
+    """检查浏览器是否已安装（同时校验实际可执行文件存在）"""
     browser_path = get_browser_path()
     if not browser_path.exists():
         return False
     
     # 检查是否有浏览器目录
     browser_dirs = list(browser_path.glob(f'{browser_type}-*'))
-    return len(browser_dirs) > 0
+    if not browser_dirs:
+        return False
+
+    # 校验可执行文件存在，避免下载中断/空目录被误判为已安装
+    exec_names = _BROWSER_EXECUTABLES.get(browser_type, (browser_type,))
+    return any(_browser_dir_has_executable(d, exec_names) for d in browser_dirs)
 
 
 def install_browser(browser_type: str = 'chromium') -> bool:

@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, watch, computed, onBeforeUnmount } from 'vue'
 import { getFunctions, type Function } from '../../services/functionService'
-import { toArray } from '../../services/responseHelpers'
 import { useProjectStore } from '@/store/projectStore'
 import ApiSqlHookEditor from './ApiSqlHookEditor.vue'
 import { onClickOutside } from '@vueuse/core'
@@ -86,7 +85,7 @@ const loadFunctions = async () => {
       page: 1,
       page_size: 100
     })
-    state.value.functions = toArray<FunctionItem>(response.data?.results ?? response.data)
+    state.value.functions = response.data.results
 
     // 如果有初始 hooks，设置选中状态
     if (props.hooks && props.hooks.length > 0) {
@@ -134,12 +133,14 @@ const parseHookData = (hookData: string | object): HookItem => {
       const sqlHook = hookData as any;
       console.log('发现SQL钩子对象:', sqlHook);
 
-      // 展示名称优先顺序：var_name > db_id > db_key
-      const displayName = sqlHook.var_name
-        ? `${sqlHook.var_name} = SQL查询`
-        : sqlHook.db_id
-          ? `SQL查询(ID:${sqlHook.db_id})`
-          : `SQL查询(${sqlHook.db_key || 'default'})`;
+      // 展示名称优先顺序：自定义 name > var_name > db_id > db_key
+      const displayName = sqlHook.name
+        ? sqlHook.name
+        : sqlHook.var_name
+          ? `${sqlHook.var_name} = SQL查询`
+          : sqlHook.db_id
+            ? `SQL查询(ID:${sqlHook.db_id})`
+            : `SQL查询(${sqlHook.db_key || 'default'})`;
 
       return {
         type: 'sql',
@@ -166,12 +167,14 @@ const parseHookData = (hookData: string | object): HookItem => {
         if (jsonObj.type === 'sql') {
           console.log('发现JSON格式SQL钩子:', jsonObj);
 
-          // 展示名称优先顺序：var_name > db_id > db_key
-          const displayName = jsonObj.var_name
-            ? `${jsonObj.var_name} = SQL查询`
-            : jsonObj.db_id
-              ? `SQL查询(ID:${jsonObj.db_id})`
-              : `SQL查询(${jsonObj.db_key || 'default'})`;
+          // 展示名称优先顺序：自定义 name > var_name > db_id > db_key
+          const displayName = jsonObj.name
+            ? jsonObj.name
+            : jsonObj.var_name
+              ? `${jsonObj.var_name} = SQL查询`
+              : jsonObj.db_id
+                ? `SQL查询(ID:${jsonObj.db_id})`
+                : `SQL查询(${jsonObj.db_key || 'default'})`;
 
           return {
             type: 'sql',
@@ -334,7 +337,14 @@ const addSqlHook = async () => {
     const { getDatabaseConfigs } = await import('../../services/databaseConfigService');
     const response = await getDatabaseConfigs(projectId);
 
-    const dbConfigs = toArray(response.data?.results ?? response.data);
+    let dbConfigs = [];
+    if (response.data && Array.isArray(response.data.results)) {
+      dbConfigs = response.data.results;
+    } else if (response.data && Array.isArray(response.data.data)) {
+      dbConfigs = response.data.data;
+    } else if (Array.isArray(response.data)) {
+      dbConfigs = response.data;
+    }
 
     if (dbConfigs.length === 0) {
       Message.warning('未找到可用的数据库配置，请先在环境管理中添加');
@@ -504,20 +514,24 @@ const handleSqlEditorConfirm = (value: any) => {
 
       try {
         if (typeof newHookId === 'object') {
-          // 从对象中提取名称，优先使用var_name，然后是db_id，最后是db_key
-          hookName = newHookId.var_name
-            ? `${newHookId.var_name} = SQL查询`
-            : newHookId.db_id
-              ? `SQL查询(ID:${newHookId.db_id})`
-              : `SQL查询(${newHookId.db_key || 'default'})`;
+          // 从对象中提取名称，优先使用自定义 name，然后是 var_name、db_id、db_key
+          hookName = newHookId.name
+            ? newHookId.name
+            : newHookId.var_name
+              ? `${newHookId.var_name} = SQL查询`
+              : newHookId.db_id
+                ? `SQL查询(ID:${newHookId.db_id})`
+                : `SQL查询(${newHookId.db_key || 'default'})`;
         } else if (typeof newHookId === 'string' && newHookId.startsWith('{')) {
           // 尝试从JSON字符串中提取名称
           const jsonObj = JSON.parse(newHookId);
-          hookName = jsonObj.var_name
-            ? `${jsonObj.var_name} = SQL查询`
-            : jsonObj.db_id
-              ? `SQL查询(ID:${jsonObj.db_id})`
-              : `SQL查询(${jsonObj.db_key || 'default'})`;
+          hookName = jsonObj.name
+            ? jsonObj.name
+            : jsonObj.var_name
+              ? `${jsonObj.var_name} = SQL查询`
+              : jsonObj.db_id
+                ? `SQL查询(ID:${jsonObj.db_id})`
+                : `SQL查询(${jsonObj.db_key || 'default'})`;
         } else if (safeStartsWith(newHookId, 'def ')) {
           // 从Python函数名称中提取
           const nameMatch = newHookId.match(/def\s+(\w+)\(/);
@@ -578,22 +592,26 @@ const handleSqlEditorConfirm = (value: any) => {
 
       try {
         if (typeof newHookId === 'object' && newHookId !== null) {
-          // 从对象中提取名称，优先使用var_name，然后是db_id，最后是db_key
-          hookName = newHookId.var_name
-            ? `${newHookId.var_name} = SQL查询`
-            : newHookId.db_id
-              ? `SQL查询(ID:${newHookId.db_id})`
-              : `SQL查询(${newHookId.db_key || 'default'})`;
+          // 从对象中提取名称，优先使用自定义 name，然后是 var_name、db_id、db_key
+          hookName = newHookId.name
+            ? newHookId.name
+            : newHookId.var_name
+              ? `${newHookId.var_name} = SQL查询`
+              : newHookId.db_id
+                ? `SQL查询(ID:${newHookId.db_id})`
+                : `SQL查询(${newHookId.db_key || 'default'})`;
         } else if (typeof newHookId === 'string') {
           if (newHookId.startsWith('{')) {
             // 尝试从JSON字符串中提取名称
             try {
               const jsonObj = JSON.parse(newHookId);
-              hookName = jsonObj.var_name
-                ? `${jsonObj.var_name} = SQL查询`
-                : jsonObj.db_id
-                  ? `SQL查询(ID:${jsonObj.db_id})`
-                  : `SQL查询(${jsonObj.db_key || 'default'})`;
+              hookName = jsonObj.name
+                ? jsonObj.name
+                : jsonObj.var_name
+                  ? `${jsonObj.var_name} = SQL查询`
+                  : jsonObj.db_id
+                    ? `SQL查询(ID:${jsonObj.db_id})`
+                    : `SQL查询(${jsonObj.db_key || 'default'})`;
             } catch (e) {
               hookName = '未命名SQL查询';
             }
@@ -975,6 +993,36 @@ const updateModelValue = () => {
   color: var(--hooks-muted);
 }
 
+:global(.hooks-function-modal) {
+  --hooks-muted: var(--color-text-3);
+  --hooks-dropdown-icon-bg: rgba(226, 232, 240, 0.92);
+  --hooks-dropdown-text: var(--color-text-2);
+  --hooks-list-border: rgba(148, 163, 184, 0.18);
+  --hooks-list-item-hover: rgba(241, 245, 249, 1);
+}
+
+:global(.hooks-function-modal .hooks-function-item:hover) {
+  background: var(--hooks-list-item-hover);
+}
+
+:global(.hooks-function-modal .hooks-function-item),
+:global(.hooks-function-modal .hooks-function-list) {
+  border-color: var(--hooks-list-border);
+}
+
+:global(.hooks-function-modal .hooks-function-icon-shell) {
+  background: var(--hooks-dropdown-icon-bg);
+}
+
+:global(.hooks-function-modal .hooks-function-name) {
+  color: var(--hooks-dropdown-text);
+}
+
+:global(.hooks-function-modal .hooks-function-desc),
+:global(.hooks-function-modal .hooks-empty-text) {
+  color: var(--hooks-muted);
+}
+
 :global(body.api-testing-theme) .hooks-enhanced {
   --hooks-muted: rgb(156, 163, 175);
   --hooks-empty: rgb(107, 114, 128);
@@ -985,6 +1033,14 @@ const updateModelValue = () => {
   --hooks-dropdown-item-bg: #192133;
   --hooks-dropdown-item-border: #313e59;
   --hooks-dropdown-item-hover: rgb(55, 65, 81);
+  --hooks-dropdown-icon-bg: #313e59;
+  --hooks-dropdown-text: rgb(229, 231, 235);
+  --hooks-list-border: rgb(55, 65, 81);
+  --hooks-list-item-hover: rgb(55, 65, 81);
+}
+
+:global(body.api-testing-theme .hooks-function-modal) {
+  --hooks-muted: rgb(156, 163, 175);
   --hooks-dropdown-icon-bg: #313e59;
   --hooks-dropdown-text: rgb(229, 231, 235);
   --hooks-list-border: rgb(55, 65, 81);

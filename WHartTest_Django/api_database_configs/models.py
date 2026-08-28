@@ -13,9 +13,7 @@ class ApiDatabaseConfig(models.Model):
     DB_TYPE_CHOICES = (
         ('mysql', _('MySQL')),
         ('postgresql', _('PostgreSQL')),
-        ('sqlite', _('SQLite')),
         ('oracle', _('Oracle')),
-        ('sqlserver', _('SQL Server')),
     )
 
     name = models.CharField(_("Name"), max_length=100)
@@ -75,17 +73,12 @@ class ApiDatabaseConfig(models.Model):
                 f"postgresql://{self.username}:{self.password}"
                 f"@{self.host}:{self.port}/{self.database}"
             )
-        elif self.db_type == 'sqlite':
-            return f"sqlite:///{self.database}"
         elif self.db_type == 'oracle':
+            # Oracle 12c+ 默认 CDB/PDB 架构，按服务名(service name)连接，
+            # SQLAlchemy URL 中 /xxx 是 SID，服务名需用 ?service_name= 传参
             return (
-                f"oracle://{self.username}:{self.password}"
-                f"@{self.host}:{self.port}/{self.database}"
-            )
-        elif self.db_type == 'sqlserver':
-            return (
-                f"mssql+pymssql://{self.username}:{self.password}"
-                f"@{self.host}:{self.port}/{self.database}"
+                f"oracle+oracledb://{self.username}:{self.password}"
+                f"@{self.host}:{self.port}?service_name={self.database}"
             )
         else:
             return (

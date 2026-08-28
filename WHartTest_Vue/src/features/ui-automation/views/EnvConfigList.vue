@@ -2,17 +2,6 @@
   <div class="env-config-list">
     <div class="page-header">
       <div class="search-box">
-        <a-select
-          v-model="filters.browser"
-          placeholder="浏览器"
-          allow-clear
-          style="width: 120px; margin-right: 12px"
-          @change="onSearch"
-        >
-          <a-option value="chromium">Chromium</a-option>
-          <a-option value="firefox">Firefox</a-option>
-          <a-option value="webkit">WebKit</a-option>
-        </a-select>
         <a-input-search
           v-model="filters.search"
           placeholder="搜索环境名称"
@@ -39,12 +28,6 @@
       @page-change="onPageChange"
       @page-size-change="onPageSizeChange"
     >
-      <template #browser="{ record }">
-        <a-tag :color="browserColors[record.browser as BrowserType]">{{ record.browser }}</a-tag>
-      </template>
-      <template #headless="{ record }">
-        <a-tag :color="record.headless ? 'green' : 'orange'">{{ record.headless ? '无头' : '有头' }}</a-tag>
-      </template>
       <template #is_default="{ record }">
         <a-tag v-if="record.is_default" color="arcoblue">默认</a-tag>
         <span v-else>-</span>
@@ -85,44 +68,9 @@
         <a-form-item field="base_url" label="基础 URL">
           <a-input v-model="formData.base_url" placeholder="如：http://localhost:3000" />
         </a-form-item>
-        <a-row :gutter="16">
-          <a-col :span="8">
-            <a-form-item field="browser" label="浏览器">
-              <a-select v-model="formData.browser">
-                <a-option value="chromium">Chromium</a-option>
-                <a-option value="firefox">Firefox</a-option>
-                <a-option value="webkit">WebKit</a-option>
-              </a-select>
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item field="headless" label="无头模式">
-              <a-switch v-model="formData.headless" />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item field="is_default" label="设为默认">
-              <a-switch v-model="formData.is_default" />
-            </a-form-item>
-          </a-col>
-        </a-row>
-        <a-row :gutter="16">
-          <a-col :span="8">
-            <a-form-item field="viewport_width" label="视口宽度">
-              <a-input-number v-model="formData.viewport_width" :min="320" :max="3840" />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item field="viewport_height" label="视口高度">
-              <a-input-number v-model="formData.viewport_height" :min="240" :max="2160" />
-            </a-form-item>
-          </a-col>
-          <a-col :span="8">
-            <a-form-item field="timeout" label="超时(ms)">
-              <a-input-number v-model="formData.timeout" :min="1000" :max="120000" :step="1000" />
-            </a-form-item>
-          </a-col>
-        </a-row>
+        <a-form-item field="is_default" label="设为默认">
+          <a-switch v-model="formData.is_default" />
+        </a-form-item>
         <a-divider>数据库配置</a-divider>
         <a-row :gutter="16">
           <a-col :span="8">
@@ -185,7 +133,7 @@ import { Message } from '@arco-design/web-vue'
 import { IconPlus, IconEdit, IconDelete, IconCheck } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
 import { envConfigApi } from '../api'
-import type { UiEnvironmentConfig, UiEnvironmentConfigForm, BrowserType } from '../types'
+import type { UiEnvironmentConfig, UiEnvironmentConfigForm } from '../types'
 import { extractPaginationData } from '../types'
 
 const projectStore = useProjectStore()
@@ -208,19 +156,13 @@ const mysqlConfig = reactive({
   database: '',
 })
 
-
-const filters = reactive({ browser: undefined as string | undefined, search: '' })
+const filters = reactive({ search: '' })
 const pagination = reactive({ current: 1, pageSize: 10, total: 0, showTotal: true, showPageSize: true })
 
 const formData = reactive<UiEnvironmentConfigForm>({
   project: 0,
   name: '',
   base_url: '',
-  browser: 'chromium',
-  headless: true,
-  viewport_width: 1280,
-  viewport_height: 720,
-  timeout: 30000,
   db_c_status: false,
   db_rud_status: false,
   db_type: 'mysql',
@@ -233,14 +175,10 @@ const rules = {
   name: [{ required: true, message: '请输入环境名称' }],
 }
 
-const browserColors: Record<BrowserType, string> = { chromium: 'arcoblue', firefox: 'orange', webkit: 'purple' }
-
 const columns = [
   { title: 'ID', dataIndex: 'id', width: 70, align: 'center' as const },
   { title: '环境名称', dataIndex: 'name', width: 150, align: 'center' as const },
   { title: '基础 URL', dataIndex: 'base_url', ellipsis: true, tooltip: true, width: 200, align: 'center' as const },
-  { title: '浏览器', slotName: 'browser', width: 100, align: 'center' as const },
-  { title: '模式', slotName: 'headless', width: 80, align: 'center' as const },
   { title: '默认', slotName: 'is_default', width: 70, align: 'center' as const },
   { title: '创建者', dataIndex: 'creator_name', width: 100, align: 'center' as const },
   { title: '操作', slotName: 'operations', width: 200, fixed: 'right' as const, align: 'center' as const },
@@ -252,7 +190,6 @@ const fetchData = async () => {
   try {
     const res = await envConfigApi.list({
       project: projectId.value,
-      browser: filters.browser,
       search: filters.search || undefined,
     })
     const { items, count } = extractPaginationData(res)
@@ -286,11 +223,6 @@ const resetForm = () => {
     project: projectId.value || 0,
     name: '',
     base_url: '',
-    browser: 'chromium',
-    headless: true,
-    viewport_width: 1280,
-    viewport_height: 720,
-    timeout: 30000,
     db_c_status: false,
     db_rud_status: false,
     db_type: 'mysql',
@@ -315,11 +247,6 @@ const editConfig = (record: UiEnvironmentConfig) => {
     project: record.project,
     name: record.name,
     base_url: record.base_url || '',
-    browser: record.browser,
-    headless: record.headless,
-    viewport_width: record.viewport_width,
-    viewport_height: record.viewport_height,
-    timeout: record.timeout,
     db_c_status: record.db_c_status,
     db_rud_status: record.db_rud_status,
     db_type: record.db_type || 'mysql',
@@ -338,6 +265,7 @@ const editConfig = (record: UiEnvironmentConfig) => {
   modalVisible.value = true
 }
 
+/** 构建 MySQL 配置对象 */
 const buildMysqlConfig = () => {
   if (!formData.db_c_status && !formData.db_rud_status) return {}
   if (formData.db_type !== 'mysql') return {}
@@ -360,9 +288,9 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
   }
   submitting.value = true
   try {
-    const data = {
-      ...formData,
-      mysql_config: buildMysqlConfig(),
+    const data = { 
+      ...formData, 
+      mysql_config: buildMysqlConfig()
     }
     if (isEdit.value && currentConfig.value) {
       await envConfigApi.update(currentConfig.value.id, data)

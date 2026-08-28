@@ -13,6 +13,7 @@
 
 # Documentation
 README.md
+docs/
 img/
 *.md
 
@@ -70,3 +71,6 @@ logs/
 # OS
 Thumbs.db
 *.DS_Store
+
+# zcode
+.zcode/

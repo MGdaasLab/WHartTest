@@ -1,5 +1,19 @@
 <template>
   <div class="chat-messages" ref="messagesContainer">
+    <!-- 顶部加载更多历史记录按钮 -->
+    <div v-if="hasMore && messages.length > 0" class="load-more-container">
+      <button 
+        class="load-more-btn" 
+        :disabled="isLoadingMore" 
+        @click="emit('load-more')"
+      >
+        <span v-if="isLoadingMore" class="loading-spinner"></span>
+        <span class="load-more-text">
+          {{ isLoadingMore ? text.loadingMore : text.loadMore }}
+        </span>
+      </button>
+    </div>
+
     <div v-if="messages.length === 0" class="empty-chat">
       <div class="empty-icon">
         <img :src="brandLogoUrl" alt="" class="empty-logo" />
@@ -28,7 +42,7 @@
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue';
 import MessageItem from './MessageItem.vue';
 import { brandLogoUrl } from '@/utils/assetUrl';
-import type { ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
+import type { TodoDisplayPayload, ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
 import type { FileAsset } from '@/features/file-management/types';
 import { useAppI18n } from '@/composables/useAppI18n';
 
@@ -39,6 +53,7 @@ interface ChatMessage {
   isLoading?: boolean;
   messageType?: 'human' | 'ai' | 'tool' | 'system' | 'agent_step' | 'step_separator';
   toolName?: string;
+  todoPayload?: TodoDisplayPayload;
   isExpanded?: boolean;
   isStreaming?: boolean;
   imageBase64?: string;
@@ -61,19 +76,31 @@ interface Props {
   messages: ChatMessage[];
   isLoading: boolean;
   floatingToolImageSrc?: string | null;
+  hasMore?: boolean; // 🆕 是否还有更多历史消息
+  isLoadingMore?: boolean; // 🆕 是否正在加载更多历史消息
 }
 
 const props = withDefaults(defineProps<Props>(), {
   floatingToolImageSrc: null,
+  hasMore: false,
+  isLoadingMore: false,
 });
 const { isEnglish } = useAppI18n();
 const text = computed(() => (
   isEnglish.value
-    ? { emptyChat: 'Start chatting with WHartTest' }
-    : { emptyChat: '开始与 WHartTest 的对话吧' }
+    ? { 
+        emptyChat: 'Start chatting with WHartTest',
+        loadMore: 'Load older messages',
+        loadingMore: 'Loading...'
+      }
+    : { 
+        emptyChat: '开始与 WHartTest 的对话吧',
+        loadMore: '查看更早的历史记录',
+        loadingMore: '正在加载历史记录...'
+      }
 ));
 
-defineEmits<{
+const emit = defineEmits<{
   'toggle-expand': [message: ChatMessage];
   'quote': [message: ChatMessage];
   'retry': [message: ChatMessage];
@@ -82,6 +109,7 @@ defineEmits<{
   'preview-html': [payload: { html: string; sourceMessage: ChatMessage }];
   'tool-image-detected': [src: string];
   'float-tool-image': [src: string];
+  'load-more': []; // 🆕 加载更多历史记录事件
 }>();
 
 const messagesContainer = ref<HTMLElement | null>(null);
@@ -120,6 +148,14 @@ const handleScroll = () => {
     scrollTimeout = window.setTimeout(() => {
       userIsScrolling.value = false;
     }, 150);
+  }
+
+  // 自动加载更多历史记录：当用户滚动到顶部附近且有更多数据时自动触发
+  if (messagesContainer.value) {
+    const { scrollTop } = messagesContainer.value;
+    if (scrollTop < 50 && props.hasMore && !props.isLoadingMore) {
+      emit('load-more');
+    }
   }
 };
 
@@ -162,9 +198,10 @@ onUnmounted(() => {
   }
 });
 
-// 暴露滚动方法给父组件
+// 暴露滚动方法和容器DOM引用给父组件
 defineExpose({
-  scrollToBottom
+  scrollToBottom,
+  messagesContainer
 });
 </script>
 
@@ -176,6 +213,65 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+.load-more-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 8px;
+  width: 100%;
+}
+
+.load-more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 18px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #165dff;
+  background: rgba(22, 93, 255, 0.05);
+  border: 1px solid rgba(22, 93, 255, 0.15);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  outline: none;
+}
+
+.load-more-btn:hover:not(:disabled) {
+  background: rgba(22, 93, 255, 0.1);
+  border-color: rgba(22, 93, 255, 0.3);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(22, 93, 255, 0.08);
+}
+
+.load-more-btn:active:not(:disabled) {
+  transform: translateY(0);
+  background: rgba(22, 93, 255, 0.15);
+}
+
+.load-more-btn:disabled {
+  color: #c9cdd4;
+  background: #f2f3f5;
+  border-color: #e5e6eb;
+  cursor: not-allowed;
+}
+
+.loading-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(22, 93, 255, 0.15);
+  border-top-color: #165dff;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .empty-chat {

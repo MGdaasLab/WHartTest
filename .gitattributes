@@ -1,1 +1,11 @@
+# 默认:自动识别文本文件,统一按 LF 存储与检出(Win→WSL 迁移后归一行尾)
+* text=auto eol=lf
+
+# Shell 脚本必须 LF
 *.sh text eol=lf
+
+# 二进制文件显式声明,避免行尾规范化误伤
+*.png binary
+*.zip binary
+*.exe binary
+*.svg binary

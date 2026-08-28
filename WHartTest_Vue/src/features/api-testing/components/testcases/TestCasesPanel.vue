@@ -486,54 +486,28 @@ fetchTestCases()
 }
 
 :global(.arco-modal) {
-  background: #ffffff !important;
-  border: 1px solid rgba(148, 163, 184, 0.18) !important;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16) !important;
+  background: var(--color-bg-2) !important;
+  border: 1px solid var(--color-border-2) !important;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25) !important;
 }
 
 :global(.arco-modal .arco-modal-header) {
-  background: #ffffff !important;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14) !important;
+  background: var(--color-bg-2) !important;
+  border-bottom: 1px solid var(--color-border-2) !important;
 }
 
 :global(.arco-modal .arco-modal-title) {
-  color: #0f172a !important;
+  color: var(--color-text-1) !important;
 }
 
 :global(.arco-modal .arco-modal-content),
 :global(.arco-modal .arco-modal-body) {
-  background: #ffffff !important;
-  color: #475569 !important;
+  background: var(--color-bg-2) !important;
+  color: var(--color-text-2) !important;
 }
 
 :global(.arco-modal .arco-modal-footer) {
-  background: #ffffff !important;
-  border-top: 1px solid rgba(148, 163, 184, 0.14) !important;
-}
-
-:global(body.api-testing-theme .arco-modal) {
-  background: rgb(31, 41, 55) !important;
-  border-color: rgba(75, 85, 99, 0.5) !important;
-  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.35) !important;
-}
-
-:global(body.api-testing-theme .arco-modal .arco-modal-header) {
-  background: rgb(31, 41, 55) !important;
-  border-bottom-color: rgba(75, 85, 99, 0.4) !important;
-}
-
-:global(body.api-testing-theme .arco-modal .arco-modal-title) {
-  color: rgb(226, 232, 240) !important;
-}
-
-:global(body.api-testing-theme .arco-modal .arco-modal-content),
-:global(body.api-testing-theme .arco-modal .arco-modal-body) {
-  background: rgb(31, 41, 55) !important;
-  color: rgb(148, 163, 184) !important;
-}
-
-:global(body.api-testing-theme .arco-modal .arco-modal-footer) {
-  background: rgb(31, 41, 55) !important;
-  border-top-color: rgba(75, 85, 99, 0.4) !important;
+  background: var(--color-bg-2) !important;
+  border-top: 1px solid var(--color-border-2) !important;
 }
 </style>

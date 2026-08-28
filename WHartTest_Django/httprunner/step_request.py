@@ -177,158 +177,173 @@ def execute_sql_hook(runner: HttpRunner, sql_hook: Dict, step_variables: Variabl
     print(params_msg)  # 直接打印参数到控制台
 
     start_time = time.time()
-    db_uri = None
     try:
-        # 使用工具函数获取数据库连接
+        # 通过 db_id 查找数据库配置并构建连接字符串
+        # 复用已有的 ApiDatabaseConfig.connection_string 与 DBEngine，
+        # 不再依赖仓库中不存在的 utils.db_utils 模块。
         try:
-            from utils.db_utils import get_database_connection
-
-            # 使用db_id获取数据库连接，如果db_id为空则使用当前环境数据库
-            db_uri = get_database_connection(db_id)
-            if db_uri:
-                success_msg = f"{hook_prefix} 获取数据库连接成功"
-                logger.info(success_msg)
-                print(success_msg)
-            else:
-                error_msg = f"{hook_prefix} 无法获取数据库连接，请检查db_id或当前环境配置"
-                logger.error(error_msg)
-                print(error_msg)
-                return
+            from api_database_configs.models import ApiDatabaseConfig
         except ImportError as ie:
-            import_error_msg = f"{hook_prefix} 无法导入数据库工具函数: {str(ie)}"
-            logger.warning(import_error_msg)
+            import_error_msg = f"{hook_prefix} 无法导入数据库配置模型: {str(ie)}"
+            logger.error(import_error_msg)
             print(import_error_msg)
             return
 
-        # 如果有数据库连接字符串，执行SQL
-        if db_uri:
-            try:
-                # 预处理SQL语句，处理数据库前缀问题
-                original_sql = sql
-                # 只有对SQLite数据库才需要移除数据库前缀
-                if db_uri and 'sqlite' in db_uri.lower():
-                    # 对于SQLite，可能需要移除数据库名前缀
-                    if '.' in sql:
-                        # 这里简化处理，只针对明显的 db.table 格式
-                        parts = sql.split(' ')
-                        for i, part in enumerate(parts):
-                            if '.' in part and not part.startswith('"') and not part.startswith("'"):
-                                table_parts = part.split('.')
-                                if len(table_parts) == 2:
-                                    parts[i] = table_parts[1]
+        if not db_id:
+            error_msg = f"{hook_prefix} 缺少'db_id'字段，无法获取数据库连接"
+            logger.error(error_msg)
+            print(error_msg)
+            return
 
-                        adjusted_sql = ' '.join(parts)
-                        if adjusted_sql != sql:
-                            sql = adjusted_sql
-                            logger.info(f"{hook_prefix} 为SQLite调整SQL: {original_sql} -> {sql}")
-                            print(f"{hook_prefix} 为SQLite调整SQL: {original_sql} -> {sql}")
-
-                # 尝试使用工具函数执行SQL
-                try:
-                    from utils.db_utils import execute_sql
-
-                    # 记录SQL执行开始
-                    exec_start_msg = f"{hook_prefix} 开始执行SQL: {sql}"
-                    logger.info(exec_start_msg)
-                    print(exec_start_msg)
-
-                    # 确定查询类型
-                    fetch_type = "all"  # 默认获取全部
-                    if sql.upper().startswith("SELECT"):
-                        if "LIMIT 1" in sql.upper() or sql.strip().endswith("LIMIT 1"):
-                            fetch_type = "one"
-                        else:
-                            fetch_type = "all"
-                    else:
-                        fetch_type = "none"  # 非查询SQL
-
-                    # 记录查询类型
-                    type_msg = f"{hook_prefix} 查询类型: {fetch_type}"
-                    logger.debug(type_msg)
-                    print(type_msg)
-
-                    # 执行SQL
-                    query_start = time.time()
-                    sql_result = execute_sql(sql, db_uri, fetch_type)
-                    query_elapsed = time.time() - query_start
-
-                    # 记录执行结果
-                    if isinstance(sql_result, dict) and "error" in sql_result:
-                        error_msg = f"{hook_prefix} SQL执行失败: {sql_result['error']}"
-                        logger.error(error_msg)
-                        print(error_msg)
-                    else:
-                        result_type = type(sql_result).__name__
-                        result_summary = str(sql_result)
-                        if len(result_summary) > 500:
-                            result_summary = result_summary[:500] + "..."
-
-                        success_msg = f"{hook_prefix} SQL执行成功，耗时: {query_elapsed:.3f}秒，结果类型: {result_type}"
-                        logger.info(success_msg)
-                        print(success_msg)
-
-                        result_msg = f"{hook_prefix} 结果: {result_summary}"
-                        logger.debug(result_msg)
-                        if fetch_type == "one" or (isinstance(sql_result, list) and len(sql_result) <= 3):
-                            print(result_msg)  # 只打印简短结果
-
-                    # 如果指定了变量名，则保存结果
-                    if var_name and sql_result is not None:
-                        # 处理SQL结果，根据结果类型提取值
-                        if isinstance(sql_result, dict) and len(sql_result) == 1:
-                            # 单一结果，直接提取字典中的唯一值
-                            key = list(sql_result.keys())[0]
-                            step_variables[var_name] = sql_result[key]
-                            var_msg = f"{hook_prefix} SQL结果赋值给变量: {var_name} = {sql_result[key]}"
-                        elif isinstance(sql_result, list) and sql_result:
-                            if len(sql_result) == 1 and isinstance(sql_result[0], dict) and len(sql_result[0]) == 1:
-                                # 单行单列的结果，提取值
-                                key = list(sql_result[0].keys())[0]
-                                step_variables[var_name] = sql_result[0][key]
-                                var_msg = f"{hook_prefix} SQL结果赋值给变量: {var_name} = {sql_result[0][key]}"
-                            elif all(isinstance(item, dict) and len(item) == 1 for item in sql_result):
-                                # 多行单列的结果，提取所有值为列表
-                                key = list(sql_result[0].keys())[0]  # 所有行都是相同的列名
-                                values = [item[key] for item in sql_result]
-                                step_variables[var_name] = values
-                                var_msg = f"{hook_prefix} SQL结果(多行)赋值给变量: {var_name} = {values}"
-                            else:
-                                # 复杂结果，保持原样
-                                step_variables[var_name] = sql_result
-                                var_msg = f"{hook_prefix} SQL完整结果赋值给变量: {var_name}"
-
-                        logger.info(var_msg)
-                        print(var_msg)
-
-                    hook_elapsed = time.time() - start_time
-                    complete_msg = f"{hook_prefix} 执行完成，总耗时: {hook_elapsed:.3f}秒"
-                    logger.info(complete_msg)
-                    print(complete_msg)
-
-                    # 分隔符
-                    logger.info(f"{hook_prefix} ======== SQL钩子执行结束 ========")
-                    print(f"{hook_prefix} ======== SQL钩子执行结束 ========")
-                    return
-                except ImportError as ie:
-                    import_error_msg = f"{hook_prefix} 无法导入execute_sql函数: {str(ie)}"
-                    logger.error(import_error_msg)
-                    print(import_error_msg)
-                    return
-                except Exception as e:
-                    exec_error_msg = f"{hook_prefix} 调用execute_sql函数失败: {str(e)}"
-                    logger.error(exec_error_msg)
-                    print(exec_error_msg)
-                    tb_msg = f"{hook_prefix} 异常堆栈:\n{traceback.format_exc()}"
-                    logger.error(tb_msg)
-                    return
-
-            except Exception as e:
-                error_msg = f"{hook_prefix} 执行SQL失败: {str(e)}"
+        try:
+            # 优先按 project 作用域查询，取不到 project_id 则不限项目
+            project_id = None
+            if hasattr(runner, "interface_data"):
+                project_id = runner.interface_data.get("project_id")
+            qs = ApiDatabaseConfig.objects.filter(id=db_id, is_active=True)
+            if project_id:
+                qs = qs.filter(project_id=project_id)
+            db_config = qs.first()
+            if not db_config:
+                error_msg = (
+                    f"{hook_prefix} 未找到id={db_id}的数据库配置"
+                    + (f"(project_id={project_id})" if project_id else "")
+                )
                 logger.error(error_msg)
                 print(error_msg)
-                tb_msg = f"{hook_prefix} 异常堆栈:\n{traceback.format_exc()}"
-                logger.error(tb_msg)
                 return
+            db_uri = db_config.connection_string
+            success_msg = f"{hook_prefix} 获取数据库连接成功: {db_config.name}({db_config.db_type})"
+            logger.info(success_msg)
+            print(success_msg)
+        except Exception as e:
+            error_msg = f"{hook_prefix} 获取数据库连接失败: {str(e)}"
+            logger.error(error_msg)
+            print(error_msg)
+            tb_msg = f"{hook_prefix} 异常堆栈:\n{traceback.format_exc()}"
+            logger.error(tb_msg)
+            return
+
+        # 预处理SQL语句，处理SQLite数据库前缀问题
+        original_sql = sql
+        if db_uri and 'sqlite' in db_uri.lower():
+            if '.' in sql:
+                parts = sql.split(' ')
+                for i, part in enumerate(parts):
+                    if '.' in part and not part.startswith('"') and not part.startswith("'"):
+                        table_parts = part.split('.')
+                        if len(table_parts) == 2:
+                            parts[i] = table_parts[1]
+
+                adjusted_sql = ' '.join(parts)
+                if adjusted_sql != sql:
+                    sql = adjusted_sql
+                    logger.info(f"{hook_prefix} 为SQLite调整SQL: {original_sql} -> {sql}")
+                    print(f"{hook_prefix} 为SQLite调整SQL: {original_sql} -> {sql}")
+
+        # 确定查询类型
+        fetch_type = "all"  # 默认获取全部
+        if sql.upper().startswith("SELECT"):
+            if "LIMIT 1" in sql.upper() or sql.strip().endswith("LIMIT 1"):
+                fetch_type = "one"
+            else:
+                fetch_type = "all"
+        else:
+            fetch_type = "none"  # 非查询SQL
+
+        type_msg = f"{hook_prefix} 查询类型: {fetch_type}"
+        logger.debug(type_msg)
+        print(type_msg)
+
+        # 使用已有的 DBEngine 执行SQL
+        try:
+            from httprunner.database.engine import DBEngine
+
+            exec_start_msg = f"{hook_prefix} 开始执行SQL: {sql}"
+            logger.info(exec_start_msg)
+            print(exec_start_msg)
+
+            query_start = time.time()
+            db_engine = DBEngine(db_uri)
+            # fetchone 对 0 行结果会抛 TypeError(dict(None))，需单独捕获
+            try:
+                if fetch_type == "one":
+                    sql_result = db_engine.fetchone(sql)
+                else:
+                    # fetchall 对 SELECT 多行返回 list[dict]，对 0 行返回 None；
+                    # 对 UPDATE/DELETE/INSERT 返回 {"rowcount": n}
+                    sql_result = db_engine.fetchall(sql)
+            except TypeError:
+                # fetchone 无结果时 DBEngine 内部 dict(None) 会抛 TypeError
+                sql_result = None
+                no_row_msg = f"{hook_prefix} SQL查询无结果返回"
+                logger.warning(no_row_msg)
+                print(no_row_msg)
+            query_elapsed = time.time() - query_start
+
+            # 记录执行结果
+            result_type = type(sql_result).__name__
+            result_summary = str(sql_result)
+            if len(result_summary) > 500:
+                result_summary = result_summary[:500] + "..."
+
+            success_msg = f"{hook_prefix} SQL执行成功，耗时: {query_elapsed:.3f}秒，结果类型: {result_type}"
+            logger.info(success_msg)
+            print(success_msg)
+
+            result_msg = f"{hook_prefix} 结果: {result_summary}"
+            logger.debug(result_msg)
+            if fetch_type == "one" or (isinstance(sql_result, list) and len(sql_result) <= 3):
+                print(result_msg)  # 只打印简短结果
+
+            # 如果指定了变量名，则保存结果
+            if var_name and sql_result is not None:
+                # 处理SQL结果，根据结果类型提取值
+                if isinstance(sql_result, dict) and len(sql_result) == 1:
+                    # 单一结果，直接提取字典中的唯一值
+                    key = list(sql_result.keys())[0]
+                    step_variables[var_name] = sql_result[key]
+                    var_msg = f"{hook_prefix} SQL结果赋值给变量: {var_name} = {sql_result[key]}"
+                elif isinstance(sql_result, list) and sql_result:
+                    if len(sql_result) == 1 and isinstance(sql_result[0], dict) and len(sql_result[0]) == 1:
+                        # 单行单列的结果，提取值
+                        key = list(sql_result[0].keys())[0]
+                        step_variables[var_name] = sql_result[0][key]
+                        var_msg = f"{hook_prefix} SQL结果赋值给变量: {var_name} = {sql_result[0][key]}"
+                    elif all(isinstance(item, dict) and len(item) == 1 for item in sql_result):
+                        # 多行单列的结果，提取所有值为列表
+                        key = list(sql_result[0].keys())[0]  # 所有行都是相同的列名
+                        values = [item[key] for item in sql_result]
+                        step_variables[var_name] = values
+                        var_msg = f"{hook_prefix} SQL结果(多行)赋值给变量: {var_name} = {values}"
+                    else:
+                        # 复杂结果，保持原样
+                        step_variables[var_name] = sql_result
+                        var_msg = f"{hook_prefix} SQL完整结果赋值给变量: {var_name}"
+                else:
+                    # 其它类型(如 {"rowcount": n})，保持原样
+                    step_variables[var_name] = sql_result
+                    var_msg = f"{hook_prefix} SQL完整结果赋值给变量: {var_name}"
+
+                logger.info(var_msg)
+                print(var_msg)
+
+            hook_elapsed = time.time() - start_time
+            complete_msg = f"{hook_prefix} 执行完成，总耗时: {hook_elapsed:.3f}秒"
+            logger.info(complete_msg)
+            print(complete_msg)
+
+            # 分隔符
+            logger.info(f"{hook_prefix} ======== SQL钩子执行结束 ========")
+            print(f"{hook_prefix} ======== SQL钩子执行结束 ========")
+            return
+        except Exception as e:
+            exec_error_msg = f"{hook_prefix} 执行SQL失败: {str(e)}"
+            logger.error(exec_error_msg)
+            print(exec_error_msg)
+            tb_msg = f"{hook_prefix} 异常堆栈:\n{traceback.format_exc()}"
+            logger.error(tb_msg)
+            return
     except Exception as e:
         error_msg = f"{hook_prefix} SQL钩子执行出错: {str(e)}"
         logger.error(error_msg)
@@ -576,24 +591,10 @@ def run_step_request(runner: HttpRunner, step: TStep) -> StepResult:
                 if header.name not in request_headers:
                     value = header.value
 
-                    # 处理变量引用 - 支持两种格式：${var}和$var
                     try:
-                        if value.startswith('${') and value.endswith('}'):
-                            # ${var} 格式
-                            var_name = value[2:-1]
-                            if var_name in step_variables:
-                                value = step_variables[var_name]
-                            else:
-                                logger.warning(f"全局请求头 '{header.name}' 引用的变量 '${var_name}' 在当前环境中不存在，将使用原始值")
-                        elif value.startswith('$') and len(value) > 1:
-                            # $var 格式
-                            var_name = value[1:]
-                            if var_name in step_variables:
-                                value = step_variables[var_name]
-                            else:
-                                logger.warning(f"全局请求头 '{header.name}' 引用的变量 '${var_name}' 在当前环境中不存在，将使用原始值")
+                        value = runner.parser.parse_data(value, step_variables)
                     except Exception as ve:
-                        logger.warning(f"处理全局请求头 '{header.name}' 的变量引用时出错: {str(ve)}")
+                        logger.warning(f"解析全局请求头 '{header.name}' 的变量引用时出错: {str(ve)}")
 
                     request_headers[header.name] = value
                     logger.info(f"应用全局请求头: {header.name}={value}")
@@ -608,6 +609,33 @@ def run_step_request(runner: HttpRunner, step: TStep) -> StepResult:
     # setup hooks
     if step.setup_hooks:
         call_hooks(runner, step.setup_hooks, step_variables, "setup request")
+
+        # 前置钩子(如SQL控制器)可能会向 step_variables 写入新变量，
+        # 而上面的 parsed_request_dict 在钩子运行前就已渲染过一次，
+        # 钩子产生的变量无法作用于已冻结的请求体/请求头/URL/参数。
+        # 因此在钩子执行完成后，对受变量影响的字段重新解析一次。
+        try:
+            for field in ("url", "params", "headers", "req_json", "data", "json"):
+                if field in parsed_request_dict:
+                    parsed_request_dict[field] = runner.parser.parse_data(
+                        parsed_request_dict[field], step_variables
+                    )
+            # headers 同时被 request_headers 引用，重解析后同步更新
+            request_headers = parsed_request_dict.get("headers", request_headers)
+            # 更新注入到钩子上下文中的 request 快照
+            step_variables["request"] = parsed_request_dict
+
+            unresolved_after_hook = _collect_unresolved_placeholders(parsed_request_dict)
+            if unresolved_after_hook:
+                logger.warning(
+                    "Request placeholders remained after setup hooks: "
+                    f"case_id={runner.case_id} step_name={step.name} "
+                    f"unresolved={unresolved_after_hook}"
+                )
+        except Exception as e:
+            logger.warning(
+                f"解析前置钩子产生的变量到请求时出错，使用钩子执行前的请求继续: {str(e)}"
+            )
 
     # prepare arguments
     config = runner.get_config()

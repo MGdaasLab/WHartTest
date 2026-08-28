@@ -2,7 +2,7 @@
 import datetime
 import json
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 
@@ -12,8 +12,10 @@ class DBEngine(object):
         db_uri = f'mysql+pymysql://{username}:{password}@{host}:{port}/{database}?charset=utf8mb4'
 
         """
+        # SQLAlchemy 2.0 已移除 sessionmaker 的 autocommit=True 参数，
+        # 改用普通 session 并在写操作后显式 commit()。
         engine = create_engine(db_uri)
-        self.session = sessionmaker(bind=engine, autocommit=True)()
+        self.session = sessionmaker(bind=engine)()
 
     @staticmethod
     def value_decode(row: dict):
@@ -36,27 +38,47 @@ class DBEngine(object):
                 except ValueError:
                     pass
 
+    @staticmethod
+    def _row_to_dict(row):
+        """Convert a SQLAlchemy Row to a dict.
+
+        SQLAlchemy 2.0 的 Row 不再支持 dict(row)，需通过 _mapping 转换；
+        这里兼容新旧两种版本。
+        """
+        if row is None:
+            return None
+        if hasattr(row, "_mapping"):
+            return dict(row._mapping)
+        return dict(row)
+
     def _fetch(self, query, size=-1, commit=True):
         query = query.strip()
-        result = self.session.execute(query)
+        # SQLAlchemy 2.0 要求纯文本 SQL 必须用 text() 包装
+        result = self.session.execute(text(query))
         if query.upper()[:6] == "SELECT":
             if size < 0:
                 al = result.fetchall()
-                al = [dict(el) for el in al]
+                al = [self._row_to_dict(el) for el in al]
                 for el in al:
                     self.value_decode(el)
                 return al or None
             elif size == 1:
-                on = dict(result.fetchone())
+                row = result.fetchone()
+                if row is None:
+                    return None
+                on = self._row_to_dict(row)
                 self.value_decode(on)
                 return on or None
             else:
                 mny = result.fetchmany(size)
-                mny = [dict(el) for el in mny]
+                mny = [self._row_to_dict(el) for el in mny]
                 for el in mny:
                     self.value_decode(el)
                 return mny or None
         elif query.upper()[:6] in ("UPDATE", "DELETE", "INSERT"):
+            # SQLAlchemy 2.0 不再自动提交写操作，需显式 commit
+            if commit:
+                self.session.commit()
             return {"rowcount": result.rowcount}
 
     def fetchone(self, query, commit=True):

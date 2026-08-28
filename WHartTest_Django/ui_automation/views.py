@@ -121,7 +121,7 @@ class UiModuleViewSet(viewsets.ModelViewSet):
         移动模块：支持移动到另一个模块的之前、之后或作为其子模块。
         """
         from django.db.models import Max
-
+        
         instance = self.get_object()
         project_id = instance.project_id
         target_id = request.data.get("target_id")
@@ -151,23 +151,23 @@ class UiModuleViewSet(viewsets.ModelViewSet):
                         {"error": "无法将模块拖入空位置中。"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-
+                
                 instance.parent = None
                 instance.level = 1
                 instance.save()
-
+                
                 # 重新排序根节点模块
                 root_modules = UiModule.objects.filter(
                     project_id=project_id, parent=None
                 ).exclude(id=instance.id).order_by("order", "id")
-
+                
                 reordered = list(root_modules)
                 reordered.append(instance)
-
+                
                 for index, m in enumerate(reordered, start=1):
                     m.order = index
                     m.save(update_fields=["order"])
-
+                
                 serializer = self.get_serializer(instance)
                 return Response(serializer.data)
 
@@ -197,7 +197,7 @@ class UiModuleViewSet(viewsets.ModelViewSet):
                         {"error": "模块级别不能超过5级。"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
-
+                
                 # 校验子树最大深度
                 subtree_depth = instance.get_max_depth()
                 if target_module.level + subtree_depth > 5:
@@ -208,19 +208,19 @@ class UiModuleViewSet(viewsets.ModelViewSet):
 
                 instance.parent = target_module
                 instance.level = target_module.level + 1
-
+                
                 # 获取目标模块下已有子模块的最大 order
                 max_order = UiModule.objects.filter(
                     parent=target_module
                 ).aggregate(Max("order"))["order__max"] or 0
-
+                
                 instance.order = max_order + 1
                 instance.save()
-
+                
             else:
                 # 移动到目标模块的前面或后面，成为同级模块
                 parent = target_module.parent
-
+                
                 # 校验子树最大深度
                 target_parent_level = target_module.parent.level if target_module.parent else 0
                 subtree_depth = instance.get_max_depth()
@@ -233,12 +233,12 @@ class UiModuleViewSet(viewsets.ModelViewSet):
                 instance.parent = parent
                 instance.level = target_module.level
                 instance.save()
-
+                
                 # 重新排序所有同级模块
                 siblings = UiModule.objects.filter(
                     project_id=project_id, parent=parent
                 ).exclude(id=instance.id).order_by("order", "id")
-
+                
                 reordered = []
                 for s in siblings:
                     if s.id == target_module.id and drop_position == -1:
@@ -249,7 +249,7 @@ class UiModuleViewSet(viewsets.ModelViewSet):
                         reordered.append(instance)
                     else:
                         reordered.append(s)
-
+                
                 # 防御，如果目标模块没在 siblings 里（理论上不可能）
                 if instance not in reordered:
                     reordered.append(instance)
@@ -282,6 +282,20 @@ class UiPageViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        # 显式检查：页面下存在步骤集合时，需先删除步骤
+        step_count = instance.page_steps.count()
+        if step_count:
+            return Response(
+                {'error': f'页面下存在 {step_count} 个页面步骤，无法删除页面。请先删除页面下的步骤'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # 显式检查：页面下的元素被页面步骤引用时，不允许删除页面
+        element_usage = UiPageStepsDetailed.objects.filter(element__page=instance).count()
+        if element_usage:
+            return Response(
+                {'error': f'页面下的元素已被 {element_usage} 个页面步骤引用，无法删除页面。请先删除引用这些元素的步骤'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         try:
             self.perform_destroy(instance)
         except ProtectedError:
@@ -398,6 +412,13 @@ class UiPageStepsViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
+        # 显式检查：被测试用例引用时不允许删除步骤
+        usage_count = instance.case_usages.count()
+        if usage_count:
+            return Response(
+                {'error': f'步骤已被 {usage_count} 个测试用例引用，无法删除。请先删除引用该步骤的测试用例'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         try:
             self.perform_destroy(instance)
         except ProtectedError:
@@ -823,7 +844,7 @@ class UiExecutionRecordViewSet(viewsets.ModelViewSet):
         safe_delete(instance.trace_path)
 
         instance.delete()
-
+    
     @action(detail=True, methods=['get'], url_path='trace')
     def get_trace_data(self, request, pk=None):
         """获取执行记录的 Trace 数据
@@ -840,34 +861,34 @@ class UiExecutionRecordViewSet(viewsets.ModelViewSet):
                 'status': 'success',
                 'data': instance.trace_data
             })
-
+        
         # 尝试解析 trace 文件
         if not instance.trace_path:
             return Response({
                 'status': 'error',
                 'message': '此执行记录没有 Trace 数据'
             }, status=status.HTTP_404_NOT_FOUND)
-
+        
         from .trace_parser import parse_trace_file
         import os
         from django.conf import settings
-
+        
         # 构建完整路径
         trace_path = instance.trace_path
         if not os.path.isabs(trace_path):
             trace_path = os.path.join(settings.MEDIA_ROOT, trace_path)
-
+        
         trace_data = parse_trace_file(trace_path)
         if not trace_data:
             return Response({
                 'status': 'error',
                 'message': 'Trace 文件解析失败'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+        
         # 保存解析结果
         instance.trace_data = trace_data
         instance.save(update_fields=['trace_data'])
-
+        
         return Response({
             'status': 'success',
             'data': trace_data
@@ -890,7 +911,7 @@ class UiPublicDataViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='by-project/(?P<project_id>[^/.]+)')
     def by_project(self, request, project_id=None):
         """获取指定项目的所有启用公共数据（供执行器使用）
-
+        
         返回格式（经 UnifiedResponseRenderer 包装后）:
         {"status": "success", "code": 200, "data": [{"key": "username", "value": "admin", "type": 0}, ...]}
         """
@@ -907,7 +928,7 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
     queryset = UiEnvironmentConfig.objects.select_related('project', 'creator')
     serializer_class = UiEnvironmentConfigSerializer
     filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
-    filterset_fields = ['project', 'browser', 'headless', 'is_default']
+    filterset_fields = ['project', 'is_default']
     search_fields = ['name', 'base_url']
     ordering_fields = ['name', 'created_at']
     ordering = ['project', 'name']
@@ -916,29 +937,72 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
         serializer.save(creator=self.request.user)
 
 
+# 执行器可编辑配置字段白名单（与执行器 Config 属性一致）
+_ACTUATOR_CONFIG_FIELDS = frozenset({
+    'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
+    'retry_count', 'step_interval', 'max_concurrent', 'log_level',
+    'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
+    'headless', 'viewport_width', 'viewport_height',
+})
+
+
 class ActuatorViewSet(viewsets.ViewSet):
     """执行器管理视图"""
     permission_classes = []  # 公开访问，不需要特殊权限
+
+    def get_permissions(self):
+        """config 为写操作，需要登录；其余保持公开"""
+        if self.action == 'config':
+            return [IsAuthenticated()]
+        return []
 
     @action(detail=False, methods=['get'])
     def list_actuators(self, request):
         """获取所有在线执行器列表"""
         from .consumers import SocketUserManager
 
+        from .actuator_registry import list_capabilities
+
         actuators = []
-        for actuator_id, consumer in SocketUserManager._actuator_users.items():
-            actuator_info = getattr(consumer, 'actuator_info', {})
-            actuators.append({
-                'id': actuator_id,
-                'name': actuator_info.get('name', actuator_id),
-                'ip': actuator_info.get('ip', 'unknown'),
-                'type': actuator_info.get('type', 'web_ui'),
-                'is_open': actuator_info.get('is_open', True),
-                'debug': actuator_info.get('debug', False),
-                'browser_type': actuator_info.get('browser_type', 'chromium'),
-                'headless': actuator_info.get('headless', False),
-                'connected_at': actuator_info.get('connected_at'),
-            })
+        for cap in list_capabilities():
+            # preserve raw extras
+            raw = SocketUserManager.get_actuator_info(cap['id']) or {}
+            item = {
+                'id': cap['id'],
+                'name': cap.get('name') or cap['id'],
+                'ip': raw.get('ip', 'unknown'),
+                'type': raw.get('type', 'web_ui'),
+                'is_open': cap.get('is_open', True),
+                'debug': raw.get('debug', False),
+                'browser_type': cap.get('browser_type') or cap.get('default_browser'),
+                'headless': raw.get('headless', False),
+                'supported_browsers': cap.get('supported_browsers') or [],
+                'default_browser': cap.get('default_browser'),
+                'supports_headed': cap.get('supports_headed', True),
+                'supports_headless': cap.get('supports_headless', True),
+                'max_slots': cap.get('max_slots', 1),
+                'busy_slots': cap.get('busy_slots', 0),
+                'version': raw.get('version') or cap.get('version'),
+                'os': cap.get('os'),
+                'labels': cap.get('labels') or [],
+                'connected_at': raw.get('connected_at'),
+                # 运行配置（供编辑弹窗预填）
+                'persistent': raw.get('persistent', True),
+                'launch_timeout': raw.get('launch_timeout', 30),
+                'action_timeout': raw.get('action_timeout', 30),
+                'retry_count': raw.get('retry_count', 3),
+                'step_interval': raw.get('step_interval', 500),
+                'log_level': raw.get('log_level', 'INFO'),
+                'trace_enabled': raw.get('trace_enabled', True),
+                'trace_screenshots': raw.get('trace_screenshots', True),
+                'trace_snapshots': raw.get('trace_snapshots', True),
+                'trace_sources': raw.get('trace_sources', False),
+                'headless': raw.get('headless', False),
+                'viewport_width': raw.get('viewport_width', 1280),
+                'viewport_height': raw.get('viewport_height', 720),
+                'in_container': raw.get('in_container', False),
+            }
+            actuators.append(item)
 
         return Response({
             'status': 'success',
@@ -947,6 +1011,131 @@ class ActuatorViewSet(viewsets.ViewSet):
                 'items': actuators
             }
         })
+
+    @action(detail=False, methods=['post'])
+    def config(self, request):
+        """保存执行器配置：更新 registry 并实时下发到执行器"""
+        from .consumers import SocketUserManager
+        from .actuator_registry import update_capability
+        from .socket_models import (
+            SocketDataModel, QueueModel, NoticeType, ResponseCode, UiSocketEnum,
+        )
+        from asgiref.sync import async_to_sync
+
+        actuator_id = request.data.get('actuator_id')
+        config = request.data.get('config')
+        if not actuator_id:
+            return Response({'error': 'actuator_id 必填'}, status=status.HTTP_400_BAD_REQUEST)
+        if not isinstance(config, dict) or not config:
+            return Response({'error': 'config 不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+
+        consumer = SocketUserManager.get_actuator_by_id(str(actuator_id))
+        if not consumer:
+            return Response(
+                {'error': f'执行器 {actuator_id} 不在线'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # 只允许编辑白名单字段
+        normalized = {}
+        for key, value in config.items():
+            if key in _ACTUATOR_CONFIG_FIELDS and value is not None:
+                normalized[key] = value
+
+        # 校验浏览器类型在支持列表内
+        if 'browser_type' in normalized:
+            supported = consumer.actuator_info.get('supported_browsers') or []
+            if normalized['browser_type'] not in supported:
+                return Response(
+                    {
+                        'error': (
+                            f'执行器不支持浏览器类型 {normalized["browser_type"]}，'
+                            f'支持: {", ".join(supported) or "无"}'
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        # 数值范围校验
+        int_ranges = {
+            'launch_timeout': (10, 120),
+            'action_timeout': (5, 60),
+            'retry_count': (0, 10),
+            'step_interval': (0, 60000),
+            'max_concurrent': (1, 20),
+            'viewport_width': (320, 3840),
+            'viewport_height': (240, 2160),
+        }
+        for key, (lo, hi) in int_ranges.items():
+            if key in normalized:
+                try:
+                    value = int(normalized[key])
+                except (TypeError, ValueError):
+                    return Response(
+                        {'error': f'{key} 必须是整数'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if not lo <= value <= hi:
+                    return Response(
+                        {'error': f'{key} 必须在 {lo}-{hi} 之间'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                normalized[key] = value
+
+        if 'log_level' in normalized and normalized['log_level'].upper() not in (
+            'DEBUG', 'INFO', 'WARNING', 'ERROR',
+        ):
+            return Response(
+                {'error': 'log_level 必须是 DEBUG/INFO/WARNING/ERROR 之一'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless'):
+            if key in normalized:
+                normalized[key] = bool(normalized[key])
+
+        # 执行器名称校验
+        if 'name' in normalized:
+            name = str(normalized['name']).strip()
+            if not name or len(name) > 50:
+                return Response(
+                    {'error': '执行器名称不能为空且不能超过50个字符'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            normalized['name'] = name
+
+        # 容器内执行器禁止启用有头模式
+        if normalized.get('headless') is False and consumer.actuator_info.get('in_container'):
+            return Response(
+                {'error': '当前执行器使用docker环境部署无法启用有头模式'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 更新 registry，使列表立即反映新配置
+        try:
+            update_capability(str(actuator_id), normalized)
+        except Exception as exc:
+            return Response({'error': f'更新执行器配置失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # 实时下发到执行器
+        try:
+            async_to_sync(consumer.send_json)(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg="set_config",
+                user=request.user.username if request.user.is_authenticated else None,
+                is_notice=NoticeType.ACTUATOR,
+                data=QueueModel(
+                    func_name=UiSocketEnum.SET_ACTUATOR_CONFIG,
+                    func_args=normalized,
+                )
+            ))
+        except Exception as exc:
+            return Response(
+                {'error': f'配置已保存但下发失败: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response({'status': 'success', 'data': normalized})
 
     @action(detail=False, methods=['get'])
     def status(self, request):
@@ -1012,28 +1201,28 @@ from rest_framework.permissions import AllowAny
 @permission_classes([IsAuthenticated])
 def upload_screenshot(request):
     """上传执行截图，返回可访问 URL
-
+    
     注意：此接口使用 Bearer Token 认证
     执行器通过 /api/token/ 获取 JWT Token 后调用此接口
     """
     file = request.FILES.get('file')
     if not file:
         return Response({'error': '未提供文件'}, status=status.HTTP_400_BAD_REQUEST)
-
+    
     # 保存到 media/ui_screenshots/{日期}/
     date_dir = datetime.now().strftime('%Y%m%d')
     upload_dir = os.path.join(settings.MEDIA_ROOT, 'ui_screenshots', date_dir)
     os.makedirs(upload_dir, exist_ok=True)
-
+    
     # 生成唯一文件名
     ext = os.path.splitext(file.name)[1] or '.png'
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
     file_path = os.path.join(upload_dir, filename)
-
+    
     with open(file_path, 'wb') as f:
         for chunk in file.chunks():
             f.write(chunk)
-
+    
     url = f"{settings.MEDIA_URL}ui_screenshots/{date_dir}/{filename}"
     return Response({'status': 'success', 'url': url}, status=status.HTTP_201_CREATED)
 
@@ -1043,28 +1232,28 @@ def upload_screenshot(request):
 @permission_classes([IsAuthenticated])
 def upload_trace(request):
     """上传 Playwright Trace 文件，返回可访问 URL
-
+    
     注意：此接口使用 Bearer Token 认证
     执行器执行完成后调用此接口上传 trace.zip 文件
     """
     file = request.FILES.get('file')
     if not file:
         return Response({'error': '未提供文件'}, status=status.HTTP_400_BAD_REQUEST)
-
+    
     # 保存到 media/ui_traces/{日期}/
     date_dir = datetime.now().strftime('%Y%m%d')
     upload_dir = os.path.join(settings.MEDIA_ROOT, 'ui_traces', date_dir)
     os.makedirs(upload_dir, exist_ok=True)
-
+    
     # 生成唯一文件名
     ext = os.path.splitext(file.name)[1] or '.zip'
     filename = f"{uuid.uuid4().hex[:12]}{ext}"
     file_path = os.path.join(upload_dir, filename)
-
+    
     with open(file_path, 'wb') as f:
         for chunk in file.chunks():
             f.write(chunk)
-
+    
     # 返回相对路径（用于存储到数据库）和 URL（用于下载）
     relative_path = f"ui_traces/{date_dir}/{filename}"
     url = f"{settings.MEDIA_URL}{relative_path}"
@@ -1101,54 +1290,108 @@ def trigger_batch_execution(request):
     if not case_ids:
         return Response({'error': '未提供用例 ID'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # 查找执行器
-    if actuator_id:
-        actuator = SocketUserManager.get_actuator_by_id(actuator_id)
-    else:
-        actuator = SocketUserManager.get_actuator()
+    from . import actuator_registry
+    from .models import UiEnvironmentConfig
 
+    env_config_id = request.data.get('env_config_id')
+    run_options = request.data.get('run_options') or {}
+
+    env = None
+    if env_config_id:
+        env = UiEnvironmentConfig.objects.filter(id=env_config_id).first()
+        if env is None:
+            return Response(
+                {'error': f'环境配置 {env_config_id} 不存在'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+    effective, selected, err = actuator_registry.resolve_and_select(
+        env=env,
+        run_options=run_options if run_options else None,
+        preferred_actuator_id=actuator_id or None,
+    )
+    if err:
+        return Response({'error': err}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+    actuator = actuator_registry.get_raw_consumer(selected['id'])
     if not actuator:
-        return Response(
-            {'error': f'执行器 {actuator_id} 不在线' if actuator_id else '没有可用的执行器'},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE
-        )
+        return Response({'error': f"执行器 {selected['id']} 不在线"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    actuator_id = selected['id']
+    ttl = None
+    try:
+        timeout_ms = int((effective or {}).get("timeout") or 0)
+    except (TypeError, ValueError):
+        timeout_ms = 0
+    if timeout_ms > 0:
+        ttl = max(15 * 60, min(int(timeout_ms / 1000) * 3 * max(len(case_ids), 1), 6 * 60 * 60))
+    ok, err = actuator_registry.reserve_slots(
+        actuator_id,
+        len(case_ids),
+        ttl_seconds=ttl,
+        meta={"case_ids": case_ids, "trigger": "http_trigger_batch"},
+    )
+    if not ok:
+        return Response({'error': err}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
     # 创建批量执行记录
     from django.utils import timezone as tz
-    case_names = list(UiTestCase.objects.filter(id__in=case_ids).values_list('name', flat=True)[:3])
-    if not batch_name:
-        batch_name = f"定时任务: {', '.join(case_names)}"
-        if len(case_ids) > 3:
-            batch_name += f" 等{len(case_ids)}个用例"
 
-    batch = UiBatchExecutionRecord.objects.create(
-        name=batch_name,
-        total_cases=len(case_ids),
-        status=1,
-        trigger_type=trigger_type,
-        executor=request.user,
-        start_time=tz.now(),
-    )
+    reserved_count = len(case_ids)
+    batch = None
+    try:
+        case_names = list(UiTestCase.objects.filter(id__in=case_ids).values_list('name', flat=True)[:3])
+        if not batch_name:
+            batch_name = f"定时任务: {', '.join(case_names)}"
+            if len(case_ids) > 3:
+                batch_name += f" 等{len(case_ids)}个用例"
 
-    args = {
-        'case_ids': case_ids,
-        'actuator_id': actuator_id,
-        'batch_id': batch.id,
-    }
+        batch = UiBatchExecutionRecord.objects.create(
+            name=batch_name,
+            total_cases=len(case_ids),
+            status=1,
+            trigger_type=trigger_type,
+            executor=request.user,
+            start_time=tz.now(),
+        )
 
-    # 通过 WebSocket 发送给执行器
-    async_to_sync(actuator.send_json)(SocketDataModel(
-        code=ResponseCode.SUCCESS,
-        msg='execute_batch',
-        user='system',
-        is_notice=NoticeType.ACTUATOR,
-        data=QueueModel(
-            func_name=UiSocketEnum.TEST_CASE_BATCH,
-            func_args=args,
-        ),
-    ))
+        args = {
+            'case_ids': case_ids,
+            'actuator_id': actuator_id,
+            'batch_id': batch.id,
+            'executor_id': request.user.id,
+            'env_config_id': env_config_id,
+            'run_options': run_options or None,
+            'effective_runtime': effective,
+            'trigger_type': trigger_type,
+        }
+
+        # 通过 WebSocket 发送给执行器
+        async_to_sync(actuator.send_json)(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg='execute_batch',
+            user='system',
+            is_notice=NoticeType.ACTUATOR,
+            data=QueueModel(
+                func_name=UiSocketEnum.TEST_CASE_BATCH,
+                func_args=args,
+            ),
+        ))
+    except Exception:
+        actuator_registry.adjust_busy_slots(actuator_id, -reserved_count)
+        if batch is not None:
+            batch.status = 4  # all failed
+            batch.end_time = tz.now()
+            if batch.start_time:
+                batch.duration = (batch.end_time - batch.start_time).total_seconds()
+            batch.save(update_fields=['status', 'end_time', 'duration'])
+        raise
 
     return Response({
         'status': 'success',
-        'data': {'batch_id': batch.id, 'total_cases': len(case_ids)},
+        'data': {
+            'batch_id': batch.id,
+            'total_cases': len(case_ids),
+            'actuator_id': actuator_id,
+            'effective_runtime': effective,
+        },
     })

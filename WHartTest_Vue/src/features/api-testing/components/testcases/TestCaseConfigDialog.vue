@@ -216,20 +216,20 @@ const handleSubmit = () => {
 }
 
 :global(.arco-modal) {
-  background: #ffffff !important;
+  background: var(--color-bg-2) !important;
   border-radius: 12px !important;
-  border: 1px solid rgba(148, 163, 184, 0.16) !important;
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16) !important;
+  border: 1px solid var(--color-border-2) !important;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.25) !important;
 }
 
 :global(.arco-modal-header) {
   background: transparent !important;
-  border-bottom: 1px solid rgba(148, 163, 184, 0.14) !important;
+  border-bottom: 1px solid var(--color-border-2) !important;
   padding-bottom: 1rem !important;
 }
 
 :global(.arco-modal-title) {
-  color: #0f172a !important;
+  color: var(--color-text-1) !important;
 }
 
 :global(.arco-modal-body) {

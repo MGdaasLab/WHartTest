@@ -27,7 +27,7 @@ except ImportError:
     pass
 
 # ─── WeKnora API 配置 ─────────────────────────────────────
-BASE_URL = os.getenv("WEKNORA_BASE_URL", "http://192.168.150.114:8056/api/v1").rstrip("/")
+BASE_URL = os.getenv("WEKNORA_BASE_URL", "http://127.0.0.1:8056/api/v1").rstrip("/")
 API_KEY = os.getenv("WEKNORA_API_KEY", "sk--6q_YbIK88neAU8c4AA_ynFgQ5G2qCYxWmimaiGk-qBw5xSJ")
 
 _http = requests.Session()

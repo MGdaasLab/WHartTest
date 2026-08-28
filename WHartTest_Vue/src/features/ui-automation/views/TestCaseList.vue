@@ -53,6 +53,7 @@
           </a-option>
         </a-select>
         <a-select
+          :key="`env-config-select-${projectId || 'none'}`"
           v-model="selectedEnvConfig"
           :placeholder="pageText.executionEnvironment"
           allow-clear
@@ -244,6 +245,7 @@ const pageText = computed(() => (
         online: 'Online',
         offline: 'Offline',
         executionEnvironment: 'Execution environment',
+        noCompatibleActuator: 'No online actuator matches the effective browser/headless policy',
         defaultSuffix: ' (Default)',
         batchExecute: 'Batch run',
         batchDelete: 'Batch delete',
@@ -302,6 +304,7 @@ const pageText = computed(() => (
         batchDeleteSuccess: (count: number) => `Deleted ${count} cases successfully`,
         caseRunSuccess: (passed: number, total: number) => `Case execution succeeded: ${passed}/${total} steps passed`,
         caseRunFailed: (message: string) => `Case execution failed: ${message}`,
+        insufficientSlots: (name: string, need: number, free: number) => `Actuator ${name} has insufficient free slots (need ${need}, only ${free} left)`,
       }
     : {
         selectModule: '选择模块',
@@ -312,6 +315,7 @@ const pageText = computed(() => (
         online: '在线',
         offline: '离线',
         executionEnvironment: '执行环境',
+        noCompatibleActuator: '没有与生效浏览器/无头策略匹配的在线执行器',
         defaultSuffix: ' (默认)',
         batchExecute: '批量执行',
         batchDelete: '批量删除',
@@ -370,6 +374,7 @@ const pageText = computed(() => (
         batchDeleteSuccess: (count: number) => `成功删除 ${count} 个用例`,
         caseRunSuccess: (passed: number, total: number) => `用例执行成功: ${passed}/${total} 步骤通过`,
         caseRunFailed: (message: string) => `用例执行失败: ${message}`,
+        insufficientSlots: (name: string, need: number, free: number) => `执行器 ${name} 空闲 slot 不足（需要 ${need}，剩余 ${free}）`,
       }
 ))
 
@@ -384,7 +389,7 @@ const moduleOptions = ref<UiModule[]>([])
 const envConfigs = ref<UiEnvironmentConfig[]>([]) // 环境配置列表
 const actuators = ref<ActuatorInfo[]>([]) // 执行器列表
 const selectedEnvConfig = ref<number | undefined>() // 选中的环境配置
-const selectedActuator = ref<string | undefined>() // 选中的执行器
+const selectedActuator = ref<string | undefined>()
 const selectedRowKeys = ref<number[]>([]) // 批量选中的用例ID
 const modalVisible = ref(false)
 const stepsDrawerVisible = ref(false)
@@ -669,6 +674,37 @@ const viewSteps = (record: UiTestCase) => {
   stepsDrawerVisible.value = true
 }
 
+
+const ensureDefaultEnvSelected = () => {
+  if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
+    const defaultEnv = envConfigs.value.find(e => e.is_default)
+    selectedEnvConfig.value = (defaultEnv || envConfigs.value[0])?.id
+  }
+}
+
+/** 选择有足够空闲 slot 的在线执行器（浏览器/无头由执行器自身配置决定） */
+const selectAvailableActuator = (needSlots = 1): string | undefined => {
+  const match = actuators.value.find(a => {
+    if (!a.is_open) return false
+    const max = a.max_slots ?? 1
+    const busy = a.busy_slots ?? 0
+    return (max - busy) >= needSlots
+  })
+  return match?.id
+}
+
+/** 校验选中执行器空闲 slot 是否足够；不足则返回详细提示文案，足够返回 null */
+const buildSlotsError = (actuatorId: string | undefined, needSlots: number): string | null => {
+  if (!actuatorId) return pageText.value.selectOnlineActuator
+  const act = actuators.value.find(a => a.id === actuatorId)
+  if (!act || !act.is_open) return pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator
+  const max = act.max_slots ?? 1
+  const busy = act.busy_slots ?? 0
+  const free = max - busy
+  if (free >= needSlots) return null
+  return pageText.value.insufficientSlots(act.name || actuatorId, needSlots, Math.max(free, 0))
+}
+
 const runTestCase = async (record: UiTestCase) => {
   // 先获取执行器列表
   await fetchActuators()
@@ -679,23 +715,24 @@ const runTestCase = async (record: UiTestCase) => {
     return
   }
 
-  // 如果没有选择执行器，自动选择第一个可用的
+  // 先补齐默认环境，再按生效策略选执行器（与后端 hard-fail 对齐）
+  ensureDefaultEnvSelected()
+
   if (!selectedActuator.value) {
-    const available = actuators.value.find(a => a.is_open)
-    if (available) {
-      selectedActuator.value = available.id
+    const availableId = selectAvailableActuator(1)
+    if (availableId) {
+      selectedActuator.value = availableId
     } else {
-      Message.warning(pageText.value.selectOnlineActuator)
+      Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
       return
     }
   }
 
-  // 如果没有选择环境配置，使用默认的
-  if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
-    const defaultEnv = envConfigs.value.find(e => e.is_default)
-    if (defaultEnv) {
-      selectedEnvConfig.value = defaultEnv.id
-    }
+  // 发送前预检查：选中执行器空闲 slot 不足时直接提示，不进入禁用态
+  const slotErr = buildSlotsError(selectedActuator.value, 1)
+  if (slotErr) {
+    Message.error(slotErr)
+    return
   }
 
   // 连接 WebSocket
@@ -738,23 +775,26 @@ const runBatchTestCases = async () => {
     return
   }
 
-  // 如果没有选择执行器，自动选择第一个可用的
+  // 先补齐默认环境，再按生效策略与所需 slot 数选执行器
+  ensureDefaultEnvSelected()
+
   if (!selectedActuator.value) {
-    const available = actuators.value.find(a => a.is_open)
-    if (available) {
-      selectedActuator.value = available.id
+    const needSlots = selectedRowKeys.value.length || 1
+    const availableId = selectAvailableActuator(needSlots)
+    if (availableId) {
+      selectedActuator.value = availableId
     } else {
-      Message.warning(pageText.value.selectOnlineActuator)
+      Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
       return
     }
   }
 
-  // 如果没有选择环境配置，使用默认的
-  if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
-    const defaultEnv = envConfigs.value.find(e => e.is_default)
-    if (defaultEnv) {
-      selectedEnvConfig.value = defaultEnv.id
-    }
+  // 发送前预检查：批量任务数不得超过执行器剩余 slot，不足时直接提示，不进入禁用态
+  const needSlots = selectedRowKeys.value.length || 1
+  const slotErr = buildSlotsError(selectedActuator.value, needSlots)
+  if (slotErr) {
+    Message.error(slotErr)
+    return
   }
 
   // 连接 WebSocket
@@ -829,21 +869,44 @@ const handleCaseResult = (data: any) => {
   fetchTestCases()
 }
 
+/** 处理执行被拒绝（如执行器空闲 slot 不足）：提示并移除对应执行中状态，避免按钮卡在禁用态 */
+const handleRunRejected = (data: any) => {
+  const args = data.data?.func_args
+  const error = args?.error || (data.code !== 200 ? data.msg : '')
+  if (!error) return
+  Message.error(error)
+  const remove = new Set<number>()
+  if (args?.case_id != null) remove.add(Number(args.case_id))
+  if (Array.isArray(args?.case_ids)) {
+    args.case_ids.forEach((id: any) => remove.add(Number(id)))
+  }
+  if (remove.size > 0) {
+    executingIds.value = executingIds.value.filter(id => !remove.has(id))
+  }
+  fetchActuators()
+  fetchTestCases()
+}
+
 /** 获取环境配置 */
-const fetchEnvConfigs = async () => {
-  if (!projectId.value) return
+const fetchEnvConfigs = async (options: { resetSelected?: boolean } = {}) => {
+  const currentProjectId = projectId.value
+  if (options.resetSelected) {
+    selectedEnvConfig.value = undefined
+    envConfigs.value = []
+  }
+  if (!currentProjectId) {
+    selectedEnvConfig.value = undefined
+    envConfigs.value = []
+    return
+  }
   try {
-    const res = await envConfigApi.list({ project: projectId.value })
+    const res = await envConfigApi.list({ project: currentProjectId })
+    if (projectId.value !== currentProjectId) return
+
     envConfigs.value = extractListData<UiEnvironmentConfig>(res)
-    // 优先选择默认环境，如果没有默认环境则选择第一个环境配置
-    if (!selectedEnvConfig.value && envConfigs.value.length > 0) {
-      const defaultEnv = envConfigs.value.find(e => e.is_default)
-      if (defaultEnv) {
-        selectedEnvConfig.value = defaultEnv.id
-      } else {
-        // 如果没有默认环境，选择第一个环境配置
-        selectedEnvConfig.value = envConfigs.value[0].id
-      }
+    const selectedStillAvailable = envConfigs.value.some(env => env.id === selectedEnvConfig.value)
+    if (!selectedStillAvailable) {
+      selectedEnvConfig.value = envConfigs.value.find(env => env.is_default)?.id ?? envConfigs.value[0]?.id
     }
   } catch {
     // 静默失败
@@ -851,15 +914,19 @@ const fetchEnvConfigs = async () => {
 }
 
 /** 获取执行器列表 */
-const fetchActuators = async () => {
+const fetchActuators = async (options: { resetSelected?: boolean } = {}) => {
+  if (options.resetSelected) {
+    selectedActuator.value = undefined
+    actuators.value = []
+  }
   try {
     const res = await actuatorApi.list()
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
-    // 自动选择第一个可用的执行器
-    if (!selectedActuator.value && actuators.value.length > 0) {
-      const available = actuators.value.find(a => a.is_open)
-      if (available) selectedActuator.value = available.id
+    // Do not auto-fallback to an arbitrary online actuator; capability match happens at run time.
+    const selectedStillAvailable = actuators.value.some(act => act.id === selectedActuator.value && act.is_open)
+    if (!selectedStillAvailable) {
+      selectedActuator.value = undefined
     }
   } catch {
     // 静默失败
@@ -868,6 +935,8 @@ const fetchActuators = async () => {
 
 /** WebSocket 事件监听 */
 let offCaseResult: (() => void) | null = null
+let offTestCaseRejected: (() => void) | null = null
+let offBatchRejected: (() => void) | null = null
 
 watch(() => props.selectedModuleId, (newVal) => {
   filters.module = newVal
@@ -877,14 +946,24 @@ watch(() => props.selectedModuleId, (newVal) => {
 
 /** 监听项目变化，重新加载数据 */
 watch(projectId, async (newVal) => {
+  selectedActuator.value = undefined
+  actuators.value = []
+  selectedEnvConfig.value = undefined
+  envConfigs.value = []
+  selectedRowKeys.value = []
+  filters.module = undefined
+  moduleOptions.value = []
+  testcaseData.value = []
+  pagination.total = 0
+
   if (newVal) {
     pagination.current = 1
     fetchModules()
     fetchTestCases()
     // 同时获取环境配置和执行器列表，并自动选择默认值
     await Promise.all([
-      fetchEnvConfigs(),
-      fetchActuators()
+      fetchEnvConfigs({ resetSelected: true }),
+      fetchActuators({ resetSelected: true })
     ])
   }
 }, { immediate: true })
@@ -893,6 +972,7 @@ const refresh = () => {
   fetchModules()
   fetchTestCases()
   fetchEnvConfigs()
+  fetchActuators()
 }
 
 defineExpose({ refresh })
@@ -900,11 +980,16 @@ defineExpose({ refresh })
 onMounted(() => {
   // 监听用例执行结果
   offCaseResult = uiWebSocket.on(UiSocketEnum.CASE_RESULT, handleCaseResult)
+  // 监听执行被拒绝（空闲 slot 不足等），确保按钮不卡在禁用态
+  offTestCaseRejected = uiWebSocket.on(UiSocketEnum.TEST_CASE, handleRunRejected)
+  offBatchRejected = uiWebSocket.on(UiSocketEnum.TEST_CASE_BATCH, handleRunRejected)
 })
 
 onUnmounted(() => {
   // 清理事件监听
   offCaseResult?.()
+  offTestCaseRejected?.()
+  offBatchRejected?.()
 })
 </script>
 
@@ -934,4 +1019,6 @@ onUnmounted(() => {
   flex-wrap: wrap;
   gap: 12px;
 }
+
+
 </style>

@@ -422,7 +422,7 @@ const OPE_PARAMS_MAP: Record<string, OpeParamDef[]> = {
   // 元素操作
   fill: [{ field: 'text', label: '输入内容', type: 'input', placeholder: '请输入要填充的文本', required: true }],
   type: [{ field: 'text', label: '输入内容', type: 'input', placeholder: '请输入要键入的文本', required: true }],
-  wait: [{ field: 'timeout', label: '等待时间(毫秒)', type: 'number', placeholder: '默认1000', min: 0, max: 60000 }],
+  wait: [{ field: 'timeout', label: '等待时间(秒)', type: 'number', placeholder: '默认1', min: 0, max: 60 }],
   screenshot: [{ field: 'name', label: '截图文件名', type: 'input', placeholder: '可选，留空自动生成' }],
   select_option: [{ field: 'value', label: '选项值', type: 'input', placeholder: '请输入要选择的选项值', required: true }],
   press: [{ field: 'key', label: '按键值', type: 'input', placeholder: '例如 Enter, Tab, Escape 等', required: true }],
@@ -483,7 +483,7 @@ const formatOpeValue = (opeValue: Record<string, any>) => {
 }
 
 /** 获取操作方法的显示标签 */
-const { isEnglish } = useAppI18n()
+const { isEnglish, tl } = useAppI18n()
 
 const stepText = computed(() => isEnglish.value
   ? {
@@ -573,13 +573,14 @@ const stepText = computed(() => isEnglish.value
       groupAssertContent: 'Content Verification',
       groupAssertPage: 'Page Verification',
       sqlConfig: 'SQL Config',
-      sqlConfigPlaceholder: 'SQL config in JSON format',
+      sqlConfigPlaceholder: 'SQL statement, or JSON config e.g. {"sql":"SELECT 1","method":"fetchall"}',
       customVariablePlaceholder: 'Variable definition in JSON format',
       conditionConfig: 'Condition Config',
       conditionConfigPlaceholder: 'Condition config in JSON format',
       aiActionPrompt: 'AI Action Prompt',
       aiActionPlaceholder:
         'Describe the UI action in natural language, including multi-step page operations, data handling and assertions. e.g. "Log in with username admin and password 123, then assert the dashboard header shows Welcome."',
+      invalidJson: 'JSON config is invalid, please check the format',
       description: 'Description',
       optionalDescription: 'Optional description',
       selectActionTypeRequired: 'Select an action type',
@@ -591,6 +592,7 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `Execution succeeded: ${passed}/${total} steps passed`,
       executionFailed: (message: string) => `Execution failed: ${message}`,
       unknownError: 'Unknown error',
+      insufficientSlots: (name: string, need: number, free: number) => `Actuator ${name} has insufficient free slots (need ${need}, only ${free} left)`,
       fetchElementsFailed: 'Failed to fetch element list',
       fillRequired: 'Fill in the required fields',
       enterContent: 'Enter content',
@@ -690,13 +692,14 @@ const stepText = computed(() => isEnglish.value
       groupAssertContent: '内容校验',
       groupAssertPage: '页面校验',
       sqlConfig: 'SQL 配置',
-      sqlConfigPlaceholder: 'JSON 格式 SQL 配置',
+      sqlConfigPlaceholder: '可直接输入 SQL 语句，或 JSON 配置如 {"sql":"SELECT 1","method":"fetchall"}',
       customVariablePlaceholder: 'JSON 格式变量定义',
       conditionConfig: '条件配置',
       conditionConfigPlaceholder: 'JSON 格式条件配置',
       aiActionPrompt: 'AI 操作描述',
       aiActionPlaceholder:
         '用自然语言描述本步骤要让 AI 执行的操作，可包含多步页面操作、数据处理与断言。例如：“用用户名 admin、密码 123 登录，然后断言首页标题显示 欢迎您。”',
+      invalidJson: 'JSON 配置格式不正确，请检查',
       description: '描述',
       optionalDescription: '可选描述',
       selectActionTypeRequired: '请选择操作类型',
@@ -708,6 +711,7 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `执行成功: ${passed}/${total} 步骤通过`,
       executionFailed: (message: string) => `执行失败: ${message}`,
       unknownError: '未知错误',
+      insufficientSlots: (name: string, need: number, free: number) => `执行器 ${name} 空闲 slot 不足（需要 ${need}，剩余 ${free}）`,
       fetchElementsFailed: '获取元素列表失败',
       fillRequired: '请填写必填项',
       enterContent: '请输入内容',
@@ -729,7 +733,7 @@ const stepTypeLabels = computed<Record<StepType, string>>(() => isEnglish.value
       2: 'SQL Action',
       3: 'Custom Variable',
       4: 'Condition',
-      5: 'Python Code',
+      // 5: 'Python Code',
       10: 'AI Action',
     }
   : STEP_TYPE_LABELS
@@ -813,6 +817,10 @@ const getParamLabel = (param: OpeParamDef) => isEnglish.value ? (paramLabelMap[p
 const getParamPlaceholder = (param: OpeParamDef) => isEnglish.value ? (paramPlaceholderMap[param.placeholder] || param.placeholder) : param.placeholder
 
 const props = defineProps<{ pageStep: UiPageSteps }>()
+
+const translateServerMessage = (message: unknown) => (
+  typeof message === 'string' && message.trim() ? tl(message) : null
+)
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -1050,7 +1058,19 @@ const executePageStep = async () => {
     Message.warning(stepText.value.noActionSteps)
     return
   }
-  
+
+  // 发送前预检查：空闲 slot 不足时直接提示，不进入加载态
+  const act = actuators.value.find((a: ActuatorInfo) => a.id === selectedActuator.value)
+  if (!act || !act.is_open) {
+    Message.warning(stepText.value.selectActuatorFirst)
+    return
+  }
+  const freeSlots = (act.max_slots ?? 1) - (act.busy_slots ?? 0)
+  if (freeSlots < 1) {
+    Message.error(stepText.value.insufficientSlots(act.name || act.id, 1, Math.max(freeSlots, 0)))
+    return
+  }
+
   executing.value = true
   
   // 确保 WebSocket 已连接
@@ -1085,8 +1105,20 @@ const handleStepResult = (data: any) => {
   if (result.status === 'success') {
     Message.success(stepText.value.executionSuccess(result.passed_steps || 0, result.total_steps || 0))
   } else {
-    Message.error(stepText.value.executionFailed(result.message || stepText.value.unknownError))
+    Message.error(
+      translateServerMessage(result.message)
+      || stepText.value.executionFailed(stepText.value.unknownError)
+    )
   }
+}
+
+/** 执行被拒绝（如执行器空闲 slot 不足）：提示并复位加载态，避免按钮卡住 */
+const handleStepRejected = (data: any) => {
+  const error = data.data?.func_args?.error || (data.code !== 200 ? data.msg : '')
+  if (!error) return
+  executing.value = false
+  Message.error(error)
+  fetchActuators()
 }
 
 const fetchElements = async () => {
@@ -1158,7 +1190,7 @@ const editStep = async (step: UiPageStepsDetailed) => {
       opeParams.text = step.ope_value.value
     }
   }
-  sqlExecuteStr.value = JSON.stringify(step.sql_execute || {}, null, 2)
+  sqlExecuteStr.value = formatSqlConfigForEdit(step.sql_execute)
   customStr.value = JSON.stringify(step.custom || {}, null, 2)
   conditionValueStr.value = JSON.stringify(step.condition_value || {}, null, 2)
   aiPromptStr.value =
@@ -1168,12 +1200,52 @@ const editStep = async (step: UiPageStepsDetailed) => {
   modalVisible.value = true
 }
 
-const parseJson = (str: string, defaultVal: Record<string, unknown> = {}) => {
+/**
+ * 解析 JSON 文本，解析失败时抛出错误而非静默返回空对象，
+ * 避免用户输入被悄悄丢弃导致“保存了却没保存成功”。
+ * 调用方应在 try/catch 中处理错误并向用户提示。
+ */
+const parseJson = (str: string): Record<string, unknown> => {
+  const trimmed = (str || '').trim()
+  if (!trimmed) return {}
+  return JSON.parse(trimmed)
+}
+
+/**
+ * 解析 SQL 步骤配置。
+ * 兼容两种输入：
+ *  - JSON 对象（如 {"sql": "SELECT 1", "method": "fetchall"}），原样解析；
+ *  - 纯 SQL 文本（如 "SELECT * FROM users"），与执行器约定一致，自动包装为 { sql: text }。
+ * 任何非空输入都会被保留，绝不会静默丢弃用户内容。
+ */
+const parseSqlConfig = (str: string): Record<string, unknown> => {
+  const trimmed = (str || '').trim()
+  if (!trimmed) return {}
   try {
-    return JSON.parse(str)
+    const parsed = JSON.parse(trimmed)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+    // 合法 JSON 但不是对象（如数字、数组）--按纯文本处理，包装为 sql
+    return { sql: trimmed }
   } catch {
-    return defaultVal
+    // 不是合法 JSON，视为纯 SQL 文本（执行器同样支持字符串形式）
+    return { sql: trimmed }
   }
+}
+
+/**
+ * 回显 SQL 步骤配置到文本框。
+ * - 仅含 sql 字段时（用户输入的纯 SQL 文本），直接显示该 SQL，避免被 JSON 包裹后难以阅读；
+ * - 其它结构化配置（含 method/params 等字段）按 JSON 格式化显示。
+ */
+const formatSqlConfigForEdit = (sqlExecute: Record<string, unknown> | null | undefined): string => {
+  const config = sqlExecute || {}
+  const keys = Object.keys(config)
+  if (keys.length === 1 && keys[0] === 'sql') {
+    return String(config.sql ?? '')
+  }
+  return JSON.stringify(config, null, 2)
 }
 
 
@@ -1301,6 +1373,30 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
     done(false)
     return
   }
+
+  // 预解析 JSON 配置字段：custom / condition_value 必须是合法 JSON，
+  // 解析失败时提前提示，避免静默丢弃用户输入（SQL 步骤允许纯 SQL 文本，单独处理）
+  let customValue: Record<string, unknown> = {}
+  let conditionValue: Record<string, unknown> = {}
+  if (formData.step_type === 3) {
+    try {
+      customValue = parseJson(customStr.value)
+    } catch {
+      Message.warning(stepText.value.invalidJson)
+      done(false)
+      return
+    }
+  }
+  if (formData.step_type === 4) {
+    try {
+      conditionValue = parseJson(conditionValueStr.value)
+    } catch {
+      Message.warning(stepText.value.invalidJson)
+      done(false)
+      return
+    }
+  }
+
   submitting.value = true
   try {
     const data: Omit<UiPageStepsDetailed, 'id' | 'created_at' | 'updated_at'> = {
@@ -1312,11 +1408,13 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
       ope_value: formData.step_type === 10
         ? (aiPromptStr.value.trim() ? { ai_prompt: aiPromptStr.value } : undefined)
         : buildOpeValue(),
-      sql_execute: parseJson(sqlExecuteStr.value),
-      custom: parseJson(customStr.value),
-      condition_value: parseJson(conditionValueStr.value),
+      sql_execute: formData.step_type === 2 ? parseSqlConfig(sqlExecuteStr.value) : {},
+      custom: customValue,
+      condition_value: conditionValue,
       func: formData.func || undefined,
-      description: formData.description || undefined,
+      // 描述允许置空：显式传空字符串 ''，避免被 || undefined 转成 undefined
+      // 而从 PATCH payload 中丢失，导致后端无法把已有描述清空。
+      description: formData.description ?? '',
     }
 
     if (isEdit.value && currentStep.value?.id) {
@@ -1326,8 +1424,8 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
       await pageStepsDetailedApi.create(data)
       Message.success(stepText.value.addSuccess)
     }
+    await fetchSteps()
     done(true)
-    fetchSteps()
   } catch (error: unknown) {
     const err = error as { errors?: Record<string, string[]>; error?: string }
     const errors = err?.errors
@@ -1337,7 +1435,10 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
         .join('\n')
       Message.error({ content: messages, duration: 5000 })
     } else {
-      Message.error(err?.error || (isEdit.value ? stepText.value.updateFailed : stepText.value.addFailed))
+      Message.error(
+        translateServerMessage(err?.error)
+        || (isEdit.value ? stepText.value.updateFailed : stepText.value.addFailed)
+      )
     }
     done(false)
   } finally {
@@ -1354,15 +1455,17 @@ const deleteStep = async (step: UiPageStepsDetailed) => {
   try {
     await pageStepsDetailedApi.delete(step.id)
     Message.success(stepText.value.deleteSuccess)
-    fetchSteps()
-  } catch {
-    Message.error(stepText.value.deleteFailed)
+    await fetchSteps()
+  } catch (error: unknown) {
+    const err = error as { error?: string }
+    Message.error(translateServerMessage(err?.error) || stepText.value.deleteFailed)
   }
 }
 
 const onDragEnd = async () => {
   try {
     const steps = stepData.value.map((s, idx) => ({
+      id: s.id,
       step_type: s.step_type,
       element: s.element,
       step_sort: idx,
@@ -1375,6 +1478,7 @@ const onDragEnd = async () => {
       description: s.description,
     }))
     await pageStepsDetailedApi.batchUpdate(props.pageStep.id, steps)
+    await fetchSteps()
     Message.success(stepText.value.sortSaved)
   } catch {
     Message.error(stepText.value.saveSortFailed)
@@ -1384,6 +1488,7 @@ const onDragEnd = async () => {
 
 // WebSocket 事件监听
 let offStepResult: (() => void) | null = null
+let offStepRejected: (() => void) | null = null
 
 watch(() => props.pageStep, async () => {
   fetchSteps()
@@ -1402,10 +1507,13 @@ onMounted(() => {
   fetchEnvConfigs()
   // 监听页面步骤执行结果
   offStepResult = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, handleStepResult)
+  // 监听执行被拒绝（空闲 slot 不足等），复位加载态避免按钮卡住
+  offStepRejected = uiWebSocket.on(UiSocketEnum.PAGE_STEPS, handleStepRejected)
 })
 
 onUnmounted(() => {
   offStepResult?.()
+  offStepRejected?.()
 })
 </script>
 

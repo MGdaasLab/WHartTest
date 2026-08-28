@@ -12,6 +12,7 @@ import os
 import shutil
 import threading
 import json
+import time
 import mimetypes
 import re
 from typing import Optional
@@ -89,27 +90,37 @@ def _build_skill_screenshots_dir(
     )
 
 
+# 截图/产物目录空闲超过该时长（秒）才允许清理，避免 chat_session_id 变化时误删正在使用的截图
+_SKILL_DIR_STALE_SECONDS = 5 * 60 * 60
+
+
+def _dir_latest_mtime(path: str) -> float:
+    """目录树内最新文件 mtime；无文件返回 0（目录结构变更不算活跃写入）。"""
+    latest = 0.0
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                mtime = os.path.getmtime(os.path.join(root, name))
+            except OSError:
+                continue
+            if mtime > latest:
+                latest = mtime
+    return latest
+
+
 def _prepare_skill_screenshots_dir(
     project_id: Optional[int] = None,
     case_dir_key: Optional[str] = None,
-    chat_session_id: Optional[str] = None,
 ) -> str:
     screenshots_dir = _build_skill_screenshots_dir(project_id, case_dir_key)
     if not case_dir_key:
         os.makedirs(screenshots_dir, exist_ok=True)
         return screenshots_dir
 
-    session_marker = os.path.join(screenshots_dir, ".chat_session")
-    current_chat_id = chat_session_id or "default"
     should_clear = False
-
     if os.path.exists(screenshots_dir):
-        if os.path.exists(session_marker):
-            with open(session_marker, "r", encoding="utf-8") as f:
-                stored_chat_id = f.read().strip()
-            if stored_chat_id != current_chat_id:
-                should_clear = True
-        else:
+        latest = _dir_latest_mtime(screenshots_dir)
+        if latest and time.time() - latest > _SKILL_DIR_STALE_SECONDS:
             should_clear = True
 
     if should_clear:
@@ -117,9 +128,6 @@ def _prepare_skill_screenshots_dir(
         logger.info(f"[execute_skill_script] 清空旧截图目录: {screenshots_dir}")
 
     os.makedirs(screenshots_dir, exist_ok=True)
-    with open(session_marker, "w", encoding="utf-8") as f:
-        f.write(current_chat_id)
-
     return screenshots_dir
 
 
@@ -143,24 +151,16 @@ def _build_skill_artifacts_dir(
 def _prepare_skill_artifacts_dir(
     project_id: Optional[int] = None,
     case_dir_key: Optional[str] = None,
-    chat_session_id: Optional[str] = None,
 ) -> str:
     artifacts_dir = _build_skill_artifacts_dir(project_id, case_dir_key)
     if not case_dir_key:
         os.makedirs(artifacts_dir, exist_ok=True)
         return artifacts_dir
 
-    session_marker = os.path.join(artifacts_dir, ".chat_session")
-    current_chat_id = chat_session_id or "default"
     should_clear = False
-
     if os.path.exists(artifacts_dir):
-        if os.path.exists(session_marker):
-            with open(session_marker, "r", encoding="utf-8") as f:
-                stored_chat_id = f.read().strip()
-            if stored_chat_id != current_chat_id:
-                should_clear = True
-        else:
+        latest = _dir_latest_mtime(artifacts_dir)
+        if latest and time.time() - latest > _SKILL_DIR_STALE_SECONDS:
             should_clear = True
 
     if should_clear:
@@ -168,9 +168,6 @@ def _prepare_skill_artifacts_dir(
         logger.info(f"[execute_skill_script] 清空旧产物目录: {artifacts_dir}")
 
     os.makedirs(artifacts_dir, exist_ok=True)
-    with open(session_marker, "w", encoding="utf-8") as f:
-        f.write(current_chat_id)
-
     return artifacts_dir
 
 
@@ -362,6 +359,67 @@ def _get_playwright_session_manager() -> PlaywrightSessionManager:
     return _playwright_session_manager
 
 
+def _resolve_skill_runtime_api_key(user_id: int) -> tuple[str, str]:
+    """解析 Skill 运行时使用的 API Key。
+
+    优先级：
+    1. 非空的 settings/环境变量 WHARTTEST_API_KEY（运维覆盖）
+    2. 当前对话用户名下最新一条有效 API Key
+    3. 空字符串（不注入，保留 skill 脚本内默认值）
+
+    Returns:
+        (api_key, source_label) source_label 仅用于日志，不含密钥内容。
+    """
+    configured = (
+        getattr(settings, "WHARTTEST_API_KEY", None)
+        or os.environ.get("WHARTTEST_API_KEY")
+        or ""
+    ).strip()
+    if configured:
+        return configured, "env_or_settings"
+
+    if not user_id:
+        return "", "none"
+
+    try:
+        from api_keys.models import APIKey
+    except ImportError:
+        logger.debug(
+            "[execute_skill_script] api_keys 应用不可用，跳过用户 Key 解析 user_id=%s",
+            user_id,
+        )
+        return "", "none"
+
+    try:
+        for key_obj in APIKey.objects.filter(user_id=user_id, is_active=True).order_by(
+            "-created_at"
+        ):
+            if key_obj.is_valid() and (key_obj.key or "").strip():
+                return key_obj.key.strip(), f"user_key_id={key_obj.id}"
+    except Exception as e:
+        logger.error(
+            "[execute_skill_script] 读取用户 API Key 失败 user_id=%s: %s",
+            user_id,
+            e,
+            exc_info=True,
+        )
+        return "", "error"
+    return "", "none"
+
+
+def _resolve_skill_runtime_backend_url() -> str:
+    """Skill 在 backend 进程内执行时，默认回环访问本服务。"""
+    configured = (
+        getattr(settings, "WHARTTEST_BACKEND_URL", None)
+        or os.environ.get("WHARTTEST_BACKEND_URL")
+        or ""
+    ).strip()
+    if configured:
+        return configured.rstrip("/")
+    # 容器/本机同进程：默认本机 8000，避免 skill 脚本默认 127.0.0.1 与部署端口不一致时无覆盖
+    return "http://127.0.0.1:8000"
+
+
 def get_skill_tools(
     user_id: int,
     project_id: Optional[int] = None,
@@ -440,10 +498,25 @@ def get_skill_tools(
             logger.info(f"[execute_skill_script] 在目录 {skill_dir} 执行: {command}")
 
             env = os.environ.copy()
-            env["WHARTTEST_BACKEND_URL"] = getattr(
-                settings, "WHARTTEST_BACKEND_URL", "http://localhost:8000"
-            )
-            env["WHARTTEST_API_KEY"] = getattr(settings, "WHARTTEST_API_KEY", "")
+            # 1) 运维配置 / 2) 当前用户有效 API Key / 3) 不注入（保留脚本默认）
+            backend_url = _resolve_skill_runtime_backend_url()
+            api_key, key_source = _resolve_skill_runtime_api_key(current_user_id)
+            if backend_url:
+                env["WHARTTEST_BACKEND_URL"] = backend_url
+            if api_key:
+                env["WHARTTEST_API_KEY"] = api_key
+                logger.info(
+                    "[execute_skill_script] 已注入运行时 API Key (user_id=%s, source=%s)",
+                    current_user_id,
+                    key_source,
+                )
+            else:
+                logger.warning(
+                    "[execute_skill_script] 未找到可用 API Key (user_id=%s, source=%s)，"
+                    "将依赖 skill 脚本内默认值（可能 401）",
+                    current_user_id,
+                    key_source,
+                )
 
             case_dir_key = None
             if current_test_case_id:
@@ -454,13 +527,11 @@ def get_skill_tools(
             screenshots_dir = _prepare_skill_screenshots_dir(
                 project_id=current_project_id,
                 case_dir_key=case_dir_key,
-                chat_session_id=current_chat_session_id,
             )
             env["SCREENSHOT_DIR"] = screenshots_dir
             artifacts_dir = _prepare_skill_artifacts_dir(
                 project_id=current_project_id,
                 case_dir_key=case_dir_key,
-                chat_session_id=current_chat_session_id,
             )
             env["SKILL_OUTPUT_DIR"] = artifacts_dir
             env["ARTIFACT_DIR"] = artifacts_dir
@@ -554,12 +625,16 @@ def get_skill_tools(
             # Windows 编码处理：cmd.exe 默认使用 GBK (cp936)，需要使用系统默认编码
             import locale
 
+            # playwright-cli 在只读的 skill 目录下以相对文件名保存截图会 EACCES，
+            # 改在可写的截图目录执行，使截图默认落入 SCREENSHOT_DIR
+            exec_cwd = screenshots_dir if skill_name == "playwright-cli" else skill_dir
+
             if platform.system() == "Windows":
                 # Windows cmd 默认使用 GBK 编码，使用 None 让 subprocess 自动检测
                 result = subprocess.run(
                     exec_command,
                     shell=True,
-                    cwd=skill_dir,
+                    cwd=exec_cwd,
                     capture_output=True,
                     timeout=120,
                     env=env,
@@ -580,7 +655,7 @@ def get_skill_tools(
                 result = subprocess.run(
                     exec_command,
                     shell=True,
-                    cwd=skill_dir,
+                    cwd=exec_cwd,
                     capture_output=True,
                     text=True,
                     timeout=120,

@@ -52,6 +52,13 @@ class SkillUploadSerializer(serializers.Serializer):
     file = serializers.FileField(
         help_text='包含一个或多个 SKILL.md 的 zip 文件'
     )
+    api_key = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=128,
+        write_only=True,
+        help_text='内部平台 Skill 安装时用户确认的 API Key',
+    )
 
     def validate_file(self, value):
         # 只允许 zip 包导入，避免上传任意文件类型触发后续解析异常。
@@ -74,6 +81,13 @@ class SkillGitImportSerializer(serializers.Serializer):
         allow_blank=True,
         max_length=256,
         help_text='分支名（默认 main）'
+    )
+    api_key = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=128,
+        write_only=True,
+        help_text='内部平台 Skill 安装时用户确认的 API Key',
     )
 
     def validate_git_url(self, value):
@@ -110,6 +124,13 @@ class SkillZipUrlImportSerializer(serializers.Serializer):
         allow_blank=True,
         max_length=64,
         help_text='可选：zip 包的 SHA256 校验和（64 位小写 16 进制）'
+    )
+    api_key = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=128,
+        write_only=True,
+        help_text='内部平台 Skill 安装时用户确认的 API Key',
     )
 
     def validate_zip_url(self, value):

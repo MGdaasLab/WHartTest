@@ -1,5 +1,6 @@
 import axios from 'axios'; // 使用 axios 替代 apiClient
 import { useAuthStore } from '@/store/authStore'; // 导入 authStore 获取 token
+import { API_BASE_URL } from '@/config/api'; // 统一 API 基础地址（开发环境走 Vite 代理 /api，避免直连后端跨域）
 // import type { APIResponse } from './types'; // 暂时在下方定义
 
 // 通用 API 响应类型
@@ -51,8 +52,8 @@ export interface UpdateTestCaseModuleRequest {
   parent?: number | null; // 父模块ID，可选
 }
 
-// 使用环境变量获取 API 基础 URL
-const APP_API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+// 使用统一的 API 基础 URL（与其它服务一致，开发环境走 Vite 代理，生产环境走 Nginx 转发）
+const APP_API_BASE_URL = API_BASE_URL;
 
 // TODO: CSRF TOKEN 管理需要更健壮的方案
 const CSRF_TOKEN = 'kMNlyN2uN6c2QRr9r2rDQbfxBGsVzjPFY1h1as93VNMRTjo5kRpDbVq5ii8FFcKW'; // 暂时使用 authService 中的一个

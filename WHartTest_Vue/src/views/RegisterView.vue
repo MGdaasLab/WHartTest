@@ -727,4 +727,37 @@ const handleSubmit = async () => {
 .register-button:hover:not(:disabled)::before {
   left: 100%;
 }
+
+/* 黑主题适配 */
+:root[data-theme='black'] .register-card,
+body[arco-theme='dark'] .register-card {
+  background: rgba(22, 28, 40, 0.9) !important;
+  border-color: rgba(255, 255, 255, 0.12) !important;
+  box-shadow: 0 25px 50px rgba(0, 0, 0, 0.5) !important;
+}
+
+:root[data-theme='black'] .brand-title,
+body[arco-theme='dark'] .brand-title {
+  color: var(--color-text-1, #f6f8fa) !important;
+}
+
+:root[data-theme='black'] .brand-subtitle,
+body[arco-theme='dark'] .brand-subtitle,
+:root[data-theme='black'] .login-link p,
+body[arco-theme='dark'] .login-link p {
+  color: var(--color-text-3, #86909c) !important;
+}
+
+:root[data-theme='black'] .form-input,
+body[arco-theme='dark'] .form-input {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border-color: rgba(255, 255, 255, 0.14) !important;
+  color: var(--color-text-1, #e8f0ff) !important;
+}
+
+:root[data-theme='black'] .form-input:focus,
+body[arco-theme='dark'] .form-input:focus {
+  background: rgba(255, 255, 255, 0.1) !important;
+  border-color: var(--theme-accent) !important;
+}
 </style>

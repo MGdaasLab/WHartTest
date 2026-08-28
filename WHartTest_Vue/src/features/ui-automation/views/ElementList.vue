@@ -41,7 +41,7 @@
           <a-button type="text" size="mini" @click="editElement(record)">
             <template #icon><icon-edit /></template>
           </a-button>
-          <a-popconfirm content="确定删除该元素？" @ok="deleteElement(record)">
+          <a-popconfirm content="确定删除该元素？若被页面步骤引用则无法删除，请先删除相关步骤。" @ok="deleteElement(record)">
             <a-button type="text" status="danger" size="mini">
               <template #icon><icon-delete /></template>
             </a-button>

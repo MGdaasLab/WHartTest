@@ -527,7 +527,7 @@ onMounted(() => {
 }
 
 .overview-card {
-  background: #ffffff;
+  background: var(--color-bg-2, #ffffff);
   border-radius: 8px;
   padding: 16px 20px;
   transition: all 0.2s;
@@ -559,7 +559,7 @@ onMounted(() => {
 .overview-value {
   font-size: 28px;
   font-weight: 600;
-  color: #1d2129;
+  color: var(--color-text-1, #1d2129);
   line-height: 1.2;
   margin-bottom: 8px;
 }
@@ -570,7 +570,7 @@ onMounted(() => {
   justify-content: space-between;
   gap: 4px;
   font-size: 12px;
-  color: #86909c;
+  color: var(--color-text-3, #86909c);
 }
 
 .sub-item {
@@ -594,7 +594,7 @@ onMounted(() => {
 }
 
 .panel {
-  background: #ffffff;
+  background: var(--color-bg-2, #ffffff);
   border-radius: 8px;
   overflow: hidden;
   box-shadow: 4px 0 10px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
@@ -611,7 +611,7 @@ onMounted(() => {
 .panel-title {
   font-size: 14px;
   font-weight: 600;
-  color: #1d2129;
+  color: var(--color-text-1, #1d2129);
 }
 
 .panel-badge {
@@ -719,7 +719,7 @@ onMounted(() => {
 .rate-value {
   font-size: 28px;
   font-weight: 700;
-  color: #1d2129;
+  color: var(--color-text-1, #1d2129);
 }
 
 .rate-unit {
