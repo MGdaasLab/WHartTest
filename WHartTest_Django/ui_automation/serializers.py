@@ -55,6 +55,37 @@ def _resolve_upload_ope_value(obj, serializer):
     return value
 
 
+def _resolve_captcha_ope_value(obj):
+    value = dict(obj.ope_value or {})
+    if obj.ope_key != 'captcha_recognize':
+        return value
+    target_id = value.get('target_element_id') or value.get('target_element')
+    if not target_id:
+        return value
+    try:
+        target_el = UiElement.objects.filter(pk=target_id).first()
+        if target_el:
+            value['target_locator'] = {
+                'element_id': target_el.id,
+                'element_name': target_el.name,
+                'locator_type': target_el.locator_type,
+                'locator_value': target_el.locator_value,
+                'locator_index': target_el.locator_index,
+                'locator_type_2': target_el.locator_type_2,
+                'locator_value_2': target_el.locator_value_2,
+                'locator_index_2': target_el.locator_index_2,
+                'locator_type_3': target_el.locator_type_3,
+                'locator_value_3': target_el.locator_value_3,
+                'locator_index_3': target_el.locator_index_3,
+                'wait_time': target_el.wait_time,
+                'is_iframe': target_el.is_iframe,
+                'iframe_locator': target_el.iframe_locator,
+            }
+    except Exception as exc:
+        logger.warning('resolve captcha ope_value failed: %s', exc, exc_info=True)
+    return value
+
+
 class UiModuleSerializer(serializers.ModelSerializer):
     """模块序列化器"""
     children = serializers.SerializerMethodField()
@@ -134,6 +165,10 @@ class UiPageStepsDetailedSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({'ope_value': '上传文件操作必须选择文件。'})
             if page_step and page_step.project:
                 validate_file_ids([file_id], page_step.project, _ui_request_user(self))
+        elif ope_key == 'captcha_recognize':
+            target_id = (ope_value or {}).get('target_element_id') or (ope_value or {}).get('target_element')
+            if not target_id:
+                raise serializers.ValidationError({'ope_value': '智能识别验证码操作必须选择目标输入框元素。'})
         return attrs
 
 
@@ -160,7 +195,10 @@ class UiPageStepsDetailedExecuteSerializer(serializers.ModelSerializer):
     iframe_locator = serializers.CharField(source='element.iframe_locator', read_only=True)
 
     def get_ope_value(self, obj):
-        return _resolve_upload_ope_value(obj, self)
+        val = _resolve_upload_ope_value(obj, self)
+        if obj.ope_key == 'captcha_recognize':
+            val = _resolve_captcha_ope_value(obj)
+        return val
 
     class Meta:
         model = UiPageStepsDetailed

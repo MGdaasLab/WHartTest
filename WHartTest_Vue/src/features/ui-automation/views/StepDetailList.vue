@@ -202,6 +202,7 @@
                 <a-option value="type">{{ stepText.typeOption }}</a-option>
                 <a-option value="clear">{{ stepText.clearOption }}</a-option>
                 <a-option value="press">{{ stepText.pressOption }}</a-option>
+                <a-option value="captcha_recognize">{{ stepText.captchaRecognizeOption }}</a-option>
               </a-optgroup>
               <a-optgroup :label="stepText.groupSelect">
                 <a-option value="select_option">{{ stepText.selectOption }}</a-option>
@@ -224,12 +225,39 @@
               </a-optgroup>
             </a-select>
           </a-form-item>
+          <!-- 智能识别验证码参数表单 -->
+          <template v-if="formData.ope_key === 'captcha_recognize'">
+            <a-form-item :label="stepText.selectTargetElement" required>
+              <a-select
+                v-model="opeParams.target_element_id"
+                :placeholder="stepText.pleaseSelectTargetElement"
+                allow-search
+                allow-clear
+                :disabled="!selectedElementPage"
+                @change="onTargetElementChange"
+              >
+                <a-option v-for="el in elementOptions" :key="el.id" :value="el.id">
+                  {{ el.name }}
+                </a-option>
+              </a-select>
+            </a-form-item>
+            <a-form-item :label="stepText.retryCount">
+              <a-input-number
+                v-model="opeParams.retry_count"
+                :min="1"
+                :max="10"
+                :placeholder="stepText.retryCountPlaceholder"
+              />
+            </a-form-item>
+            <a-form-item :label="stepText.clickToRefresh">
+              <a-switch v-model="opeParams.click_to_refresh" />
+            </a-form-item>
+          </template>
           <!-- 根据操作类型动态渲染参数表单 -->
           <template v-if="currentOpeParams.length > 0">
             <a-form-item
               v-for="param in currentOpeParams"
               :key="param.field"
-              :field="'opeParams.' + param.field"
               :label="getParamLabel(param)"
               :required="param.required"
             >
@@ -480,6 +508,7 @@ const OPE_KEY_LABELS: Record<string, string> = {
   type: '输入',
   clear: '清空',
   press: '按键模拟',
+  captcha_recognize: '智能识别验证码',
   select_option: '选择下拉',
   check: '勾选',
   uncheck: '取消勾选',
@@ -509,7 +538,12 @@ const OPE_KEY_LABELS: Record<string, string> = {
 /** 格式化操作值显示 */
 const formatOpeValue = (opeValue: Record<string, any>) => {
   if (opeValue.file_name) return `file: ${opeValue.file_name}`
-  const entries = Object.entries(opeValue).filter(([k, v]) => !['file_id', 'mime_type'].includes(k) && v !== null && v !== undefined && v !== '')
+  if (opeValue.target_element_name || opeValue.target_element_id) {
+    const targetName = opeValue.target_element_name || `ID:${opeValue.target_element_id}`
+    const retry = opeValue.retry_count ?? 3
+    return `${stepText.value.targetElementLabel}: ${targetName} | ${stepText.value.retryCountLabel}: ${retry}`
+  }
+  const entries = Object.entries(opeValue).filter(([k, v]) => !['file_id', 'mime_type', 'target_locator'].includes(k) && v !== null && v !== undefined && v !== '')
   if (entries.length === 0) return ''
   return entries.map(([k, v]) => `${k}: ${typeof v === 'string' && v.length > 30 ? v.slice(0, 30) + '...' : v}`).join(', ')
 }
@@ -563,6 +597,14 @@ const stepText = computed(() => isEnglish.value
       typeOption: 'Type (type)',
       clearOption: 'Clear (clear)',
       pressOption: 'Press key (press)',
+      captchaRecognizeOption: 'Captcha recognize (captcha_recognize)',
+      selectTargetElement: 'Captcha input element',
+      pleaseSelectTargetElement: 'Please select captcha input element',
+      retryCount: 'Max retries',
+      retryCountPlaceholder: 'Default 3',
+      clickToRefresh: 'Click captcha to refresh on retry',
+      targetElementLabel: 'Target input',
+      retryCountLabel: 'Retries',
       selectOption: 'Select option (select_option)',
       checkOption: 'Check (check)',
       uncheckOption: 'Uncheck (uncheck)',
@@ -684,6 +726,14 @@ const stepText = computed(() => isEnglish.value
       typeOption: '输入 (type)',
       clearOption: '清空 (clear)',
       pressOption: '按键模拟 (press)',
+      captchaRecognizeOption: '智能识别验证码 (captcha_recognize)',
+      selectTargetElement: '验证码输入框元素',
+      pleaseSelectTargetElement: '请选择验证码输入框元素',
+      retryCount: '最大重试次数',
+      retryCountPlaceholder: '默认 3 次',
+      clickToRefresh: '重试时点击验证码刷新',
+      targetElementLabel: '目标输入框',
+      retryCountLabel: '重试',
       selectOption: '选择下拉 (select_option)',
       checkOption: '勾选 (check)',
       uncheckOption: '取消勾选 (uncheck)',
@@ -782,6 +832,7 @@ const opeKeyLabelsEn: Record<string, string> = {
   type: 'Type',
   clear: 'Clear',
   press: 'Press key',
+  captcha_recognize: 'Captcha recognize',
   select_option: 'Select option',
   check: 'Check',
   uncheck: 'Uncheck',
@@ -935,6 +986,20 @@ const currentOpeParams = computed(() => {
 const onOpeKeyChange = () => {
   Object.keys(opeParams).forEach(k => delete opeParams[k])
   uploadingFile.value = false
+  if (formData.ope_key === 'captcha_recognize') {
+    opeParams.retry_count = 3
+    opeParams.click_to_refresh = true
+  }
+}
+
+/** 验证码目标输入框选择变更 */
+const onTargetElementChange = (val: any) => {
+  const matched = elementOptions.value.find(e => e.id === val)
+  if (matched) {
+    opeParams.target_element_name = matched.name
+  } else {
+    delete opeParams.target_element_name
+  }
 }
 
 const rules = {
@@ -1464,6 +1529,25 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
     Message.warning(stepText.value.chooseUploadFile)
     done(false)
     return
+  }
+  if (formData.ope_key === 'captcha_recognize') {
+    if (!opeParams.target_element_id) {
+      Message.warning(stepText.value.pleaseSelectTargetElement)
+      done(false)
+      return
+    }
+    if (opeParams.retry_count === undefined || opeParams.retry_count === null) {
+      opeParams.retry_count = 3
+    }
+    if (opeParams.click_to_refresh === undefined) {
+      opeParams.click_to_refresh = true
+    }
+    if (!opeParams.target_element_name && opeParams.target_element_id) {
+      const matched = elementOptions.value.find(e => e.id === opeParams.target_element_id)
+      if (matched) {
+        opeParams.target_element_name = matched.name
+      }
+    }
   }
 
   // 预解析 JSON 配置字段：custom / condition_value 必须是合法 JSON，

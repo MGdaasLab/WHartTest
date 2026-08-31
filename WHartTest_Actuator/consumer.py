@@ -1605,6 +1605,7 @@ class TaskConsumer:
                 upload_project_id=upload_project_id,
                 upload_file_sha=(ope_value.get('sha256') or ope_value.get('file_sha') or None) if isinstance(ope_value, dict) else None,
                 upload_file_size=self._parse_file_id(ope_value.get('size')) if isinstance(ope_value, dict) else None,
+                ope_value=ope_value,
             ))
         
         # 页面URL处理：支持相对路径与 base_url 拼接
