@@ -1,5 +1,6 @@
 """录制器后端单测：动作解析入库 + 会话管理 + REST 校验。"""
 
+import asyncio
 import json
 import os
 import shutil
@@ -12,8 +13,10 @@ from rest_framework.test import APIClient
 from rest_framework import status
 
 from projects.models import Project, ProjectMember
+from ui_automation.consumers import UiAutomationConsumer, SocketUserManager
+from ui_automation.socket_models import NoticeType
 from ui_automation.models import (
-    UiElement, UiModule, UiPage, UiPageSteps, UiPageStepsDetailed, UiEnvironmentConfig,
+    UiElement, UiModule, UiPage, UiPageSteps, UiPageStepsDetailed, UiEnvironmentConfig, UiAuthState,
 )
 from ui_automation.recorder.session_manager import (
     recorder_manager, RecorderSessionError,
@@ -214,6 +217,73 @@ class RecorderApplyTests(TestCase):
         self.assertEqual(existing.locator_value_2, '//button[@id="login-btn"]')
         self.assertEqual(existing.locator_type_3, 'xpath')
         self.assertEqual(existing.locator_value_3, '/html/body/div[1]/button[1]')
+
+    def test_apply_persists_iframe_locator(self):
+        sel = {
+            'locator_type': 'xpath',
+            'locator_value': '//input[@placeholder="邮箱账号或手机号码"]',
+            'name': '邮箱账号',
+            'is_iframe': True,
+            'iframe_locator': '//div[@id="loginDiv"]/iframe',
+        }
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'click', 'selector': sel}])
+        element = UiElement.objects.get(page=self.page)
+        self.assertTrue(element.is_iframe)
+        self.assertEqual(element.iframe_locator, '//div[@id="loginDiv"]/iframe')
+
+    def test_apply_reuse_fills_missing_iframe_flag(self):
+        existing = UiElement.objects.create(
+            page=self.page, name='邮箱账号', creator=self.user,
+            locator_type='xpath', locator_value='//input[@placeholder="邮箱账号或手机号码"]',
+        )
+        sel = {
+            'locator_type': 'xpath',
+            'locator_value': '//input[@placeholder="邮箱账号或手机号码"]',
+            'name': '邮箱账号',
+            'is_iframe': True,
+            'iframe_locator': '//div[@id="loginDiv"]/iframe',
+        }
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'click', 'selector': sel}])
+        existing.refresh_from_db()
+        self.assertTrue(existing.is_iframe)
+        self.assertEqual(existing.iframe_locator, '//div[@id="loginDiv"]/iframe')
+
+    def test_apply_non_iframe_keeps_flag_off(self):
+        sel = {'locator_type': 'xpath', 'locator_value': '//button[1]'}
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'click', 'selector': sel}])
+        element = UiElement.objects.get(page=self.page)
+        self.assertFalse(element.is_iframe)
+        self.assertIsNone(element.iframe_locator)
+    def test_serialize_page_step_for_recorder_includes_iframe(self):
+        from ui_automation.views import _serialize_page_step_for_recorder
+        el = UiElement.objects.create(
+            page=self.page, name='163邮箱', creator=self.user,
+            locator_type='xpath', locator_value='//input[@name="email"]',
+            is_iframe=True, iframe_locator='//div[@id="loginDiv"]/iframe',
+        )
+        UiPageStepsDetailed.objects.create(
+            page_step=self.page_step, step_type=0, ope_key='click',
+            element=el, step_sort=0,
+        )
+        steps = _serialize_page_step_for_recorder(self.page_step)
+        self.assertEqual(steps[0]['element']['is_iframe'], True)
+        self.assertEqual(steps[0]['element']['iframe_locator'], '//div[@id="loginDiv"]/iframe')
+
+    def test_serialize_page_step_for_recorder_plain_element(self):
+        from ui_automation.views import _serialize_page_step_for_recorder
+        el = UiElement.objects.create(
+            page=self.page, name='普通', creator=self.user,
+            locator_type='xpath', locator_value='//button[1]',
+        )
+        UiPageStepsDetailed.objects.create(
+            page_step=self.page_step, step_type=0, ope_key='click',
+            element=el, step_sort=0,
+        )
+        steps = _serialize_page_step_for_recorder(self.page_step)
+        self.assertNotIn('is_iframe', steps[0]['element'])
 
     def test_apply_reuse_keeps_manual_backup_locators(self):
         # 已有备用定位时不得覆盖（手工维护优先）
@@ -565,3 +635,141 @@ class ElementNamingTests(TestCase):
                                actions=[{'seq': 1, 'type': 'click', 'selector': sel}])
         el = UiElement.objects.get(page=self.page)
         self.assertEqual(el.name, '点击-//div[3]')
+
+
+class ExecFrameAndBatchTests(TestCase):
+    """执行画面帧转发 + 批量强制无头。"""
+
+    def setUp(self):
+        SocketUserManager._web_users.clear()
+        self.addCleanup(SocketUserManager._web_users.clear)
+
+    def test_exec_frame_forwarded_to_initiator(self):
+        captured = {}
+
+        class FakeWebUser:
+            async def send_json(self, data):
+                captured['data'] = data
+
+        SocketUserManager._web_users['alice'] = FakeWebUser()
+        consumer = UiAutomationConsumer()
+
+        async def run():
+            await consumer.handle_exec_frame(
+                {'case_id': 42, 'page_step_id': 0, 'frame': {'w': 1280, 'h': 720, 'data': 'AAAA'}},
+                'alice',
+            )
+
+        asyncio.run(run())
+        msg = captured['data']
+        self.assertEqual(msg.data.func_name, 'u_exec_frame')
+        self.assertEqual(msg.data.func_args['case_id'], 42)
+        self.assertEqual(msg.data.func_args['frame'], {'w': 1280, 'h': 720, 'data': 'AAAA'})
+        self.assertEqual(msg.is_notice, NoticeType.WEB)
+        self.assertEqual(msg.user, 'alice')
+
+    def test_exec_frame_dropped_when_initiator_offline(self):
+        consumer = UiAutomationConsumer()
+
+        async def run():
+            # 发起人不在线：不抛错、不落库（无 DB 交互）、无消息
+            await consumer.handle_exec_frame({'case_id': 1, 'frame': {'data': 'BBBB'}}, 'ghost')
+
+        asyncio.run(run())
+        self.assertEqual(SocketUserManager._web_users, {})
+
+    def test_force_batch_headless(self):
+        args = {
+            'case_ids': [1, 2],
+            'run_options': {'browser': 'chromium', 'headless': False},
+            'effective_runtime': {'browser': 'chromium', 'headless': False, 'actuator_id': 9},
+        }
+        UiAutomationConsumer._force_batch_headless(args)
+        self.assertIs(args['run_options']['headless'], True)
+        self.assertIs(args['effective_runtime']['headless'], True)
+
+    def test_force_batch_headless_ignores_missing_keys(self):
+        args = {'case_ids': [1], 'run_options': None}
+        UiAutomationConsumer._force_batch_headless(args)
+        self.assertIsNone(args['run_options'])
+
+
+class RecorderLoginInjectTests(TestCase):
+    """录制器注入已保存登录态（勾选开关 → storageState 注入 start 参数）。"""
+
+    def setUp(self):
+        from unittest.mock import AsyncMock
+        from types import SimpleNamespace
+        self._AsyncMock = AsyncMock
+        self._SimpleNamespace = SimpleNamespace
+        self.user = User.objects.create_superuser(username='rec-login', password='secret')
+        self.project = Project.objects.create(name='Recorder Login Project')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self._meta = None
+
+    def _start(self, *, auth_state, inject_flag: bool):
+        from unittest.mock import patch
+        from ui_automation.views import _start_recorder_session
+        from ui_automation.recorder.session_manager import RecorderSessionMeta
+        from ui_automation.models import UiEnvironmentConfig
+
+        env = UiEnvironmentConfig.objects.create(
+            project=self.project, name='环境A', base_url='http://env.local', creator=self.user,
+        )
+        if auth_state:
+            UiAuthState.objects.create(
+                env_config=env, is_active=True, name='登录态',
+                state_json={'cookies': [{'name': 'S', 'value': 'x', 'domain': '.env.local', 'path': '/'}]},
+                creator=self.user,
+            )
+        meta = RecorderSessionMeta(
+            user_id='u1', project_id=self.project.id, page_id=self.page.id, page_step_id=1,
+            create_elements=True, create_steps=True, base_url='http://env.local',
+            viewport={'width': 1400, 'height': 900}, kind='record', env_config_id=env.id,
+        )
+        from unittest.mock import Mock
+        session = Mock()
+        session.start = Mock(return_value=None)
+        session.request = Mock(return_value={
+            'ok': True, 'state': {'viewport': {'width': 1400, 'height': 900}},
+        })
+        with patch('ui_automation.recorder.session_manager.recorder_manager') as rm:
+            rm.create_session.return_value = session
+            _start_recorder_session(
+                env_config=env, page=self.page, base_url='http://env.local',
+                skill_dir='/tmp/x', request=self._SimpleNamespace(user=self._SimpleNamespace(username='u1')),
+                meta=meta, inject_login_state=inject_flag,
+            )
+        return session.request.call_args_list[0].args[1]
+
+    def test_inject_on_with_active_state(self):
+        params = self._start(auth_state=True, inject_flag=True)
+        self.assertEqual(params['storage_state']['cookies'][0]['name'], 'S')
+
+    def test_inject_off_no_storage_state(self):
+        params = self._start(auth_state=True, inject_flag=False)
+        self.assertNotIn('storage_state', params)
+
+    def test_inject_on_without_active_state(self):
+        params = self._start(auth_state=False, inject_flag=True)
+        self.assertNotIn('storage_state', params)
+
+    def test_active_login_state_helper(self):
+        from ui_automation.views import _active_login_state
+        from ui_automation.models import UiEnvironmentConfig
+        env = UiEnvironmentConfig.objects.create(
+            project=self.project, name='环境B', base_url='http://b.local', creator=self.user,
+        )
+        self.assertIsNone(_active_login_state(env))
+        UiAuthState.objects.create(
+            env_config=env, is_active=False, name='停用', state_json={'cookies': []}, creator=self.user,
+        )
+        self.assertIsNone(_active_login_state(env))
+        UiAuthState.objects.create(
+            env_config=env, is_active=True, name='生效',
+            state_json={'cookies': [{'name': 'K', 'value': 'v'}]}, creator=self.user,
+        )
+        self.assertEqual(_active_login_state(env)['cookies'][0]['name'], 'K')

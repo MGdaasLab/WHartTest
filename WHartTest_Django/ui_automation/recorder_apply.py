@@ -113,6 +113,13 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
         if l_type in _VALID_LOCATOR_TYPES and l_value:
             backups.append((idx, l_type, l_value))
 
+    # 录制端自动识别的 iframe 元素：启用 is_iframe 并填充 iframe 定位链
+    iframe_fields: dict[str, Any] = {}
+    if bool(selector.get('is_iframe')):
+        iframe_locator = str(selector.get('iframe_locator') or '').strip()
+        if iframe_locator:
+            iframe_fields = {'is_iframe': True, 'iframe_locator': iframe_locator}
+
     existing = UiElement.objects.filter(
         page=page,
         locator_type=locator_type,
@@ -129,6 +136,9 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
             for idx, _t, l_value in backups
             if not getattr(existing, f'locator_type_{idx}')
         })
+        # 老数据缺 iframe 标识时补全（手工维护的既有值不覆盖）
+        if iframe_fields and not existing.is_iframe:
+            updates.update(iframe_fields)
         if updates:
             UiElement.objects.filter(id=existing.id).update(**updates)
         return existing, False
@@ -142,6 +152,7 @@ def _get_or_create_element(*, page: UiPage, user, action_type: str, selector: di
         creator=user,
         **{f'locator_type_{idx}': l_type for idx, l_type, _v in backups},
         **{f'locator_value_{idx}': l_value for idx, _t, l_value in backups},
+        **iframe_fields,
     )
     return element, True
 

@@ -54,6 +54,9 @@
             :loading="loadingEnvs"
           />
           <div class="recorder-form-hint">{{ text.envHint }}</div>
+          <a-checkbox v-model="form.inject_login_state" class="recorder-inject-login">
+            {{ text.injectLoginState }}
+          </a-checkbox>
         </a-form-item>
         <a-form-item :label="text.preStep">
           <a-select
@@ -283,6 +286,7 @@ const text = computed(() => (
         environment: 'Environment',
         selectEnvironment: 'Select an environment',
         envHint: 'Recording navigates to the environment base URL (falls back to the page URL).',
+        injectLoginState: 'Inject saved login state (uncheck to record the login flow)',
         preStep: 'Pre-step (optional)',
         preStepPlaceholder: 'Select a page step to auto-run before recording',
         preStepHint: 'Auto executes this step (e.g. login) before recording starts; its actions are not recorded.',
@@ -358,6 +362,7 @@ const text = computed(() => (
         environment: '环境',
         selectEnvironment: '请选择环境',
         envHint: '录制时先导航到环境的基础 URL（环境未配置时使用页面 URL）。',
+        injectLoginState: '注入已保存登录态（取消勾选可录制登录流程）',
         preStep: '前置步骤（可选）',
         preStepPlaceholder: '选择录制前自动执行的页面步骤',
         preStepHint: '开始录制前自动执行该步骤（如登录），执行过程不会进入录制动作。',
@@ -440,6 +445,8 @@ const form = reactive({
   page_step_id: undefined as number | undefined,
   env_config_id: undefined as number | undefined,
   pre_page_step_id: undefined as number | undefined,
+  // 注入已保存登录态（默认勾选）：直达登录后页面；取消勾选可录制登录流程本身
+  inject_login_state: true,
 })
 
 const projectId = computed(() => props.projectId ?? useProjectStore().currentProject?.id)
@@ -767,6 +774,7 @@ async function handleStart() {
       page_id: form.page_id,
       page_step_id: form.page_step_id,
       pre_page_step_id: form.pre_page_step_id,
+      inject_login_state: form.inject_login_state,
     }))
     if (!info) throw new Error(text.value.startFailed)
     if (info.pre_failed) Message.error(text.value.preFailed)
@@ -1113,8 +1121,9 @@ function onRecorderFrame(data: any) {
   if (viewport.width !== frame.w || viewport.height !== frame.h) {
     viewport.width = frame.w || viewport.width
     viewport.height = frame.h || viewport.height
-    fitCanvas()
   }
+  // 每帧重算显示尺寸：弹窗开启动画等瞬时小 rect 一帧自愈（与执行画布同规则）
+  fitCanvas()
   drawFrame(`data:image/jpeg;base64,${frame.data}`)
 }
 
@@ -1173,6 +1182,10 @@ onUnmounted(() => {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 8px;
+}
+
+.recorder-inject-login {
+  margin-top: 4px;
 }
 
 .recorder-form-hint {

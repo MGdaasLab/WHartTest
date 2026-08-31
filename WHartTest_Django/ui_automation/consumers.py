@@ -247,6 +247,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.STEP_RESULT: self.handle_step_result,
                 UiSocketEnum.PAGE_STEP_RESULT: self.handle_page_step_result,
                 UiSocketEnum.CASE_RESULT: self.handle_case_result,
+                UiSocketEnum.EXEC_FRAME: self.handle_exec_frame,
                 UiSocketEnum.SET_ACTUATOR_INFO: self.handle_set_actuator_info,
             }
         else:
@@ -467,6 +468,19 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             args["env_config_id"] = effective["env_config_id"]
         return args, actuator, ""
 
+    @staticmethod
+    def _force_batch_headless(args: dict):
+        """批量执行一律无头：并发多浏览器、不展示执行画面（执行器优先采用
+        后端下发的 effective_runtime，headless 需同时覆盖 run_options 双保险）。
+        单用例/单页面步骤执行不强制：是否弹画布由执行器无头开关决定
+        （关闭无头=观看模式，执行画面经画布帧流直播）。"""
+        run_options = args.get("run_options")
+        if isinstance(run_options, dict):
+            run_options["headless"] = True
+        effective = args.get("effective_runtime")
+        if isinstance(effective, dict) and effective.get("browser"):
+            effective["headless"] = True
+
 
 
 
@@ -683,6 +697,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             ))
             return
         args["batch_id"] = batch_id
+        # 批量执行不展示执行画面：强制无头
+        self._force_batch_headless(args)
 
         try:
             for case_id in case_ids:
@@ -792,6 +808,29 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 }
             }
         )
+
+    async def handle_exec_frame(self, args: dict, user: str):
+        """处理执行画面帧（来自执行器，直播）：直推发起用户，不落库、不广播。
+
+        帧频率高（默认 5fps）且只属于发起人，广播与持久化均无必要；
+        发起人不在线时直接丢弃（不积压）。大 payload（base64 jpeg）不经脱敏，
+        与录制器帧的 _send_recorder 直推路径一致。
+        """
+        if not args:
+            return
+        web_user = SocketUserManager.get_web_user(user)
+        if not web_user:
+            return  # 发起人不在线，丢弃本帧
+        await web_user.send_json(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg='exec_frame',
+            user=user,
+            is_notice=NoticeType.WEB,
+            data=QueueModel(
+                func_name=UiSocketEnum.EXEC_FRAME,
+                func_args=args,
+            )
+        ))
     
     async def handle_page_step_result(self, args: dict, user: str):
         """处理页面步骤执行结果（来自执行器）"""

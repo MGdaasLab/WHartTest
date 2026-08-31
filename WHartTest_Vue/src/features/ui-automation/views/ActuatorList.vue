@@ -141,7 +141,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item field="headless" :label="pageText.headlessMode">
-              <a-switch v-model="formData.headless" @change="handleHeadlessChange" />
+              <a-switch v-model="formData.headless" />
             </a-form-item>
           </a-col>
           <a-col :span="12">
@@ -257,7 +257,6 @@ const pageText = computed(() => (
         viewportHeight: 'Viewport Height',
         viewportWidthRange: 'Viewport width must be between 320 and 3840',
         viewportHeightRange: 'Viewport height must be between 240 and 2160',
-        dockerHeadlessWarn: 'The current actuator is deployed in a Docker environment and cannot enable headed mode',
       }
     : {
         title: '在线执行器',
@@ -306,7 +305,6 @@ const pageText = computed(() => (
         viewportHeight: '视口高度',
         viewportWidthRange: '视口宽度必须为 320-3840 之间的数',
         viewportHeightRange: '视口高度必须为 240-2160 之间的数',
-        dockerHeadlessWarn: '当前执行器使用docker环境部署无法启用有头模式',
       }
 ))
 
@@ -447,14 +445,6 @@ const openEdit = (record: ActuatorInfo) => {
 
 const handleCancel = () => {
   editVisible.value = false
-}
-
-/** 无头模式开关：docker 部署的执行器禁止关闭无头模式（无法启用有头） */
-const handleHeadlessChange = (value: boolean | string | number) => {
-  if (value === false && editingRecord.value?.in_container) {
-    Message.warning(pageText.value.dockerHeadlessWarn)
-    formData.headless = true // 回弹为开启
-  }
 }
 
 const handleSubmit = async (done: (closed: boolean) => void) => {

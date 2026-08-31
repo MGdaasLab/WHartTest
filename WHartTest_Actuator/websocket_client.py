@@ -12,7 +12,7 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 from models import SocketDataModel, QueueModel, ResponseCode, NoticeType, UiSocketEnum
-from runtime_env import should_force_headless, is_running_in_container
+from runtime_env import is_running_in_container
 
 logger = logging.getLogger('actuator')
 
@@ -106,7 +106,8 @@ class WebSocketClient:
             'headless': headless,
             # 上报实际已安装的浏览器，供平台执行器列表/编辑弹窗选择
             'supported_browsers': self._detect_supported_browsers(),
-            'supports_headed': not should_force_headless(),
+            # 无显示环境（docker）下浏览器启动层自动回退无头，观看模式经画布帧流可用
+            'supports_headed': True,
             'supports_headless': True,
             'max_slots': max_slots,
             'max_concurrent': max_slots,
@@ -126,7 +127,7 @@ class WebSocketClient:
             'headless': headless,
             'viewport_width': getattr(self.config, 'viewport_width', 1280) if self.config else 1280,
             'viewport_height': getattr(self.config, 'viewport_height', 720) if self.config else 720,
-            # 容器部署标识（docker 环境无法启用有头模式）
+            # 容器部署标识（供平台展示；观看模式经画布帧流，容器同样可用）
             'in_container': is_running_in_container(),
         }
         

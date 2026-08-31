@@ -16,6 +16,8 @@ export const UiSocketEnum = {
   STOP_EXECUTION: 'u_stop_execution',     // 停止执行
   STEP_RESULT: 'u_step_result',           // 步骤执行结果
   CASE_RESULT: 'u_case_result',           // 用例执行结果
+  EFFECTIVE_RUNTIME: 'effective_runtime', // 任务下发后的生效运行时（含 headless，决定是否弹执行画面）
+  EXEC_FRAME: 'u_exec_frame',             // 执行过程画面帧（执行器→后端→前端，直播）
   // 录制器
   RECORDER_START: 'u_recorder_start',     // 绑定录制会话，启动帧中继
   RECORDER_INPUT: 'u_recorder_input',     // 浏览器输入事件

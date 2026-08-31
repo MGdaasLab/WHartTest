@@ -395,6 +395,13 @@
       </a-table>
     </a-modal>
 
+    <!-- 页面步骤执行画面（直播帧） -->
+    <ExecutionScreenModal
+      v-model:visible="execScreenVisible"
+      mode="page-steps"
+      :task-id="execScreenTaskId"
+    />
+
   </div>
 </template>
 
@@ -408,6 +415,7 @@ import { pageStepsDetailedApi, elementApi, actuatorApi, envConfigApi, moduleApi,
 import type { UiPageStepsDetailed, UiPageSteps, UiElement, UiModule, UiPage, StepType, UiEnvironmentConfig } from '../types'
 import { STEP_TYPE_LABELS, extractListData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
+import ExecutionScreenModal from '../components/ExecutionScreenModal.vue'
 import { fileService } from '@/features/file-management/services/fileService'
 
 /** 操作参数定义 */
@@ -593,7 +601,6 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `Execution succeeded: ${passed}/${total} steps passed`,
       executionFailed: (message: string) => `Execution failed: ${message}`,
       unknownError: 'Unknown error',
-      insufficientSlots: (name: string, need: number, free: number) => `Actuator ${name} has insufficient free slots (need ${need}, only ${free} left)`,
       fetchElementsFailed: 'Failed to fetch element list',
       fillRequired: 'Fill in the required fields',
       enterContent: 'Enter content',
@@ -711,7 +718,6 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `执行成功: ${passed}/${total} 步骤通过`,
       executionFailed: (message: string) => `执行失败: ${message}`,
       unknownError: '未知错误',
-      insufficientSlots: (name: string, need: number, free: number) => `执行器 ${name} 空闲 slot 不足（需要 ${need}，剩余 ${free}）`,
       fetchElementsFailed: '获取元素列表失败',
       fillRequired: '请填写必填项',
       enterContent: '请输入内容',
@@ -842,6 +848,11 @@ const formRef = ref()
 const actuators = ref<ActuatorInfo[]>([])
 const selectedActuator = ref<string>('')
 const executing = ref(false)
+// 页面步骤执行画面（直播帧弹窗）：是否弹出由执行器无头开关决定——
+// 后端回执 effective_runtime.headless === false（观看模式）时才弹
+const execScreenVisible = ref(false)
+const execScreenTaskId = ref<number | null>(null)
+const pendingScreenPageStepId = ref<number | null>(null)
 
 // 执行环境相关
 const envConfigs = ref<UiEnvironmentConfig[]>([])
@@ -1056,19 +1067,7 @@ const executePageStep = async () => {
     Message.warning(stepText.value.noActionSteps)
     return
   }
-
-  // 发送前预检查：空闲 slot 不足时直接提示，不进入加载态
-  const act = actuators.value.find((a: ActuatorInfo) => a.id === selectedActuator.value)
-  if (!act || !act.is_open) {
-    Message.warning(stepText.value.selectActuatorFirst)
-    return
-  }
-  const freeSlots = (act.max_slots ?? 1) - (act.busy_slots ?? 0)
-  if (freeSlots < 1) {
-    Message.error(stepText.value.insufficientSlots(act.name || act.id, 1, Math.max(freeSlots, 0)))
-    return
-  }
-
+  
   executing.value = true
   
   // 确保 WebSocket 已连接
@@ -1082,15 +1081,19 @@ const executePageStep = async () => {
     }
   }
   
+    // 后端下发任务后会回 effective_runtime（含 headless）：
+  // 无头开关关闭（观看模式）时才弹执行画面画布
+  pendingScreenPageStepId.value = props.pageStep.id
   const sent = uiWebSocket.send(UiSocketEnum.PAGE_STEPS, {
     page_step_id: props.pageStep.id,
     env_config_id: selectedEnvConfig.value,
     actuator_id: selectedActuator.value,
   })
-  
+
   if (!sent) {
     Message.error(stepText.value.sendExecutionFailed)
     executing.value = false
+    pendingScreenPageStepId.value = null
   }
 }
 
@@ -1108,15 +1111,6 @@ const handleStepResult = (data: any) => {
       || stepText.value.executionFailed(stepText.value.unknownError)
     )
   }
-}
-
-/** 执行被拒绝（如执行器空闲 slot 不足）：提示并复位加载态，避免按钮卡住 */
-const handleStepRejected = (data: any) => {
-  const error = data.data?.func_args?.error || (data.code !== 200 ? data.msg : '')
-  if (!error) return
-  executing.value = false
-  Message.error(error)
-  fetchActuators()
 }
 
 const fetchElements = async () => {
@@ -1486,7 +1480,17 @@ const onDragEnd = async () => {
 
 // WebSocket 事件监听
 let offStepResult: (() => void) | null = null
-let offStepRejected: (() => void) | null = null
+let offEffectiveRuntime: (() => void) | null = null
+
+/** 后端回执生效运行时：无头开关关闭（观看模式）时弹出执行画面画布 */
+const handleEffectiveRuntime = (data: any) => {
+  const args = data?.data?.func_args || {}
+  if (args.headless === false && pendingScreenPageStepId.value != null) {
+    execScreenTaskId.value = pendingScreenPageStepId.value
+    execScreenVisible.value = true
+  }
+  pendingScreenPageStepId.value = null
+}
 
 watch(() => props.pageStep, async () => {
   fetchSteps()
@@ -1505,13 +1509,13 @@ onMounted(() => {
   fetchEnvConfigs()
   // 监听页面步骤执行结果
   offStepResult = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, handleStepResult)
-  // 监听执行被拒绝（空闲 slot 不足等），复位加载态避免按钮卡住
-  offStepRejected = uiWebSocket.on(UiSocketEnum.PAGE_STEPS, handleStepRejected)
+  // 监听生效运行时回执（决定是否弹执行画面）
+  offEffectiveRuntime = uiWebSocket.on(UiSocketEnum.EFFECTIVE_RUNTIME, handleEffectiveRuntime)
 })
 
 onUnmounted(() => {
   offStepResult?.()
-  offStepRejected?.()
+  offEffectiveRuntime?.()
 })
 </script>
 

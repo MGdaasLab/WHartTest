@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """UI 自动化视图"""
 
+import logging
 import os
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger('ui_automation')
 
 from django.conf import settings
 from rest_framework import viewsets, status
@@ -1196,13 +1199,6 @@ class ActuatorViewSet(viewsets.ViewSet):
                 )
             normalized['name'] = name
 
-        # 容器内执行器禁止启用有头模式
-        if normalized.get('headless') is False and consumer.actuator_info.get('in_container'):
-            return Response(
-                {'error': '当前执行器使用docker环境部署无法启用有头模式'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
         # 更新 registry，使列表立即反映新配置
         try:
             update_capability(str(actuator_id), normalized)
@@ -1446,6 +1442,12 @@ def trigger_batch_execution(request):
             start_time=tz.now(),
         )
 
+        # 批量执行不展示执行画面：强制无头（执行器优先采用下发的 effective_runtime）
+        if isinstance(effective, dict) and effective.get("browser"):
+            effective["headless"] = True
+        if isinstance(run_options, dict):
+            run_options["headless"] = True
+
         args = {
             'case_ids': case_ids,
             'actuator_id': actuator_id,
@@ -1532,7 +1534,24 @@ def _resolve_recorder_skill_dir() -> str:
     return ''
 
 
-def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta):
+def _active_login_state(env_config):
+    """返回环境当前生效的登录态快照（state_json dict），无则 None。
+
+    与执行器 auth-states/by-env 同源：每环境一份启用中的登录态，
+    录制器勾选"注入已保存登录态"时复用，直达登录后页面。
+    """
+    if env_config is None:
+        return None
+    state = UiAuthState.objects.filter(
+        env_config=env_config, is_active=True,
+    ).order_by('-updated_at').first()
+    if state is None or not isinstance(state.state_json, dict):
+        return None
+    return state.state_json
+
+
+def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta,
+                            inject_login_state=True):
     """创建录制会话并启动浏览器（含可选前置步骤执行）。
 
     失败时关闭会话并抛出 RecorderSessionError（detail 可直接展示给用户）。
@@ -1551,10 +1570,24 @@ def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta
     session_id = session.session_id
     try:
         session.start(timeout=120)
-        result = session.request('start', {
+        storage_state = None
+        if inject_login_state:
+            storage_state = _active_login_state(env_config)
+            if storage_state:
+                logger.info(
+                    '录制器注入环境登录态（env_config=%s）', env_config.id,
+                )
+            else:
+                logger.info(
+                    '环境 %s 无启用中的登录态，录制器按无痕上下文启动', env_config.id,
+                )
+        start_params = {
             'url': base_url,
             'viewport': meta.viewport,
-        }, timeout=90)
+        }
+        if storage_state:
+            start_params['storage_state'] = storage_state
+        result = session.request('start', start_params, timeout=90)
     except RecorderSessionError:
         recorder_manager.close(session_id, graceful=False)
         raise
@@ -1575,8 +1608,9 @@ def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta
                 'executed': pre_resp.get('state', {}).get('executed', 0),
                 'failed': pre_resp.get('state', {}).get('failed', False),
             }
-            # 前置执行后重建干净页面：消除滚动/弹层/半渲染残留，录制从完整顶部视图开始
-            session.request('reset_page', {}, timeout=60)
+            # 不再重建页面：reset_page 会关闭当前页并重新导航，清空前置步骤
+            # 已填写的表单值（如登录页账号输入）。页面的滚动/弹层残留已由
+            # 录制器 run_steps 结束时的"归位"（Escape/滚顶/失焦）清理。
         except RecorderSessionError:
             recorder_manager.close(session_id, graceful=False)
             raise
@@ -1601,6 +1635,10 @@ def _serialize_page_step_for_recorder(page_step: UiPageSteps) -> list[dict]:
                 'locator_value': detail.element.locator_value,
                 'locator_index': detail.element.locator_index,
             }
+            # iframe 元素：录制器执行步骤时按链式 frame 定位下钻
+            if detail.element.is_iframe and detail.element.iframe_locator:
+                selector['is_iframe'] = True
+                selector['iframe_locator'] = detail.element.iframe_locator
         steps.append({
             'ope_key': detail.ope_key,
             'ope_value': detail.ope_value,
@@ -1704,6 +1742,10 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 skill_dir=skill_dir,
                 request=request,
                 meta=meta,
+                # 录制表单"注入已保存登录态"勾选（默认勾选）
+                inject_login_state=str(
+                    request.data.get('inject_login_state', 'true')
+                ).lower() not in ('0', 'false', 'no', 'off'),
             )
         except RecorderSessionError as exc:
             return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1792,6 +1834,10 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 skill_dir=skill_dir,
                 request=request,
                 meta=meta,
+                # 录制表单"注入已保存登录态"勾选（默认勾选）
+                inject_login_state=str(
+                    request.data.get('inject_login_state', 'true')
+                ).lower() not in ('0', 'false', 'no', 'off'),
             )
         except RecorderSessionError as exc:
             return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)

@@ -166,6 +166,8 @@ class PlaywrightExecutor:
         self._page_errors = []
         # 任务级认证配置（auth），通过 apply_runtime_options 注入，执行后随 restore 还原
         self._auth_config: Optional[dict] = None
+        # 执行画面帧采集钩子：browser_session 上下文进入后回调 page（consumer 侧挂 FrameStreamer）
+        self.on_execution_page = None
         
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -243,9 +245,14 @@ class PlaywrightExecutor:
 
 
     def _build_browser_launch_options(self) -> dict:
-        """构建浏览器启动参数，兼容 Docker 无头场景。"""
+        """构建浏览器启动参数。
+
+        浏览器一律无头启动：执行画面统一经画布帧流直播（前端 ExecutionScreenModal），
+        不打开本地浏览器窗口（docker 无显示；桌面端同样不弹窗）。
+        self.headless 仅作为"观看模式"开关控制帧推流（consumer），不再决定启动形态。
+        """
         launch_options = {
-            'headless': self.headless,
+            'headless': True,
             'timeout': self.launch_timeout,
         }
 
@@ -610,6 +617,8 @@ class PlaywrightExecutor:
         """浏览器会话上下文管理器"""
         await self.init_browser()
         try:
+            if self.on_execution_page is not None:
+                await self.on_execution_page(self._page)
             yield self._page
         finally:
             await self.close()
@@ -639,7 +648,10 @@ class PlaywrightExecutor:
                     sources=self.trace_sources,
                 )
                 logger.debug(f"Trace 已启动: screenshots={self.trace_screenshots}, snapshots={self.trace_snapshots}")
-            
+
+            if self.on_execution_page is not None:
+                await self.on_execution_page(self._page)
+
             yield self._page
             
         finally:

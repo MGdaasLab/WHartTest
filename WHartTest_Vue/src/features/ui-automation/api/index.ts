@@ -328,6 +328,8 @@ export interface RecorderSessionCreatePayload {
   page_id: number
   page_step_id: number
   pre_page_step_id?: number
+  /** 注入已保存登录态（默认 true；false 时以无痕上下文录制登录流程） */
+  inject_login_state?: boolean
 }
 
 export interface RecorderSessionInfo {
@@ -354,6 +356,8 @@ export interface RecorderCaseCreatePayload {
   env_config_id: number
   pre_page_step_id?: number
   module_id?: number
+  /** 注入已保存登录态（默认 true；false 时以无痕上下文录制登录流程） */
+  inject_login_state?: boolean
 }
 
 export interface RecorderCaseFinishResult {

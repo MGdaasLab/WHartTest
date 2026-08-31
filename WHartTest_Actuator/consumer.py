@@ -24,6 +24,7 @@ from executor import (
 )
 from data_processor import reset_data_processor, DataProcessor
 from runtime_env import resolve_runtime_file_path
+from frame_stream import FrameStreamer, stream_enabled
 
 logger = logging.getLogger('actuator')
 
@@ -74,6 +75,13 @@ class TaskConsumer:
         self.task_queue: asyncio.Queue[QueueModel] = asyncio.Queue()
         self._stop_event = asyncio.Event()
         self._current_user: Optional[str] = None
+        # 执行画面帧推流状态（仅单任务执行使用）
+        self._exec_frame_streamer: Optional[FrameStreamer] = None
+        self._exec_frame_case_id: int = 0
+        self._exec_frame_page_step_id: int = 0
+        # 观看模式：无头开关关闭（headless=False）时开启画布直播；
+        # 批量执行一律后台执行，不置位
+        self._exec_frame_requested: bool = False
 
         # 启动时清理过期文件（超过7天）
         self._cleanup_expired_files(
@@ -550,6 +558,55 @@ class TaskConsumer:
                 opts["auth"] = await self._resolve_env_auth(args.get("env_config_id"))
         return opts
 
+    # ------------------------------------------------------------------
+    # 执行画面帧推流（仅单用例/单页面步骤执行挂载；批量执行不挂载）
+    # ------------------------------------------------------------------
+
+    async def _start_exec_frame(self) -> None:
+        """注册页面就绪回调：浏览器会话进入后创建 FrameStreamer 推流。
+
+        仅观看模式（无头开关关闭）时开启；批量执行/无头执行不推流。
+        """
+        self._exec_frame_streamer = None
+        if not self._exec_frame_requested or not stream_enabled() or self.executor is None:
+            return
+
+        async def _on_page(page):
+            # 帧采集为旁路：任何异常都不允许影响用例执行
+            try:
+                streamer = FrameStreamer(page, self._push_exec_frame)
+                await streamer.start()
+                self._exec_frame_streamer = streamer
+                logger.info('[frame_stream] 已开启执行画面推流（%s）', page.url)
+            except Exception as e:
+                logger.warning('[frame_stream] 帧采集启动失败，跳过推流: %s', e)
+
+        self.executor.on_execution_page = _on_page
+
+    async def _stop_exec_frame(self) -> None:
+        """停止帧推流并解绑钩子（幂等）。"""
+        if self.executor is not None:
+            self.executor.on_execution_page = None
+        streamer, self._exec_frame_streamer = self._exec_frame_streamer, None
+        self._exec_frame_requested = False
+        if streamer is not None:
+            await streamer.stop()
+
+    async def _push_exec_frame(self, w: int, h: int, data: str) -> None:
+        """帧上报：复用执行器上行 WS 连接，直推发起用户（Django 侧按 user 转发）。"""
+        try:
+            await self.ws_client.send_result(
+                UiSocketEnum.EXEC_FRAME,
+                {
+                    'case_id': self._exec_frame_case_id,
+                    'page_step_id': self._exec_frame_page_step_id,
+                    'frame': {'w': w, 'h': h, 'data': data},
+                },
+                self._current_user,
+            )
+        except Exception as e:
+            logger.debug('[frame_stream] 帧上报失败: %s', e)
+
     async def execute_page_steps(self, args: dict):
         """执行页面步骤"""
         page_step_id = args.get('page_step_id')
@@ -595,6 +652,11 @@ class TaskConsumer:
         runtime_opts = await self._runtime_for_executor(effective, args)
         previous = self.executor.apply_runtime_options(runtime_opts)
         logger.info(f"runtime options: {runtime_opts}")
+        # 执行画面帧推流：无头开关关闭（观看模式）时经画布直播；批量执行不挂载
+        self._exec_frame_case_id = 0
+        self._exec_frame_page_step_id = page_step_id
+        self._exec_frame_requested = not bool(runtime_opts.get('headless', True))
+        await self._start_exec_frame()
         try:
             try:
                 await self._materialize_page_step_uploads(config, project_id)
@@ -676,7 +738,8 @@ class TaskConsumer:
                 self._release_result_payloads(steps=step_results)
             summary_result = None
             await self._release_memory_after_task()
-    
+            await self._stop_exec_frame()
+
     async def execute_test_case(self, args: dict):
         """执行测试用例"""
         case_id = args.get('case_id')
@@ -726,6 +789,11 @@ class TaskConsumer:
         )
         result = None
         result_data = None
+        # 执行画面帧推流：无头开关关闭（观看模式）时经画布直播；批量执行不挂载
+        self._exec_frame_case_id = case_id
+        self._exec_frame_page_step_id = 0
+        self._exec_frame_requested = not bool(runtime_opts.get('headless', True))
+        await self._start_exec_frame()
         try:
             try:
                 await self._materialize_test_case_uploads(config, project_id)
@@ -786,6 +854,7 @@ class TaskConsumer:
                 self._release_result_payloads(result)
             result_data = None
             await self._release_memory_after_task()
+            await self._stop_exec_frame()
     
     async def execute_batch(self, args: dict):
         """批量执行用例（支持并发）"""

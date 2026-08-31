@@ -30,6 +30,7 @@ class UiSocketEnum:
     STOP_EXECUTION = 'u_stop_execution'   # 停止执行
     STEP_RESULT = 'u_step_result'         # 步骤执行结果
     CASE_RESULT = 'u_case_result'         # 用例执行结果
+    EXEC_FRAME = 'u_exec_frame'           # 执行过程画面帧（执行器→后端→前端，直播）
     SET_ACTUATOR_INFO = 't_set_actuator_info'  # 设置执行器信息
     SET_ACTUATOR_CONFIG = 't_set_actuator_config'  # 平台下发执行器配置
     # 录制器

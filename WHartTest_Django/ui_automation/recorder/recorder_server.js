@@ -22,8 +22,8 @@
  * 前端断言命令（assert）。动作点击目标自动生成 UiElement 兼容的选择器
  * （id/name/placeholder/test_id→css/text/role/xpath），主定位 + 两个备用定位
  * （locator_type_2/3，同 xpath 候选链降级），入库后执行器可依次回退。
- * 复选框/单选框点击收敛为一次"点击可见 label"（浏览器合成的隐藏 input 点击
- * 与 change 触发的 check/uncheck 不再重复录制，避免回放隐藏元素失败）。
+ * iframe 内元素自动识别：附 is_iframe/iframe_locator（' >> ' 链式定位，支持嵌套），
+ * 入库自动打开 iframe 开关；复选框/单选框点击收敛为一次"点击可见 label"。
  */
 
 const fs = require('fs');
@@ -103,13 +103,17 @@ const INIT_SCRIPT = () => {
 
   // 动态 id 识别：框架运行时生成、刷新即变的 id 不能用作定位锚点。
   // 覆盖 Element Plus 各类实例/容器 id（el-id-920-7、el-popper-container-226、
-  // el-select-xxx、el-popper-xxx 等）、构建工具前缀、纯数字与长随机串。
+  // el-select-xxx、el-popper-xxx 等）、构建工具前缀、纯数字与长随机串，
+  // 以及自动生成的 id（auto-id-<时间戳> 等）与时间戳/序列号尾缀。
   function isDynamicId(id) {
     if (!id) return true;
     if (/^el-[a-z0-9-]+-\d+$/.test(id)) return true;          // Element Plus / 类 EP 运行时 id
     if (/^(vite|webpack|ember|app)-/.test(id)) return true;    // 构建工具前缀
     if (/^\d+$/.test(id)) return true;                          // 纯数字 id（易冲突且常为生成）
     if (id.length >= 24 && id.indexOf('-') >= 0) return true;   // 长随机串
+    if (/^auto-[a-z0-9]+-\d+$/.test(id)) return true;           // 自动生成（auto-id-1788148064478）
+    if (/-\d{9,}$/.test(id)) return true;                       // 时间戳/序列号尾缀（13 位毫秒等）
+    if (/^(random|gen|generated|tmp|temp|uid|uuid)-/.test(id)) return true; // 随机/临时 id 前缀
     return false;
   }
 
@@ -746,8 +750,46 @@ function recordAction(action) {
   pushEvent('actions', entry);
 }
 
-function handleReport(payload) {
+// iframe 元素定位链：从目标 frame 逐层向上到主 frame，每层用父文档的
+// buildXPath 生成 iframe 元素的相对 xpath，以 ' >> ' 连接（执行器
+// page.frame_locator 链式语法，支持嵌套 iframe）。返回 null 表示不在 iframe 内。
+async function buildIframeChain(frame) {
+  const parts = [];
+  let f = frame;
+  while (f && f !== state.page.mainFrame()) {
+    const handle = await f.frameElement().catch(() => null);
+    if (!handle) return null;
+    const xp = await handle
+      .evaluate((el) => {
+        const w = window.__whart;
+        if (!w || !w.buildXPath) return '';
+        return w.buildXPath(el);
+      })
+      .catch(() => '');
+    if (!xp) return null;
+    // 绝对路径兜底（/html/body/...）转为 // 前缀：frame_locator 只认 // 或 xpath=，
+    // 单斜杠开头会被当 CSS 解析而失败（执行器逐段 frame_locator(part) 下钻）
+    parts.unshift(xp[0] === '/' && xp[1] !== '/' ? '/' + xp : xp);
+    f = await handle.ownerFrame();  // ownerFrame 为异步 API，漏 await 会拿到 Promise
+  }
+  return parts.length ? parts.join(' >> ') : null;
+}
+
+async function handleReport(payload, frame) {
   if (!state.running || state.preRunning || !payload || !payload.t) return;
+  // iframe 内元素：自动识别并附带 iframe 定位链，入库时填充 is_iframe/iframe_locator。
+  // 元素表达式保持最内层 frame 文档相对（执行器先 frame_locator 进 frame 再定位）。
+  if (payload.el && frame && !frame.isDetached() && frame !== state.page.mainFrame()) {
+    try {
+      const chain = await buildIframeChain(frame);
+      if (chain) {
+        payload.el.is_iframe = true;
+        payload.el.iframe_locator = chain;
+      }
+    } catch (e) {
+      serverLog('iframe 定位链生成失败:', e && e.message ? e.message : String(e));
+    }
+  }
   const now = Date.now();
   try {
     if (payload.t === 'click') {
@@ -884,21 +926,32 @@ function stopFrameLoop() {
 function locatorExpr(selector) {
   if (!selector) return null;
   const { locator_type, locator_value } = selector;
+  // iframe 元素：生成 frameLocator 链式调用（page.frameLocator('...')...）
+  let container = 'page';
+  if (selector.is_iframe && selector.iframe_locator) {
+    container = String(selector.iframe_locator)
+      .split(' >> ')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((p) => `.frameLocator('${p.replace(/'/g, "\\'")}')`)
+      .join('');
+    container = 'page' + container;
+  }
   switch (locator_type) {
     case 'xpath':
-      return `page.locator('xpath=${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `${container}.locator('xpath=${String(locator_value).replace(/'/g, "\\'")}')`;
     case 'id':
-      return `page.locator('#${String(locator_value).replace(/"/g, '')}')`;
+      return `${container}.locator('#${String(locator_value).replace(/"/g, '')}')`;
     case 'name':
-      return `page.locator("[name='${String(locator_value).replace(/'/g, '')}']")`;
+      return `${container}.locator("[name='${String(locator_value).replace(/'/g, "\\'")}']")`;
     case 'placeholder':
-      return `page.getByPlaceholder('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `${container}.getByPlaceholder('${String(locator_value).replace(/'/g, "\\'")}')`;
     case 'text':
-      return `page.getByText('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `${container}.getByText('${String(locator_value).replace(/'/g, "\\'")}')`;
     case 'role':
-      return `page.getByRole('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `${container}.getByRole('${String(locator_value).replace(/'/g, "\\'")}')`;
     default:
-      return `page.locator('${String(locator_value).replace(/'/g, "\\'")}')`;
+      return `${container}.locator('${String(locator_value).replace(/'/g, "\\'")}')`;
   }
 }
 
@@ -1002,6 +1055,15 @@ async function ensureInjection() {
   }
 }
 
+/** 构建浏览器上下文参数：视口 + 可选登录态快照（storageState） */
+function buildContextOptions(viewport, storageState) {
+  const opts = { viewport };
+  if (storageState) {
+    opts.storageState = storageState;
+  }
+  return opts;
+}
+
 async function cmdStart(params) {
   if (state.browser) {
     return { ok: false, error: '录制会话已启动，不能重复 start' };
@@ -1030,8 +1092,8 @@ async function cmdStart(params) {
   };
   try {
     state.browser = await chromium.launch(launchOptions);
-    state.context = await state.browser.newContext({ viewport });
-    await state.context.exposeFunction('__whartReport', handleReport);
+    state.context = await state.browser.newContext(buildContextOptions(viewport, params.storage_state));
+    await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
     try {
       await state.context.addInitScript(INIT_SCRIPT);
     } catch (_) {
@@ -1128,36 +1190,47 @@ async function cmdInput(params) {
 // 前置步骤执行（录制前自动执行可复用页面步骤，如登录）
 // ---------------------------------------------------------------------------
 
-/** 按平台执行器同款映射构建 Playwright locator */
+/** 按平台执行器同款映射构建 Playwright locator（支持 iframe 链式定位） */
 function buildLocator(page, selector) {
   if (!selector) return null;
+  // iframe 元素：按 ' >> ' 链逐层 frameLocator 下钻（与执行器一致）
+  let container = page;
+  if (selector.is_iframe && selector.iframe_locator) {
+    const parts = String(selector.iframe_locator)
+      .split(' >> ')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      container = container.frameLocator(part);
+    }
+  }
   const type = selector.locator_type || 'xpath';
   const value = String(selector.locator_value || '');
   let loc = null;
   switch (type) {
     case 'xpath':
-      loc = page.locator('xpath=' + value);
+      loc = container.locator('xpath=' + value);
       break;
     case 'id':
-      loc = page.locator('#' + value);
+      loc = container.locator('#' + value);
       break;
     case 'name':
-      loc = page.locator("[name='" + value + "']");
+      loc = container.locator("[name='" + value + "']");
       break;
     case 'text':
-      loc = page.getByText(value);
+      loc = container.getByText(value);
       break;
     case 'role':
-      loc = page.getByRole(value);
+      loc = container.getByRole(value);
       break;
     case 'placeholder':
-      loc = page.getByPlaceholder(value);
+      loc = container.getByPlaceholder(value);
       break;
     case 'label':
-      loc = page.getByLabel(value);
+      loc = container.getByLabel(value);
       break;
     default:
-      loc = page.locator(value);
+      loc = container.locator(value);
   }
   const index = Number(selector.locator_index);
   if (Number.isInteger(index) && index > 1) {
