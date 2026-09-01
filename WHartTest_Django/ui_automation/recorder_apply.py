@@ -74,7 +74,7 @@ def _element_name(action_type: str, selector: dict | None) -> str:
     if selector:
         fallback = str(selector.get('locator_value') or 'element')[:20]
     op = {'click': '点击', 'fill': '输入', 'check': '勾选', 'uncheck': '取消勾选',
-          'press': '按键', 'assert': '断言'}.get(action_type, action_type)
+          'press': '按键', 'assert': '断言', 'upload': '上传'}.get(action_type, action_type)
     return f'{op}-{fallback}'[:_MAX_NAME]
 
 
@@ -230,6 +230,49 @@ def apply_recorded_actions(
             )
             next_sort += 1
             steps_created += 1
+            continue
+
+        if action_type == 'upload':
+            selector = action.get('selector') or {}
+            element, created = _get_or_create_element(
+                page=page, user=user, action_type='upload', selector=selector,
+            )
+            if created:
+                elements_created += 1
+            elif element is not None:
+                elements_updated += 1
+            try:
+                file_id = int(action.get('file_id'))
+            except (TypeError, ValueError):
+                file_id = None
+            file_name = str(action.get('file_name') or '').strip()
+            # 平台 upload 步骤三种数据并存：
+            # value=file_id:N 供执行器 input_value 提取并 resolve 文件路径；
+            # file_id 供步骤详情表单/引用管理读取；file_name 供执行器以原名上传。
+            ope_value = {}
+            if file_id:
+                ope_value = {
+                    'file_id': file_id,
+                    'value': f'file_id:{file_id}',
+                    'file_name': file_name,
+                }
+            upload_detail = UiPageStepsDetailed.objects.create(
+                page_step=page_step,
+                step_type=STEP_TYPE_ELEMENT,
+                element=element,
+                ope_key='upload',
+                ope_value=ope_value,
+                step_sort=next_sort,
+            )
+            next_sort += 1
+            steps_created += 1
+            # 同步文件引用（延迟导入避免循环），保证删除步骤时能清理平台文件引用
+            if file_id:
+                try:
+                    from .views import _sync_upload_step_file_reference
+                    _sync_upload_step_file_reference(upload_detail, user)
+                except Exception:
+                    pass
             continue
 
         if action_type == 'assert':

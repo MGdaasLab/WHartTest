@@ -960,8 +960,22 @@ class PlaywrightExecutor:
         if not file_path or not str(file_path).strip():
             raise ValueError("上传文件路径为空，请选择文件管理中的文件或填写执行器可访问的文件路径")
 
+        payload = file_path
+        # 有原始文件名时以原名上传（路径多为平台存储的 hash/临时名，上传后服务端看到的
+        # 文件名应保持用户初衷）——读取文件内容并携带 name/mimeType。
+        original_name = (step.upload_file_name or '').strip()
+        if original_name:
+            try:
+                with open(str(file_path), 'rb') as fh:
+                    file_buffer = fh.read()
+                import mimetypes
+                mime = mimetypes.guess_type(original_name)[0] or 'application/octet-stream'
+                payload = [{'name': original_name, 'mimeType': mime, 'buffer': file_buffer}]
+            except Exception:
+                payload = file_path  # 读取失败退回路径上传
+
         try:
-            await locator.set_input_files(file_path)
+            await locator.set_input_files(payload)
             logger.info(f"步骤 {step.step_id}: 已通过 file input 设置上传文件")
             return
         except Exception as exc:
@@ -974,7 +988,7 @@ class PlaywrightExecutor:
             await locator.click()
 
         file_chooser = await file_chooser_info.value
-        await file_chooser.set_files(file_path)
+        await file_chooser.set_files(payload)
         logger.info(f"步骤 {step.step_id}: 已通过 file chooser 设置上传文件")
     
     async def _execute_step(

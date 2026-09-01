@@ -81,6 +81,9 @@ docs/superpowers/
 docs/competitive-analysis/
 .freebuff
 
+# Actuator
+WHartTest_Actuator/config.toml
+
 # zcode
 .zcode
 ~/.dsh

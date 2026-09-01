@@ -773,3 +773,39 @@ class RecorderLoginInjectTests(TestCase):
             state_json={'cookies': [{'name': 'K', 'value': 'v'}]}, creator=self.user,
         )
         self.assertEqual(_active_login_state(env)['cookies'][0]['name'], 'K')
+
+
+class RecorderUploadApplyTests(TestCase):
+    """上传动作入库：ope_key=upload + file_id，元素按选择器创建。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='up-rec', password='secret')
+        self.project = Project.objects.create(name='Up Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/upload', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+
+    def test_upload_action_apply(self):
+        sel = {'locator_type': 'xpath', 'locator_value': '//input[@type="file"]', 'name': '附件上传'}
+        actions = [{'seq': 1, 'type': 'upload', 'selector': sel, 'file_id': 88, 'file_name': '报告.xlsx'}]
+        stats = apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user, actions=actions)
+        from ui_automation.models import UiPageStepsDetailed
+        detail = UiPageStepsDetailed.objects.get(page_step=self.page_step)
+        self.assertEqual(detail.ope_key, 'upload')
+        self.assertEqual(detail.ope_value, {'file_id': 88, 'value': 'file_id:88', 'file_name': '报告.xlsx'})
+        self.assertIsNotNone(detail.element)
+        self.assertEqual(detail.element.locator_value, '//input[@type="file"]')
+        self.assertEqual(stats['steps_created'], 1)
+
+    def test_upload_missing_file_id_ok(self):
+        sel = {'locator_type': 'xpath', 'locator_value': '//input[@type="file"]', 'name': '附件上传'}
+        apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user,
+                               actions=[{'seq': 1, 'type': 'upload', 'selector': sel}])
+        from ui_automation.models import UiPageStepsDetailed
+        detail = UiPageStepsDetailed.objects.get(page_step=self.page_step)
+        self.assertEqual(detail.ope_value, {})

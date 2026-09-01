@@ -262,6 +262,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.RECORDER_ASSERT: self.handle_recorder_assert,
                 UiSocketEnum.RECORDER_REMOVE_ACTION: self.handle_recorder_remove_action,
                 UiSocketEnum.RECORDER_ADD_WAIT: self.handle_recorder_add_wait,
+                UiSocketEnum.RECORDER_LOCATE_UPLOAD: self.handle_recorder_locate_upload,
+                UiSocketEnum.RECORDER_ADD_UPLOAD: self.handle_recorder_add_upload,
                 UiSocketEnum.RECORDER_STOP: self.handle_recorder_stop,
             }
         
@@ -402,6 +404,51 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             )
         except Exception as exc:
             await self._send_recorder_error(f'插入等待失败: {exc}')
+
+    async def handle_recorder_locate_upload(self, args, user):
+        """定位上传控件：传入画布坐标，返回可执行选择器。"""
+        from .recorder.session_manager import recorder_manager
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            result = await sync_to_async(session.request)(
+                'locate_upload',
+                {'x': args.get('x'), 'y': args.get('y')},
+                timeout=15,
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'上传控件定位失败: {exc}')
+            return
+        state = result.get('state') or {}
+        await self._send_recorder(
+            UiSocketEnum.RECORDER_STATUS,
+            {'status': 'upload_located', 'selector': state.get('selector')},
+            msg='上传控件已定位',
+        )
+
+    async def handle_recorder_add_upload(self, args, user):
+        """插入上传动作：selector + 平台文件 file_id。"""
+        from .recorder.session_manager import recorder_manager
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            await sync_to_async(session.request)(
+                'add_upload',
+                {
+                    'selector': args.get('selector'),
+                    'file_id': args.get('file_id'),
+                    'file_name': args.get('file_name'),
+                },
+                timeout=10,
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'插入上传动作失败: {exc}')
 
     async def handle_recorder_stop(self, args, user):
         """停止帧中继（结束录制走 REST finish）。"""

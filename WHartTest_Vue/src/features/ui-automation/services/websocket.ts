@@ -24,6 +24,8 @@ export const UiSocketEnum = {
   RECORDER_ASSERT: 'u_recorder_assert',   // 记录断言动作
   RECORDER_REMOVE_ACTION: 'u_recorder_remove_action', // 删除已录动作
   RECORDER_ADD_WAIT: 'u_recorder_add_wait', // 插入等待动作
+  RECORDER_LOCATE_UPLOAD: 'u_recorder_locate_upload', // 定位上传控件
+  RECORDER_ADD_UPLOAD: 'u_recorder_add_upload', // 插入上传动作
   RECORDER_STOP: 'u_recorder_stop',       // 停止帧中继
   RECORDER_FRAME: 'u_recorder_frame',     // 浏览器画面帧
   RECORDER_ACTION: 'u_recorder_action',   // 录制动作增量
@@ -292,6 +294,16 @@ class UiWebSocketService {
   /** 插入等待动作（秒） */
   recorderAddWait(seconds: number): boolean {
     return this.send(UiSocketEnum.RECORDER_ADD_WAIT, { seconds })
+  }
+
+  /** 定位上传控件（画布坐标 → 返回选择器） */
+  recorderLocateUpload(x: number, y: number): boolean {
+    return this.send(UiSocketEnum.RECORDER_LOCATE_UPLOAD, { x, y })
+  }
+
+  /** 插入上传动作（selector + 平台文件 file_id） */
+  recorderAddUpload(selector: Record<string, any>, fileId: number, fileName: string): boolean {
+    return this.send(UiSocketEnum.RECORDER_ADD_UPLOAD, { selector, file_id: fileId, file_name: fileName })
   }
 
   /** 停止帧中继 */

@@ -78,6 +78,44 @@
       </div>
     </div>
 
+    <!-- 上传文件选择弹窗（本地 / 平台文件） -->
+    <a-modal
+      :visible="uploadDialogVisible"
+      :title="text.upload"
+      :footer="false"
+      width="520px"
+      @cancel="uploadDialogVisible = false"
+    >
+      <a-radio-group v-model="uploadSource" type="button" class="upload-source-tabs">
+        <a-radio value="local">{{ text.uploadLocal }}</a-radio>
+        <a-radio value="platform">{{ text.uploadPlatform }}</a-radio>
+      </a-radio-group>
+      <div v-if="uploadSource === 'local'" class="upload-local-box">
+        <a-button type="outline" :loading="uploadingFile" @click="pickLocalFile">
+          <template #icon><icon-upload /></template>
+          {{ text.uploadPickLocal }}
+        </a-button>
+        <div class="upload-hint">{{ text.uploadLocalHint }}</div>
+        <input ref="localFileInput" type="file" style="display: none" @change="onLocalFileChange" />
+      </div>
+      <div v-else class="upload-platform-box">
+        <a-select
+          v-model="selectedPlatformFileId"
+          :options="platformFiles.map(f => ({ label: f.original_name || f.name, value: f.id }))"
+          :placeholder="text.uploadSelectPlatform"
+          allow-search
+          style="width: 100%"
+        />
+        <div class="upload-hint">{{ text.uploadPlatformHint }}</div>
+      </div>
+      <div class="recorder-setup-actions">
+        <a-button @click="uploadDialogVisible = false">{{ text.cancel }}</a-button>
+        <a-button type="primary" :disabled="uploadSource === 'platform' && !selectedPlatformFileId" @click="confirmPlatformFile">
+          {{ text.uploadConfirm }}
+        </a-button>
+      </div>
+    </a-modal>
+
     <!-- 快捷新增页面 -->
     <a-modal
       :visible="addPageVisible"
@@ -215,6 +253,15 @@
             {{ text.saveLoginState }}
           </a-button>
           <a-button
+            :status="uploadActive ? 'warning' : undefined"
+            size="small"
+            :disabled="!recording"
+            @click="handleUploadLocate"
+          >
+            <template #icon><icon-upload /></template>
+            {{ uploadActive ? text.uploadPick : text.upload }}
+          </a-button>
+          <a-button
             type="outline"
             status="danger"
             size="small"
@@ -261,6 +308,8 @@ import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../
 import type { RecorderSessionInfo, RecorderFinishResult, RecorderSaveLoginStateResult } from '../api'
 import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm, UiPageStepsForm } from '../types'
 import { extractListData, extractResponseData } from '../types'
+import { fileService } from '@/features/file-management/services/fileService'
+import type { FileAsset } from '@/features/file-management/types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
 
 const props = defineProps<{
@@ -317,6 +366,19 @@ const text = computed(() => (
         preFailed: 'Pre-step failed, please check its definition',
         wait: 'Wait',
         waitSeconds: (sec: number) => `${sec}s`,
+        upload: 'Upload',
+        uploadPick: 'Click upload control…',
+        uploadPickHint: 'Upload mode: click the upload control (file input / button) in the browser view',
+        uploadLocateFailed: 'Please click an upload control on the page',
+        uploadLocal: 'Local file',
+        uploadPlatform: 'Platform files',
+        uploadPickLocal: 'Choose local file',
+        uploadLocalHint: 'The selected file will be uploaded to the platform and bound to this step.',
+        uploadSelectPlatform: 'Select a file from the platform',
+        uploadPlatformHint: 'Pick an existing file stored on the platform.',
+        uploadConfirm: 'Confirm',
+        uploadAdded: 'Upload step added',
+        uploadFailed: 'Upload failed',
         addPage: 'New page',
         addPageStep: 'New page step',
         module: 'Module',
@@ -394,6 +456,19 @@ const text = computed(() => (
         preFailed: '前置步骤执行失败，请检查步骤定义',
         wait: '等待',
         waitSeconds: (sec: number) => `${sec} 秒`,
+        upload: '上传文件',
+        uploadPick: '请在画面中点击上传控件…',
+        uploadPickHint: '上传模式：请在左侧画面中点击上传控件（文件输入框或上传按钮）',
+        uploadLocateFailed: '请点击页面上传控件',
+        uploadLocal: '本地文件',
+        uploadPlatform: '平台文件',
+        uploadPickLocal: '选择本地文件',
+        uploadLocalHint: '所选文件将上传到平台并与该步骤绑定。',
+        uploadSelectPlatform: '请选择平台文件',
+        uploadPlatformHint: '从平台已存储的文件中选择。',
+        uploadConfirm: '确定',
+        uploadAdded: '上传步骤已添加',
+        uploadFailed: '上传失败',
         addPage: '新增页面',
         addPageStep: '新增页面步骤',
         module: '所属模块',
@@ -928,6 +1003,12 @@ function onPointerDown(e: PointerEvent) {
   if (!recording.value) return
   keepImeFocused()
   const { x, y } = canvasPoint(e)
+  if (uploadActive.value) {
+    // 上传定位模式：本次点击用于定位上传控件
+    uploadActive.value = false
+    uiWebSocket.recorderLocateUpload(x, y)
+    return
+  }
   if (assertActive.value) {
     // 断言模式：本次点击只用于定位断言目标，不记录普通点击
     assertActive.value = false
@@ -1034,6 +1115,82 @@ function handleAddWait(seconds: number) {
   }
 }
 
+// ---- 上传文件（方案A：定位上传控件 + 选择文件[本地/平台]插入 upload 动作）----
+const uploadActive = ref(false)
+const uploadDialogVisible = ref(false)
+const pendingUploadSelector = ref<Record<string, any> | null>(null)
+const uploadSource = ref<'local' | 'platform'>('local')
+const uploadingFile = ref(false)
+const platformFiles = ref<FileAsset[]>([])
+const selectedPlatformFileId = ref<number | null>(null)
+const localFileInput = ref<HTMLInputElement | null>(null)
+
+function handleUploadLocate() {
+  if (!recording.value) return
+  if (uploadActive.value) {
+    uploadActive.value = false
+    return
+  }
+  uploadActive.value = true
+  Message.info(text.value.uploadPickHint)
+}
+
+/** 定位后的文件选择弹窗 */
+function openUploadDialog(selector: Record<string, any>) {
+  pendingUploadSelector.value = selector
+  uploadSource.value = 'local'
+  selectedPlatformFileId.value = null
+  fetchPlatformFiles()
+  uploadDialogVisible.value = true
+}
+
+async function fetchPlatformFiles() {
+  if (!projectId.value) return
+  try {
+    const res = await fileService.list(projectId.value || 0)
+    platformFiles.value = extractListData<FileAsset>(res)
+  } catch (_) {
+    platformFiles.value = []
+  }
+}
+
+function pickLocalFile() {
+  localFileInput.value?.click()
+}
+
+async function onLocalFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file || !pendingUploadSelector.value) return
+  uploadingFile.value = true
+  try {
+    const res = await fileService.upload(projectId.value || 0, [file])
+    const asset = extractResponseData<FileAsset | FileAsset[]>(res)
+    const picked = Array.isArray(asset) ? asset[0] : asset
+    const fileId = Number(picked?.id ?? picked?.file_id)
+    if (!fileId) throw new Error('上传失败：未返回文件 ID')
+    uiWebSocket.recorderAddUpload(pendingUploadSelector.value, fileId, file.name)
+    Message.success(text.value.uploadAdded)
+    uploadDialogVisible.value = false
+  } catch (err: any) {
+    Message.error(err?.error || err?.message || text.value.uploadFailed)
+  } finally {
+    uploadingFile.value = false
+  }
+}
+
+async function confirmPlatformFile() {
+  if (!selectedPlatformFileId.value || !pendingUploadSelector.value) {
+    Message.warning(text.value.uploadSelectPlatform)
+    return
+  }
+  const asset = platformFiles.value.find((f) => f.id === selectedPlatformFileId.value)
+  uiWebSocket.recorderAddUpload(pendingUploadSelector.value, selectedPlatformFileId.value, asset?.original_name || asset?.name || '')
+  Message.success(text.value.uploadAdded)
+  uploadDialogVisible.value = false
+}
+
 function handleAssert() {
   if (!recording.value) return
   // 页面校验（URL/标题）：不需要选元素，直接记录断言
@@ -1096,6 +1253,7 @@ function actionTagColor(type: string): string {
 
 function actionDesc(a: Record<string, any>): string {
   const sel = a.selector
+  if (a.type === 'upload') return a.file_name || `file_id:${a.file_id || ''}`
   if (a.type === 'wait') return `${a.seconds || 1} ${isEnglish.value ? 's' : '秒'}`
   if (a.type === 'goto') return String(a.url || '')
   if (a.type === 'fill') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
@@ -1149,6 +1307,12 @@ function onRecorderStatus(data: any) {
     Message.error(args.message || text.value.assertFailed)
   } else if (status === 'asserted') {
     Message.success(text.value.assertRecorded)
+  } else if (status === 'upload_located') {
+    if (args.selector) {
+      openUploadDialog(args.selector)
+    } else {
+      Message.error(text.value.uploadLocateFailed)
+    }
   }
 }
 
@@ -1177,6 +1341,16 @@ onUnmounted(() => {
 </script>
 
 <style lang="postcss" scoped>
+.upload-source-tabs {
+  margin-bottom: 12px;
+}
+
+.upload-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
 .recorder-setup-actions {
   display: flex;
   justify-content: flex-end;

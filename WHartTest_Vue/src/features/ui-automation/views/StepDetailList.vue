@@ -19,6 +19,15 @@
           <template #icon><icon-play-arrow /></template>
           {{ stepText.debugRun }}
         </a-button>
+        <a-checkbox
+          :model-value="allStepSelected"
+          :indeterminate="partialStepSelected"
+          :disabled="!stepData.length"
+          class="step-select-all"
+          @change="toggleSelectAllSteps"
+        >
+          {{ stepText.selectAll }}
+        </a-checkbox>
         <a-popconfirm
           :content="stepText.batchDeleteConfirm"
           :disabled="!selectedStepIds.length"
@@ -612,6 +621,7 @@ const stepText = computed(() => isEnglish.value
       deleteFailed: 'Delete failed',
       batchDelete: 'Batch delete',
       batchDeleteConfirm: 'Delete the selected steps?',
+      selectAll: 'Select all',
       sortSaved: 'Order saved',
       saveSortFailed: 'Failed to save order',
     }
@@ -729,6 +739,7 @@ const stepText = computed(() => isEnglish.value
       deleteFailed: '删除失败',
       batchDelete: '批量删除',
       batchDeleteConfirm: '确定删除选中的步骤？',
+      selectAll: '全选',
       sortSaved: '排序已保存',
       saveSortFailed: '保存排序失败',
     }
@@ -832,6 +843,17 @@ const loading = ref(false)
 const submitting = ref(false)
 const stepData = ref<UiPageStepsDetailed[]>([])
 const selectedStepIds = ref<number[]>([])
+
+// 一键全选（含半选态）
+const allStepSelected = computed(
+  () => stepData.value.length > 0 && selectedStepIds.value.length === stepData.value.length,
+)
+const partialStepSelected = computed(
+  () => selectedStepIds.value.length > 0 && selectedStepIds.value.length < stepData.value.length,
+)
+const toggleSelectAllSteps = (checked: boolean) => {
+  selectedStepIds.value = checked ? stepData.value.map((s) => s.id) : []
+}
 const moduleOptions = ref<UiModule[]>([])
 const modulesLoading = ref(false)
 const flatModuleOptions = computed(() => flattenModules(moduleOptions.value))

@@ -271,25 +271,20 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
-  // 从 ancestor 到 el 的相对路径（不含 ancestor 自身）；
-  // 每层优先兄弟锚点语义步，无锚点兄弟时退回 tag[n] 序号。
+// 从 ancestor 到 el 的相对路径（不含 ancestor 自身）；
+// 每层用 tag[n] 序号步（不引入轴步——轴依赖兄弟顺序，折叠菜单最易错位）。
   function relativePath(el, ancestor) {
     var parts = [];
     var node = el;
     var guard = 0;
     while (node && node !== ancestor && guard < 16) {
-      var step = siblingStep(node);
-      if (!step) {
-        var idx = 1;
-        var sib = node.previousElementSibling;
-        while (sib) {
-          if (sib.tagName === node.tagName) idx++;
-          sib = sib.previousElementSibling;
-        }
-        step = '/' + node.tagName.toLowerCase() + '[' + idx + ']';
-      } else {
-        step = '/' + step;
+      var idx = 1;
+      var sib = node.previousElementSibling;
+      while (sib) {
+        if (sib.tagName === node.tagName) idx++;
+        sib = sib.previousElementSibling;
       }
+      var step = '/' + node.tagName.toLowerCase() + '[' + idx + ']';
       parts.unshift(step);
       node = node.parentElement;
       guard++;
@@ -446,13 +441,13 @@ const INIT_SCRIPT = () => {
 
     // 结构路径：完整回溯到 body（不限层数）——截断的路径在真实 DOM 中不存在，
     // 宁长勿断；途中每个唯一锚点祖先都短路收集为相对路径候选（近的先收）。
-    // 每层节点优先兄弟锚点语义步（siblingStep），无锚点兄弟时退回 tag[n] 序号。
+    // 每层节点：① 节点自身唯一文本步（菜单项，抗同级增删）；② 祖先绝对文本锚点短路；
+    // ③ 兄弟锚点语义步（轴，依赖兄弟顺序，折叠菜单最易错位，放最末）；④ 下标兜底。
     var parts = [];
     var node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
-      // ① 节点自身唯一文本语义步（菜单项等，抗同级增删）；② 兄弟锚点语义步；③ 下标兜底
+      // 当前节点自身唯一文本 → 优先（不依赖兄弟顺序）
       var step = uniqueNodeText(node);
-      if (!step) step = siblingStep(node);
       if (!step) {
         var idx = 1;
         var sib = node.previousElementSibling;
@@ -469,6 +464,10 @@ const INIT_SCRIPT = () => {
       }
       var anchor = pickAnchor(parent);
       if (anchor) add(anchor + '/' + parts.join('/'));
+      // 祖先文本锚点短路：折叠菜单项（li 等）文本唯一——绝对文本锚点不依赖展开状态，
+      // 先于轴步收集。
+      var parentTextAnchor = textAnchor(parent);
+      if (parentTextAnchor) add(parentTextAnchor + '/' + parts.join('/'));
       var cls = parent.getAttribute && parent.getAttribute('class');
       if (typeof cls === 'string' && cls.trim()) {
         var tokens = cls.trim().split(/\s+/);
@@ -974,6 +973,11 @@ function buildScript(actions, startUrl) {
       lines.push(`  await page.waitForTimeout(${Math.round((Number(a.seconds) || 1) * 1000)});`);
       continue;
     }
+    if (a.type === 'upload') {
+      // 文件存在于平台文件管理，脚本中仅标注占位，执行时以平台 file_id 解析
+      lines.push(`  // TODO upload: file_id=${String(a.file_id || '')} ${a.file_name || ''}`.trim());
+      continue;
+    }
     // 页面校验断言（URL/标题）不需要元素定位
     if (a.type === 'assert' && (a.mode === 'url' || a.mode === 'title')) {
       const val = String(a.value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -1315,6 +1319,63 @@ async function cmdAddWait(params) {
   return { ok: true, state: { action: 'wait' } };
 }
 
+// 上传控件定位：前端点击到位后，找 input[type=file]（自身或最近祖先），
+// 返回可点击/可 setInputFiles 的选择器（执行器支持 file input 与 file chooser 两种回放）。
+async function cmdLocateUpload(params) {
+  if (!state.page || !state.running) {
+    return { ok: false, error: '录制会话未启动' };
+  }
+  if (params.x === undefined || params.y === undefined) {
+    return { ok: false, error: '缺少定位坐标' };
+  }
+  try {
+    const info = await state.page.evaluate(([x, y]) => {
+      const w = window.__whart;
+      if (!w || !w.describe) return null;
+      const el = document.elementFromPoint(x, y);
+      if (!el || !(el instanceof Element)) return null;
+      let fileInput = null;
+      let node = el;
+      while (node && node.nodeType === 1 && node !== document.documentElement && node !== document.body) {
+        if (node.tagName === 'INPUT' && ((node.getAttribute('type') || '')).toLowerCase() === 'file') {
+          fileInput = node;
+          break;
+        }
+        node = node.parentElement;
+      }
+      const target = fileInput || el;
+      const sel = w.describe(target);
+      if (!sel) return null;
+      return { selector: sel, is_file_input: !!fileInput };
+    }, [Number(params.x), Number(params.y)]);
+    if (!info || !info.selector) {
+      return { ok: false, error: '请点击上传控件（文件输入框或上传按钮）' };
+    }
+    return { ok: true, state: { selector: info.selector, is_file_input: info.is_file_input } };
+  } catch (e) {
+    return { ok: false, error: '上传控件定位失败: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+// 插入上传动作（文件已由前端上传到平台文件管理，此处只记录 file_id）
+async function cmdAddUpload(params) {
+  const sel = params.selector;
+  if (!sel || !sel.locator_type || !sel.locator_value) {
+    return { ok: false, error: '缺少上传控件定位信息' };
+  }
+  const fileId = Number(params.file_id);
+  if (!Number.isFinite(fileId) || fileId <= 0) {
+    return { ok: false, error: '缺少有效的文件 file_id' };
+  }
+  recordAction({
+    type: 'upload',
+    selector: sel,
+    file_id: fileId,
+    file_name: String(params.file_name || ''),
+  });
+  return { ok: true, state: { action: 'upload' } };
+}
+
 async function cmdRemoveAction(params) {
   const seq = Number(params && params.seq);
   if (!Number.isFinite(seq)) {
@@ -1644,6 +1705,10 @@ rl.on('line', (line) => {
           return respond(await cmdRemoveAction(msg.params || {}));
         case 'add_wait':
           return respond(await cmdAddWait(msg.params || {}));
+        case 'locate_upload':
+          return respond(await cmdLocateUpload(msg.params || {}));
+        case 'add_upload':
+          return respond(await cmdAddUpload(msg.params || {}));
         case 'reset_page':
           return respond(await cmdResetPage(msg.params || {}));
         case 'assert':

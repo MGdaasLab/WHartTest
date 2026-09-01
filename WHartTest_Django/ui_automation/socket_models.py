@@ -39,6 +39,8 @@ class UiSocketEnum:
     RECORDER_ASSERT = 'u_recorder_assert'  # 前端→后端：记录断言动作
     RECORDER_REMOVE_ACTION = 'u_recorder_remove_action'  # 前端→后端：删除已录动作
     RECORDER_ADD_WAIT = 'u_recorder_add_wait'          # 前端→后端：插入等待动作
+    RECORDER_LOCATE_UPLOAD = 'u_recorder_locate_upload'  # 前端→后端：定位上传控件
+    RECORDER_ADD_UPLOAD = 'u_recorder_add_upload'        # 前端→后端：插入上传动作
     RECORDER_STOP = 'u_recorder_stop'      # 前端→后端：停止帧中继
     RECORDER_FRAME = 'u_recorder_frame'    # 后端→前端：浏览器画面帧（base64 jpeg）
     RECORDER_ACTION = 'u_recorder_action'  # 后端→前端：录制动作增量
