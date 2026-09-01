@@ -257,7 +257,7 @@
 import { ref, computed, watch, onMounted } from 'vue';
 import { Message } from '@arco-design/web-vue';
 import {
-  IconBarChart, IconFile, IconThunderbolt, IconApps, IconDesktop
+  IconBarChart, IconFile, IconThunderbolt, IconApps, IconDesktop, IconCode
 } from '@arco-design/web-vue/es/icon';
 import { getProjectStatistics, getTokenUsageStats, type ProjectStatistics, type TokenUsageStats } from '@/services/projectService';
 import { useAppI18n } from '@/composables/useAppI18n';
@@ -280,8 +280,11 @@ const dashboardText = computed(() => (
         needsOptimization: 'Optimize',
         optimizationPending: 'Opt review',
         uiAutomationTitle: 'UI Automation',
+        apiTestingTitle: 'API Testing',
         executions: 'Runs',
+        interfaces: 'Interfaces',
         success: 'Succeeded',
+        completed: 'Completed',
         executionStatsTitle: 'Execution Stats',
         passed: 'Passed',
         failed: 'Failed',
@@ -303,17 +306,13 @@ const dashboardText = computed(() => (
         last30Days: 'Last 30 days:',
         runsUnit: 'runs',
         approved: 'Approved',
-        pendingReview: 'Pending',
-        unavailable: 'N/A',
+        pendingReview: 'Pending review',
+        unavailable: 'Unavailable',
         periodDay: 'Day',
         periodWeek: 'Week',
         periodMonth: 'Month',
         fetchStatisticsFailed: 'Failed to load statistics',
         fetchStatisticsError: 'An error occurred while loading statistics',
-        apiTestingTitle: 'API Testing',
-        interfaces: 'Interfaces',
-        cases: 'Cases',
-        completed: 'Completed',
       }
     : {
         noProjectDescription: '请在顶部选择一个项目查看统计数据',
@@ -323,8 +322,11 @@ const dashboardText = computed(() => (
         needsOptimization: '待优化',
         optimizationPending: '优化待审',
         uiAutomationTitle: 'UI自动化',
+        apiTestingTitle: 'API 自动化测试',
         executions: '执行',
+        interfaces: '接口',
         success: '成功',
+        completed: '完成',
         executionStatsTitle: '执行统计',
         passed: '通过',
         failed: '失败',
@@ -353,10 +355,6 @@ const dashboardText = computed(() => (
         periodMonth: '月',
         fetchStatisticsFailed: '获取统计数据失败',
         fetchStatisticsError: '获取统计数据时发生错误',
-        apiTestingTitle: 'API 自动化测试',
-        interfaces: '接口',
-        cases: '用例',
-        completed: '完成',
       }
 ));
 
@@ -390,7 +388,7 @@ const reviewStatusData = computed(() => {
     { key: 'approved', label: dashboardText.value.approved, value: statuses?.approved || 0, percent: getPercent(statuses?.approved || 0), color: '#52c41a' },
     { key: 'pending', label: dashboardText.value.pendingReview, value: statuses?.pending_review || 0, percent: getPercent(statuses?.pending_review || 0), color: '#faad14' },
     { key: 'optimization', label: dashboardText.value.needsOptimization, value: statuses?.needs_optimization || 0, percent: getPercent(statuses?.needs_optimization || 0), color: '#1890ff' },
-    { key: 'opt_pending', label: dashboardText.value.optimizationPending, value: statuses?.optimization_pending_review || 0, percent: getPercent(statuses?.optimization_pending_review || 0), color: '#722ed1' },
+    { key: 'opt_pending', label: dashboardText.value.optimizationPending, value: statuses?.optimization_pending_review || 0, percent: getPercent(statuses?.optimization_pending_review || 0), color: '#13c2c2' },
     { key: 'unavailable', label: dashboardText.value.unavailable, value: statuses?.unavailable || 0, percent: getPercent(statuses?.unavailable || 0), color: '#ff4d4f' },
   ];
 });
@@ -584,7 +582,7 @@ onMounted(() => {
 .sub-item.pending, .sub-item.draft { color: #faad14; }
 .sub-item.failed { color: #ff4d4f; }
 .sub-item.optimization { color: #1890ff; }
-.sub-item.opt-pending { color: #722ed1; }
+.sub-item.opt-pending { color: #13c2c2; }
 
 /* 主内容区域 */
 .main-section {
