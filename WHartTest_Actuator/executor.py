@@ -673,8 +673,17 @@ class PlaywrightExecutor:
         return self._current_trace_path
 
     def stop(self):
-        """请求停止执行"""
+        """请求停止执行（置标志；由调用方决定是否 force 硬中断）"""
         self._stop_requested = True
+
+    async def stop_now(self) -> None:
+        """立即硬中断：置标志并关闭浏览器/上下文，使在途 Playwright 调用
+        快速失败——用于前端关闭执行画布时直接终止（不用等当前步骤结束）。"""
+        self._stop_requested = True
+        try:
+            await self.close()
+        except Exception as e:
+            logger.warning('stop_now 关闭浏览器异常: %s', e)
 
     def _setup_page_listeners(self, page: Page):
         """注册页面基础事件监听（自动处理弹窗、记录控制台 JS 错误）"""

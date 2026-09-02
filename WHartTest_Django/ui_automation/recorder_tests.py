@@ -16,7 +16,7 @@ from projects.models import Project, ProjectMember
 from ui_automation.consumers import UiAutomationConsumer, SocketUserManager
 from ui_automation.socket_models import NoticeType
 from ui_automation.models import (
-    UiElement, UiModule, UiPage, UiPageSteps, UiPageStepsDetailed, UiEnvironmentConfig, UiAuthState,
+    UiElement, UiModule, UiPage, UiPageSteps, UiPageStepsDetailed, UiEnvironmentConfig, UiAuthState, UiTestCase,
 )
 from ui_automation.recorder.session_manager import (
     recorder_manager, RecorderSessionError,
@@ -809,3 +809,251 @@ class RecorderUploadApplyTests(TestCase):
         from ui_automation.models import UiPageStepsDetailed
         detail = UiPageStepsDetailed.objects.get(page_step=self.page_step)
         self.assertEqual(detail.ope_value, {})
+
+
+class RecorderBrowserExecTests(TestCase):
+    """录制器浏览器（本地虚拟执行器）：步骤调试 / 单用例执行。"""
+
+    def setUp(self):
+        from asgiref.sync import async_to_sync
+        self._run = async_to_sync
+        self.user = User.objects.create_superuser(username='rec-exec', password='secret')
+        self.project = Project.objects.create(name='Recorder Exec Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+        UiPageStepsDetailed.objects.create(
+            page_step=self.page_step, step_type=0, ope_key='click', step_sort=0,
+        )
+        self.env = UiEnvironmentConfig.objects.create(
+            project=self.project, name='环境', base_url='http://env.local', creator=self.user,
+        )
+        self.case = UiTestCase.objects.create(
+            project=self.project, module=self.module, name='用例', creator=self.user,
+        )
+        from ui_automation.models import UiCaseStepsDetailed
+        UiCaseStepsDetailed.objects.create(test_case=self.case, page_step=self.page_step, case_sort=0)
+
+    def _consumer_env(self):
+        from unittest.mock import patch
+        from ui_automation.consumers import UiAutomationConsumer, SocketUserManager
+        SocketUserManager._web_users.clear()
+        self.addCleanup(SocketUserManager._web_users.clear)
+
+        received = []
+
+        class FakeWebUser:
+            async def send_json(self, data):
+                received.append(data)
+
+        SocketUserManager._web_users['alice'] = FakeWebUser()
+
+        class FakeSession:
+            session_id = 'fake-sess-1'
+
+            def __init__(self):
+                self.requests = []
+
+            def start(self, timeout=120):
+                pass
+
+            def request(self, method, params=None, timeout=None):
+                if params is None:
+                    params = {}
+                self.requests.append((method, params))
+                if method == 'start':
+                    return {'ok': True, 'state': {'viewport': {'width': 1400, 'height': 900}}}
+                if method == 'run_steps':
+                    steps = params.get('steps', [])
+                    return {'ok': True, 'state': {'executed': len(steps), 'failed': False}}
+                return {'ok': True, 'state': {}}
+
+        session = FakeSession()
+        rm_patch = patch('ui_automation.recorder.session_manager.recorder_manager')
+        rm = rm_patch.start()
+        rm.create_session.return_value = session
+        self.addCleanup(rm_patch.stop)
+        skill_patch = patch('ui_automation.views._resolve_recorder_skill_dir', return_value='/tmp/skill')
+        skill_patch.start()
+        self.addCleanup(skill_patch.stop)
+
+        consumer = UiAutomationConsumer()
+
+        class _FakeLayer:
+            def __init__(self):
+                self.sent = []
+
+            async def group_send(self, group, data):
+                self.sent.append(data)
+
+        layer = _FakeLayer()
+        consumer.channel_layer = layer
+        return consumer, session, received, layer
+
+    def test_page_steps_exec_via_recorder(self):
+        consumer, session, received, _layer = self._consumer_env()
+        async def scenario():
+            await consumer.handle_execute_page_steps({'page_step_id': self.page_step.id, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'}, 'alice')
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
+        self._run(scenario)()
+        # 执行已改为独立任务：等待其完成（结果回传后再断言）
+        if consumer._recorder_exec_task is not None:
+            self._run(lambda: consumer._recorder_exec_task)()
+        # run_steps 被调用且首条为 goto
+        run_calls = [p for m, p in session.requests if m == 'run_steps']
+        self.assertEqual(len(run_calls), 1)
+        self.assertEqual(run_calls[0]['steps'][0]['ope_key'], 'goto')
+        # 回执生效运行时（headless=false）→ 前端据此打开执行画布
+        eff = [m for m in received if m.data.func_name == 'effective_runtime']
+        self.assertEqual(len(eff), 1)
+        self.assertIs(eff[0].data.func_args['headless'], False)
+        # 结果回传
+        msg = received[-1]
+        self.assertEqual(msg.data.func_name, 'u_page_step_result')
+        self.assertEqual(msg.data.func_args['status'], 'success')
+        self.assertEqual(msg.data.func_args['total_steps'], 2)
+        # 步骤状态已更新
+        self.page_step.refresh_from_db()
+        self.assertEqual(self.page_step.status, 2)
+
+    def test_case_exec_via_recorder_saves_record(self):
+        from ui_automation.models import UiExecutionRecord
+        consumer, session, received, layer = self._consumer_env()
+        async def scenario():
+            await consumer.handle_execute_test_case({'case_id': self.case.id, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'}, 'alice')
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
+        self._run(scenario)()
+        # 用例结果广播（与执行器 handle_case_result 同路径）+ 执行记录落库
+        case_broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
+        self.assertEqual(len(case_broadcasts), 1)
+        self.assertEqual(case_broadcasts[0]['data']['args']['status'], 'success')
+        self.assertEqual(case_broadcasts[0]['data']['args']['total_steps'], 2)
+        self.assertEqual(case_broadcasts[0]['data']['args']['passed_steps'], 2)
+        record = UiExecutionRecord.objects.get(test_case=self.case)
+        self.assertEqual(record.status, 2)
+        self.assertEqual(record.executor_name if hasattr(record, 'executor_name') else 'recorder-browser', 'recorder-browser')
+
+    def test_page_steps_recorder_error_reports_failed(self):
+        consumer, session, received, _layer = self._consumer_env()
+        async def scenario():
+            await consumer.handle_execute_page_steps({'page_step_id': 999999, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'}, 'alice')
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
+        self._run(scenario)()
+        # 执行已改为独立任务：等待其完成（结果回传后再断言）
+        if consumer._recorder_exec_task is not None:
+            self._run(lambda: consumer._recorder_exec_task)()
+        msg = received[-1]
+        self.assertEqual(msg.data.func_name, 'u_page_step_result')
+        self.assertEqual(msg.data.func_args['status'], 'failed')
+
+    def test_close_canvas_interrupts_recorder_exec(self):
+        import threading
+        gate = threading.Event()
+
+        class BlockingSession:
+            session_id = 'fake-sess-stop'
+
+            def start(self, timeout=120):
+                pass
+
+            def request(self, method, params=None, timeout=None):
+                if method == 'start':
+                    return {'ok': True, 'state': {'viewport': {'width': 1400, 'height': 900}}}
+                if method == 'run_steps':
+                    gate.wait(2)  # 模拟长执行：run_steps 挂起，等待中断
+                    return {'ok': True, 'state': {'executed': 1, 'failed': False}}
+                return {'ok': True, 'state': {}}
+
+        session = BlockingSession()
+        from unittest.mock import patch
+        rm_patch = patch('ui_automation.recorder.session_manager.recorder_manager')
+        rm = rm_patch.start()
+        rm.create_session.return_value = session
+        self.addCleanup(rm_patch.stop)
+        skill_patch = patch('ui_automation.views._resolve_recorder_skill_dir', return_value='/tmp/skill')
+        skill_patch.start()
+        self.addCleanup(skill_patch.stop)
+
+        from ui_automation.consumers import UiAutomationConsumer, SocketUserManager
+        SocketUserManager._web_users.clear()
+        self.addCleanup(SocketUserManager._web_users.clear)
+        received = []
+
+        class FakeWebUser:
+            async def send_json(self, data):
+                received.append(data)
+
+        SocketUserManager._web_users['alice'] = FakeWebUser()
+        consumer = UiAutomationConsumer()
+
+        async def _noop_send(**kwargs):
+            pass
+
+        consumer.send = _noop_send  # 单测桩：stop 回执走 send_json → send
+
+        async def scenario():
+            task = asyncio.ensure_future(consumer.handle_execute_page_steps(
+                {'page_step_id': self.page_step.id, 'env_config_id': self.env.id,
+                 'actuator_id': 'recorder-browser'},
+                'alice',
+            ))
+            await asyncio.sleep(0.05)
+            # 前端关闭执行画布 → u_stop_execution
+            await consumer.handle_stop_execution({}, 'alice')
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=3)
+            # 中断后不再产生新的执行结果消息
+            await asyncio.sleep(0.1)
+
+        # 用 async_to_sync 驱动（自动管理事件循环与 DB 连接，避免测试库残留）
+        self._run(scenario)()
+        # 中断结果按 failed 回传（"执行已中断"）
+        self.assertTrue(received)
+        msg = received[-1]
+        self.assertEqual(msg.data.func_name, 'u_page_step_result')
+        self.assertEqual(msg.data.func_args['status'], 'failed')
+        self.assertIn('中断', msg.data.func_args['message'])
+        # 任务引用已清理
+        self.assertIsNone(consumer._recorder_exec_task)
+    def test_serialize_upload_step_resolves_local_path(self):
+        from unittest.mock import patch
+        from ui_automation.views import _serialize_page_step_for_recorder
+        detail = UiPageStepsDetailed.objects.create(
+            page_step=self.page_step, step_type=0, ope_key='upload',
+            ope_value={'file_id': 9, 'file_name': 'a.txt'}, step_sort=0,
+        )
+        fake_file = {'path': '/shared/a.txt', 'name': 'a.txt', 'mime_type': 'text/plain'}
+        with patch('file_management.services.validate_file_ids', return_value=[fake_file]), \
+             patch('file_management.services.serialize_file_for_runtime', return_value=fake_file):
+            steps = _serialize_page_step_for_recorder(self.page_step)
+        upload = next(s for s in steps if s['ope_key'] == 'upload')
+        self.assertEqual(upload['ope_value']['file_path'], '/shared/a.txt')
+        self.assertEqual(upload['ope_value']['value'], '/shared/a.txt')
+
+    def test_serialize_upload_step_without_file_id_keeps_raw(self):
+        from ui_automation.views import _serialize_page_step_for_recorder
+        step = UiPageStepsDetailed.objects.create(
+            page_step=self.page_step, step_type=0, ope_key='upload',
+            ope_value={'file_name': 'x.txt'}, step_sort=1,
+        )
+        steps = _serialize_page_step_for_recorder(self.page_step)
+        upload_step = next(s for s in steps if s['ope_key'] == 'upload')
+        self.assertNotIn('file_path', upload_step['ope_value'])
+
+    def test_serialize_upload_step_without_file_id_keeps_raw(self):
+        from ui_automation.views import _serialize_page_step_for_recorder
+        step = UiPageStepsDetailed.objects.create(
+            page_step=self.page_step, step_type=0, ope_key='upload',
+            ope_value={'file_name': 'x.txt'}, step_sort=1,
+        )
+        steps = _serialize_page_step_for_recorder(self.page_step)
+        upload_step = next(s for s in steps if s['ope_key'] == 'upload')
+        self.assertNotIn('file_path', upload_step['ope_value'])

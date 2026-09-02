@@ -1620,7 +1620,12 @@ def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta
 
 
 def _serialize_page_step_for_recorder(page_step: UiPageSteps) -> list[dict]:
-    """把页面步骤序列化为录制器可执行的动作列表（含元素定位）。"""
+    """把页面步骤序列化为录制器可执行的动作列表（含元素定位）。
+
+    上传步骤（ope_key=upload）解析附件为本地可访问路径（file_path），
+    录制器 run_steps 用 setInputFiles 执行。
+    """
+    from file_management.services import validate_file_ids, serialize_file_for_runtime
     steps = []
     details = (
         UiPageStepsDetailed.objects.filter(page_step=page_step)
@@ -1639,9 +1644,25 @@ def _serialize_page_step_for_recorder(page_step: UiPageSteps) -> list[dict]:
             if detail.element.is_iframe and detail.element.iframe_locator:
                 selector['is_iframe'] = True
                 selector['iframe_locator'] = detail.element.iframe_locator
+        ope_value = dict(detail.ope_value or {})
+        if detail.ope_key == 'upload' and ope_value.get('file_id'):
+            # 与执行器 execute-data 同规则：解析附件为本地路径
+            try:
+                project = detail.page_step.project if detail.page_step else None
+                files = validate_file_ids([ope_value['file_id']], project, None)
+                if files:
+                    runtime_file = serialize_file_for_runtime(files[0])
+                    resolved = runtime_file.get('path') or ''
+                    if resolved:
+                        ope_value['file_path'] = resolved
+                        ope_value['value'] = resolved
+                        ope_value['file_name'] = runtime_file.get('name') or ope_value.get('file_name')
+                        ope_value['mime_type'] = runtime_file.get('mime_type')
+            except Exception as exc:
+                logger.warning('录制器上传步骤解析文件失败: %s', exc, exc_info=True)
         steps.append({
             'ope_key': detail.ope_key,
-            'ope_value': detail.ope_value,
+            'ope_value': ope_value,
             'step_type': detail.step_type,
             'element': selector,
         })

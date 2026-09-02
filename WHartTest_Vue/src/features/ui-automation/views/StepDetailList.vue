@@ -10,7 +10,7 @@
           </a-option>
         </a-select>
         <a-select v-model="selectedActuator" :placeholder="stepText.selectActuator" size="small" style="width: 150px" allow-clear>
-          <a-option v-for="act in actuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
+          <a-option v-for="act in allActuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
             {{ act.name || act.id }}
             <a-tag v-if="!act.is_open" size="small" color="gray" style="margin-left: 4px">{{ stepText.offline }}</a-tag>
           </a-option>
@@ -869,6 +869,13 @@ const formRef = ref()
 // 执行器相关
 const actuators = ref<ActuatorInfo[]>([])
 const selectedActuator = ref<string>('')
+// 录制器浏览器（本地）：无执行器时的步骤调试兜底
+const RECORDER_BROWSER_ID = 'recorder-browser'
+const recorderBrowserName = computed(() => (isEnglish.value ? 'Recorder Browser (Local)' : '录制器浏览器（本地）'))
+const allActuators = computed(() => [
+  { id: RECORDER_BROWSER_ID, name: recorderBrowserName.value, is_open: true, max_slots: 1, busy_slots: 0 } as ActuatorInfo,
+  ...actuators.value,
+])
 const executing = ref(false)
 // 页面步骤执行画面（直播帧弹窗）：是否弹出由执行器无头开关决定——
 // 后端回执 effective_runtime.headless === false（观看模式）时才弹
@@ -1044,8 +1051,17 @@ const fetchActuators = async () => {
     const res = await actuatorApi.list()
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
+    // 未选择时默认录制器浏览器（本地）（自动打开执行画布）；需真实执行器时下拉选
+    if (!selectedActuator.value) {
+      selectedActuator.value = RECORDER_BROWSER_ID
+      return
+    }
+    // 录制器浏览器不在执行器列表中，始终有效
+    if (selectedActuator.value === RECORDER_BROWSER_ID) {
+      return
+    }
     // 自动选择第一个在线的执行器
-    if (!selectedActuator.value && actuators.value.length > 0) {
+    if (actuators.value.length > 0) {
       const available = actuators.value.find((a: ActuatorInfo) => a.is_open)
       if (available) selectedActuator.value = available.id
     }
@@ -1116,6 +1132,10 @@ const executePageStep = async () => {
     Message.error(stepText.value.sendExecutionFailed)
     executing.value = false
     pendingScreenPageStepId.value = null
+  } else if (selectedActuator.value === RECORDER_BROWSER_ID) {
+    // 录制器浏览器执行：发送即打开执行画布（不依赖回执），失败也有无帧提示可见
+    execScreenTaskId.value = props.pageStep.id
+    execScreenVisible.value = true
   }
 }
 

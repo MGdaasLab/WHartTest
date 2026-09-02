@@ -46,7 +46,7 @@
               {{ pageText.noOnlineActuators }}
             </div>
           </template>
-          <a-option v-for="act in actuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
+          <a-option v-for="act in allActuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
             {{ act.name || act.id }}
             <a-tag v-if="act.is_open" color="green" size="small" style="margin-left: 4px">{{ pageText.online }}</a-tag>
             <a-tag v-else color="gray" size="small" style="margin-left: 4px">{{ pageText.offline }}</a-tag>
@@ -309,6 +309,7 @@ const pageText = computed(() => (
         copySuccess: 'Copied successfully',
         copyFailed: 'Copy failed',
         noActuatorAvailable: 'No actuator is available. Start the actuator service first.',
+        batchNeedsActuator: 'Batch execution requires an online actuator. Please start the actuator service.',
         selectOnlineActuator: 'Select an online actuator',
         websocketConnectFailed: 'WebSocket connection failed',
         runCommandFailed: 'Failed to send execution command',
@@ -379,6 +380,7 @@ const pageText = computed(() => (
         copySuccess: '复制成功',
         copyFailed: '复制失败',
         noActuatorAvailable: '没有可用的执行器，请先启动执行器服务',
+        batchNeedsActuator: '批量执行需要在线执行器，请先启动执行器服务',
         selectOnlineActuator: '请选择一个在线的执行器',
         websocketConnectFailed: 'WebSocket 连接失败',
         runCommandFailed: '发送执行命令失败',
@@ -410,6 +412,13 @@ const envConfigs = ref<UiEnvironmentConfig[]>([]) // 环境配置列表
 const actuators = ref<ActuatorInfo[]>([]) // 执行器列表
 const selectedEnvConfig = ref<number | undefined>() // 选中的环境配置
 const selectedActuator = ref<string | undefined>()
+// 录制器浏览器（本地）：无执行器时的步骤调试/用例执行兜底
+const RECORDER_BROWSER_ID = 'recorder-browser'
+const recorderBrowserName = computed(() => (isEnglish.value ? 'Recorder Browser (Local)' : '录制器浏览器（本地）'))
+const allActuators = computed(() => [
+  { id: RECORDER_BROWSER_ID, name: recorderBrowserName.value, is_open: true, max_slots: 1, busy_slots: 0 } as ActuatorInfo,
+  ...actuators.value,
+])
 const selectedRowKeys = ref<number[]>([]) // 批量选中的用例ID
 const modalVisible = ref(false)
 const recorderCaseVisible = ref(false)
@@ -732,7 +741,7 @@ const runTestCase = async (record: UiTestCase) => {
   await fetchActuators()
 
   // 检查是否有可用执行器
-  if (actuators.value.length === 0 || !actuators.value.some(a => a.is_open)) {
+  if (!allActuators.value.some(a => a.is_open)) {
     Message.warning(pageText.value.noActuatorAvailable)
     return
   }
@@ -741,13 +750,9 @@ const runTestCase = async (record: UiTestCase) => {
   ensureDefaultEnvSelected()
 
   if (!selectedActuator.value) {
-    const availableId = selectAvailableActuator(1)
-    if (availableId) {
-      selectedActuator.value = availableId
-    } else {
-      Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
-      return
-    }
+    // 默认使用录制器浏览器（本地）执行（自动打开执行画布）；
+    // 需要真实执行器时在下拉中自行选择
+    selectedActuator.value = RECORDER_BROWSER_ID
   }
 
   // 连接 WebSocket
@@ -766,6 +771,11 @@ const runTestCase = async (record: UiTestCase) => {
   const success = uiWebSocket.runTestCase(record.id, selectedEnvConfig.value, selectedActuator.value)
   if (success) {
     Message.info(pageText.value.startedCase(record.name))
+    // 录制器浏览器执行：发送即打开执行画布（不依赖 effective_runtime 回执）
+    if (selectedActuator.value === RECORDER_BROWSER_ID) {
+      execScreenTaskId.value = record.id
+      execScreenVisible.value = true
+    }
     // 立即更新本地状态为"执行中"
     const idx = testcaseData.value.findIndex(tc => tc.id === record.id)
     if (idx !== -1) {
@@ -790,7 +800,7 @@ const runBatchTestCases = async () => {
   await fetchActuators()
 
   // 检查是否有可用执行器
-  if (actuators.value.length === 0 || !actuators.value.some(a => a.is_open)) {
+  if (!allActuators.value.some(a => a.is_open)) {
     Message.warning(pageText.value.noActuatorAvailable)
     return
   }
@@ -807,6 +817,12 @@ const runBatchTestCases = async () => {
       Message.warning(pageText.value.noCompatibleActuator || pageText.value.selectOnlineActuator)
       return
     }
+  }
+
+  // 批量执行需要真实执行器（并发多浏览器），录制器浏览器不支持
+  if (selectedActuator.value === RECORDER_BROWSER_ID) {
+    Message.warning(pageText.value.batchNeedsActuator)
+    return
   }
 
   // 连接 WebSocket
@@ -918,7 +934,10 @@ const fetchActuators = async (options: { resetSelected?: boolean } = {}) => {
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
     // Do not auto-fallback to an arbitrary online actuator; capability match happens at run time.
-    const selectedStillAvailable = actuators.value.some(act => act.id === selectedActuator.value && act.is_open)
+    // 录制器浏览器（本地）为固定选项，不随执行器列表刷新被清空
+    const selectedStillAvailable =
+      selectedActuator.value === RECORDER_BROWSER_ID
+      || actuators.value.some(act => act.id === selectedActuator.value && act.is_open)
     if (!selectedStillAvailable) {
       selectedActuator.value = undefined
     }

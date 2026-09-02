@@ -23,6 +23,10 @@ from wharttest_django.i18n import translate_app_text
 
 logger = logging.getLogger('ui_automation')
 
+# 录制器浏览器作为"本地虚拟执行器"：无可用执行器时用于步骤调试与单用例执行
+RECORDER_BROWSER_ID = 'recorder-browser'
+RECORDER_BROWSER_NAME = '录制器浏览器（本地）'
+
 
 class SocketUserManager:
     """WebSocket用户管理器"""
@@ -101,6 +105,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         self.group_name: str = 'ui_automation'
         self.actuator_info: dict = {}  # 执行器信息
         self.language: str = 'zh-Hans'
+        # 录制器浏览器执行状态（步骤调试/用例执行兜底；支持关闭画布即中断）
+        self._recorder_exec_task = None
+        self._recorder_exec_session = None
         # 录制器状态
         self._recorder_session_id: Optional[str] = None
         self._recorder_relay_task: Optional[asyncio.Task] = None
@@ -594,8 +601,308 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             return False, err
         return True, ""
 
+    # ------------------------------------------------------------------
+    # 录制器浏览器（本地虚拟执行器）：无执行器时步骤调试 / 单用例执行
+    # ------------------------------------------------------------------
+
+    def _recorder_exec_result_name(self, kind: str) -> str:
+        return UiSocketEnum.PAGE_STEP_RESULT if kind == 'page_steps' else UiSocketEnum.CASE_RESULT
+
+    async def _recorder_exec_error(self, kind: str, args: dict, user: str, message: str):
+        """录制器执行失败：按对应结果消息形状直推发起用户。"""
+        if kind == 'page_steps':
+            payload = {
+                'page_step_id': args.get('page_step_id'),
+                'status': 'failed',
+                'message': message,
+                'total_steps': 0, 'passed_steps': 0, 'failed_steps': 0,
+            }
+        else:
+            payload = {
+                'case_id': args.get('case_id'),
+                'status': 'failed',
+                'message': message,
+            }
+        web_user = SocketUserManager.get_web_user(user)
+        if web_user:
+            await web_user.send_json(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg='exec_result',
+                user=user,
+                is_notice=NoticeType.WEB,
+                data=QueueModel(func_name=self._recorder_exec_result_name(kind), func_args=payload),
+            ))
+
+    async def _recorder_exec_frame_relay(self, session, user: str):
+        """执行期间把浏览器画面帧直推发起用户（与录制画布同一事件）。"""
+        while True:
+            await asyncio.sleep(0.02)
+            try:
+                frame = session.take_latest_frame()
+                if not frame:
+                    continue
+                web_user = SocketUserManager.get_web_user(user)
+                if web_user:
+                    await web_user.send_json(SocketDataModel(
+                        code=ResponseCode.SUCCESS,
+                        msg='recorder_frame',
+                        user=user,
+                        is_notice=NoticeType.WEB,
+                        data=QueueModel(
+                            func_name=UiSocketEnum.RECORDER_FRAME,
+                            func_args={'frame': frame},
+                        ),
+                    ))
+            except Exception as exc:
+                logger.debug('[recorder-exec] 帧转发暂停: %s', exc)
+                return
+
+    async def _execute_via_recorder(self, kind: str, args: dict, user: str):
+        logger.info(
+            '[recorder-exec] 开始执行 kind=%s user=%s args=%s',
+            kind, user, {k: args.get(k) for k in ('page_step_id', 'case_id', 'env_config_id')},
+        )
+        """用录制器浏览器执行步骤调试 / 单用例执行（无执行器兜底）。
+
+        - 复用录制器 run_steps 执行引擎（与前置步骤同款），每组先 goto 再跑动作；
+        - 执行过程向发起用户直播画面帧（u_recorder_frame）；
+        - 结果按 u_page_step_result / u_case_result 形状回传（页面步骤更新状态、
+          用例落 UiExecutionRecord）。
+        """
+        from .views import _resolve_recorder_skill_dir, _serialize_page_step_for_recorder, _active_login_state
+        from .recorder.session_manager import recorder_manager, RecorderSessionError
+        from .models import UiEnvironmentConfig, UiPageSteps, UiTestCase, UiCaseStepsDetailed
+        import time as _time
+
+        env_config = None
+        env_config_id = args.get('env_config_id')
+        if env_config_id:
+            env_config = await sync_to_async(
+                UiEnvironmentConfig.objects.filter(id=env_config_id).first
+            )()
+        storage_state = None
+        if env_config is not None:
+            storage_state = await sync_to_async(_active_login_state)(env_config)
+
+        groups = []
+        project_id = 0
+        if kind == 'page_steps':
+            page_step = await sync_to_async(
+                UiPageSteps.objects.filter(id=args.get('page_step_id')).first
+            )()
+            if page_step is None:
+                await self._recorder_exec_error(kind, args, user, '页面步骤不存在')
+                return
+            project_id = page_step.project_id or 0
+            groups = [page_step]
+        else:
+            case = await sync_to_async(
+                UiTestCase.objects.filter(id=args.get('case_id')).first
+            )()
+            if case is None:
+                await self._recorder_exec_error(kind, args, user, '测试用例不存在')
+                return
+            project_id = case.project_id or 0
+            case_steps = await sync_to_async(lambda: list(
+                UiCaseStepsDetailed.objects.filter(test_case=case)
+                .select_related('page_step', 'page_step__page')
+                .order_by('case_sort')
+            ))()
+            groups = [cs.page_step for cs in case_steps if cs.page_step is not None]
+            if not groups:
+                await self._recorder_exec_error(kind, args, user, '用例没有可执行的页面步骤')
+                return
+
+        try:
+            skill_dir = _resolve_recorder_skill_dir()
+        except Exception as exc:
+            logger.error('[recorder-exec] 解析 skill 目录异常: %s', exc, exc_info=True)
+            await self._recorder_exec_error(kind, args, user, f'录制器浏览器不可用: {exc}')
+            return
+        logger.info('[recorder-exec] skill_dir=%s groups=%d', skill_dir, len(groups))
+        if not skill_dir:
+            await self._recorder_exec_error(kind, args, user, '录制器浏览器不可用：未找到 playwright skill 目录')
+            return
+
+        # 预加载每组导航地址（页面外键在异步上下文中不可触发）
+        from .models import UiPage as _UiPage
+
+        def _load_group_urls(page_steps) -> list:
+            urls = []
+            for ps in page_steps:
+                url = ''
+                if env_config is not None and env_config.base_url:
+                    url = env_config.base_url
+                elif ps.page_id:
+                    page_obj = _UiPage.objects.filter(id=ps.page_id).values_list('url', flat=True).first()
+                    url = page_obj or ''
+                urls.append(str(url or '').strip())
+            return urls
+
+        group_bases = await sync_to_async(_load_group_urls)(groups)
+        start_url = group_bases[0] if group_bases else ''
+
+        session = None
+        frame_task = None
+        started = _time.time()
+        # 执行任务引用已在入口赋值（生成时），前端关闭执行画布时据此中断
+        try:
+            logger.info('[recorder-exec] 创建录制会话 user=%s project=%s', user, project_id)
+            session = recorder_manager.create_session(
+                user_id=user, project_id=project_id, skill_dir=skill_dir,
+            )
+            self._recorder_exec_session = session
+            session.start(timeout=120)
+            logger.info('[recorder-exec] 会话已启动 %s url=%s', session.session_id, start_url or 'about:blank')
+            start_params = {
+                'url': start_url or 'about:blank',
+                'viewport': {'width': 1400, 'height': 900},
+            }
+            if storage_state:
+                start_params['storage_state'] = storage_state
+            # 同步 request 移出事件循环（to_thread），执行期间帧转发/中断仍可响应
+            await asyncio.to_thread(session.request, 'start', start_params, 90)
+            logger.info('[recorder-exec] start 请求完成，开始逐组执行')
+            # 回执生效运行时（headless=false 观看模式）→ 前端据此自动打开执行画布
+            web_user = SocketUserManager.get_web_user(user)
+            if web_user:
+                await web_user.send_json(SocketDataModel(
+                    code=ResponseCode.SUCCESS,
+                    msg='effective_runtime',
+                    user=user,
+                    is_notice=NoticeType.WEB,
+                    data=QueueModel(
+                        func_name='effective_runtime',
+                        func_args={
+                            'headless': False,
+                            'actuator_id': RECORDER_BROWSER_ID,
+                            'executor_name': RECORDER_BROWSER_NAME,
+                            'env_config_id': env_config_id,
+                        },
+                    ),
+                ))
+            frame_task = asyncio.ensure_future(self._recorder_exec_frame_relay(session, user))
+
+            total_steps = 0
+            passed_steps = 0
+            failed_steps = 0
+            message = ''
+            group_index = 0
+            for page_step in groups:
+                group_index += 1
+                steps = await sync_to_async(_serialize_page_step_for_recorder)(page_step)
+                logger.info(
+                    '[recorder-exec] 第 %d/%d 组执行 page_step=%s steps=%d base_url=%s',
+                    group_index, len(groups), page_step.id, len(steps), group_bases[group_index - 1],
+                )
+                base_url = group_bases[group_index - 1]
+                if base_url:
+                    steps = [{
+                        'ope_key': 'goto',
+                        'ope_value': {'url': base_url},
+                        'step_type': 0,
+                        'element': None,
+                    }] + steps
+                total_steps += len(steps)
+                resp = await asyncio.to_thread(
+                    session.request, 'run_steps', {'steps': steps}, 180,
+                )
+                resp_state = resp.get('state', {}) if isinstance(resp, dict) else {}
+                logger.info(
+                    '[recorder-exec] 第 %d 组完成 ok=%s failed=%s',
+                    group_index, resp.get('ok'), resp_state.get('failed'),
+                )
+                if not resp.get('ok') or resp_state.get('failed'):
+                    failed_steps += len(steps)
+                    message = resp.get('error') or f'第 {group_index} 组步骤执行失败'
+                    break
+                passed_steps += len(steps)
+                await asyncio.sleep(0.1)
+
+            duration = round(_time.time() - started, 2)
+            status = 'success' if failed_steps == 0 else 'failed'
+            if status == 'success':
+                message = '执行成功'
+            if kind == 'page_steps':
+                result_args = {
+                    'page_step_id': groups[0].id,
+                    'status': status,
+                    'message': message,
+                    'total_steps': total_steps,
+                    'passed_steps': passed_steps,
+                    'failed_steps': failed_steps,
+                    'duration': duration,
+                    'steps': [],
+                }
+                if groups[0].id:
+                    await self.update_page_step_status(
+                        groups[0].id, 2 if status == 'success' else 3, result_args,
+                    )
+                web_user = SocketUserManager.get_web_user(user)
+                if web_user:
+                    await web_user.send_json(SocketDataModel(
+                        code=ResponseCode.SUCCESS,
+                        msg='exec_result', user=user, is_notice=NoticeType.WEB,
+                        data=QueueModel(func_name=UiSocketEnum.PAGE_STEP_RESULT, func_args=result_args),
+                    ))
+            else:
+                result_args = {
+                    'case_id': args.get('case_id'),
+                    'status': status,
+                    'message': message,
+                    'duration': duration,
+                    'steps': [],
+                    # 前端用例结果提示展示 通过/总数（与执行器 CaseResultModel 字段对齐）
+                    'passed_steps': passed_steps,
+                    'total_steps': total_steps,
+                    'failed_steps': failed_steps,
+                    'executor_name': RECORDER_BROWSER_NAME,
+                }
+                await self.save_execution_result(result_args)
+                await self.channel_layer.group_send(
+                    self.group_name,
+                    {
+                        'type': 'broadcast_result',
+                        'data': {
+                            'func_name': UiSocketEnum.CASE_RESULT,
+                            'args': self._sanitize_result_args(result_args),
+                            'user': user,
+                        },
+                    },
+                )
+        except asyncio.CancelledError:
+            # 前端关闭画布触发的主动中断：作为正常终止回传"已中断"，
+            # 不重抛（否则取消异常穿透到 ASGI 应用层）
+            await self._recorder_exec_error(kind, args, user, '执行已中断')
+        except RecorderSessionError as exc:
+            await self._recorder_exec_error(kind, args, user, f'录制器浏览器执行失败: {exc}')
+        except Exception as exc:
+            logger.error('[recorder-exec] 执行异常: %s', exc, exc_info=True)
+            await self._recorder_exec_error(kind, args, user, f'录制器浏览器执行异常: {exc}')
+        finally:
+            self._recorder_exec_task = None
+            self._recorder_exec_session = None
+            if frame_task is not None:
+                frame_task.cancel()
+                try:
+                    await frame_task
+                except BaseException:
+                    # CancelledError 继承自 BaseException，须显式吞掉，
+                    # 否则取消异常会穿透到 ASGI 应用层（uvicorn Exception in ASGI）
+                    pass
+            if session is not None:
+                try:
+                    recorder_manager.close(session.session_id, graceful=False)
+                except Exception:
+                    pass
+
     async def handle_execute_page_steps(self, args: dict, user: str):
         """处理执行页面步骤请求"""
+        if args.get('actuator_id') == RECORDER_BROWSER_ID:
+            # 前端消息不带 user 字段：用连接注册键定位回执/帧的目标。
+            # 独立任务执行：接收循环保持空闲，前端关闭画布的停止请求才能被及时处理
+            self._recorder_exec_task = asyncio.ensure_future(self._execute_via_recorder('page_steps', args, user or self.user_id))
+            return
         args, actuator, err = await self._prepare_task_dispatch(args)
         if err:
             await self.send_json(SocketDataModel(
@@ -646,6 +953,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
     async def handle_execute_test_case(self, args: dict, user: str):
         """处理执行测试用例请求"""
+        if args.get('actuator_id') == RECORDER_BROWSER_ID:
+            # 前端消息不带 user 字段：用连接注册键定位回执/帧的目标。
+            # 独立任务执行：接收循环保持空闲，前端关闭画布的停止请求才能被及时处理
+            self._recorder_exec_task = asyncio.ensure_future(self._execute_via_recorder('case', args, user or self.user_id))
+            return
         args, actuator, err = await self._prepare_task_dispatch(args)
         if err:
             await self.send_json(SocketDataModel(
@@ -780,6 +1092,18 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
     async def handle_stop_execution(self, args: dict, user: str):
         """处理停止执行请求"""
+        # 录制器浏览器执行：前端关闭执行画布时直接中断（取消任务 + 关闭会话）
+        task = getattr(self, '_recorder_exec_task', None)
+        if task is not None and not task.done():
+            session = getattr(self, '_recorder_exec_session', None)
+            if session is not None:
+                try:
+                    from .recorder.session_manager import recorder_manager
+                    recorder_manager.close(session.session_id, graceful=False)
+                except Exception:
+                    pass
+                self._recorder_exec_session = None
+            task.cancel()
         from .actuator_registry import release_all_slots, clear_actuator_leases
 
         target_id = None

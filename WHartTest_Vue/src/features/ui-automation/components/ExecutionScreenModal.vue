@@ -14,6 +14,9 @@
           <a-spin :loading="!finished" />
           <span>{{ finished ? text.done : text.waiting }}</span>
           <span v-if="noFrameHint" class="exec-screen-no-frame">{{ text.noFrameHint }}</span>
+          <span v-if="noFrameHint && !wsConnected" class="exec-screen-no-frame">
+            {{ text.wsDisconnected }}
+          </span>
         </div>
         <div v-if="hasFrame" class="exec-screen-badge" :class="finished ? 'is-done' : 'is-running'">
           {{ finished ? text.done : text.running }}
@@ -52,7 +55,8 @@ const text = computed(() => (
         running: 'Executing…',
         done: 'Finished',
         waiting: 'Waiting for execution screen…',
-        noFrameHint: 'No frames received. Make sure the actuator has been upgraded (frame_stream).',
+        noFrameHint: 'No execution frames received. Please check that the actuator / recorder service is running.',
+        wsDisconnected: 'WebSocket is not connected — the execute request may not have been sent. Check the frontend-backend network/proxy.',
         close: 'Close',
       }
     : {
@@ -60,7 +64,8 @@ const text = computed(() => (
         running: '执行中…',
         done: '执行完成',
         waiting: '等待执行画面…',
-        noFrameHint: '未收到执行画面，请确认执行器已升级（含 frame_stream 帧采集）',
+        noFrameHint: '未收到执行画面，请检查执行器/录制器服务是否正常运行',
+        wsDisconnected: 'WebSocket 未连接——执行请求可能没有发送出去，请检查前端到后端的网络/代理',
         close: '关闭',
       }
 ))
@@ -76,6 +81,8 @@ const canvasSize = reactive({ width: 0, height: 0 })
 const hasFrame = ref(false)
 const finished = ref(false)
 const noFrameHint = ref(false)
+const startedExec = ref(false)  // 本次弹窗是否开启过执行（避免挂载时的初始 false 误发停止）
+const wsConnected = computed(() => uiWebSocket.connected.value)
 let noFrameTimer: ReturnType<typeof setTimeout> | null = null
 
 const canvasStyle = computed(() => ({
@@ -139,6 +146,10 @@ function onExecFrame(data: any) {
   drawFrame(`data:image/jpeg;base64,${frame.data}`)
 }
 
+// 录制器浏览器执行（recorder-browser 虚拟执行器）的帧通道：
+// 事件名为 u_recorder_frame（与录制画布同通道），帧结构一致，共用绘制
+const onRecorderFrame = onExecFrame
+
 function onResult(data: any) {
   if (!props.visible) return
   const args = data?.data?.func_args || {}
@@ -159,22 +170,31 @@ watch(
       finished.value = false
       hasFrame.value = false
       noFrameHint.value = false
+      startedExec.value = true
       // 15s 仍未收到任何帧：大概率执行器还没升级（旧执行器无帧采集）
       noFrameTimer = setTimeout(() => {
         if (!hasFrame.value) noFrameHint.value = true
       }, 15000)
       nextTick(fitCanvas)
+    } else if (startedExec.value) {
+      // 关闭画布即中断执行（执行器 u_stop_execution；录制器浏览器路径同样处理）
+      if (!finished.value) {
+        uiWebSocket.stopExecution()
+      }
+      startedExec.value = false
     }
   },
 )
 
 let offFrame: (() => void) | null = null
+let offRecorderFrame: (() => void) | null = null
 let offCase: (() => void) | null = null
 let offStep: (() => void) | null = null
 let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   offFrame = uiWebSocket.on(UiSocketEnum.EXEC_FRAME, onExecFrame as any)
+  offRecorderFrame = uiWebSocket.on(UiSocketEnum.RECORDER_FRAME, onRecorderFrame as any)
   offCase = uiWebSocket.on(UiSocketEnum.CASE_RESULT, onResult as any)
   offStep = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, onResult as any)
   resizeObserver = new ResizeObserver(() => fitCanvas())
@@ -184,6 +204,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   offFrame?.()
+  offRecorderFrame?.()
   offCase?.()
   offStep?.()
   resizeObserver?.disconnect()

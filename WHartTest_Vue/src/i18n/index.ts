@@ -733,6 +733,7 @@ const LEGACY_EXACT_EN_MAP: Record<string, string> = {
   '支持完整的图片 URL 地址，或直接贴入 Base64 编码的图标，留空则自动回退至默认的麦穗图标。': 'Supports image URL or Base64. Leave blank to use the default logo.',
   '小麦智测自动化平台': 'WheatTest Automation Platform',
   'AI 智能生成, RAG 知识库, MCP 工具调用, Skills 技能库, Playwright 自动化, LangGraph': 'AI Generation, RAG Knowledge Base, MCP Tool Calling, Skills Library, Playwright Automation, LangGraph',
+  'AI 智能生成, RAG 知识库, MCP 工具调用, Skills 技能库, Playwright 自动化, LangGraph, 接口自动化': 'AI Generation, RAG Knowledge Base, MCP Tool Calling, Skills Library, Playwright Automation, LangGraph, API Automation',
   '无访问权限': 'Access Denied',
   '返回首页': 'Back to Home',
   '操作审计日志仅系统管理员或被授权的审计人员可访问。': 'Operation audit logs are only accessible to system administrators or authorized auditors.',

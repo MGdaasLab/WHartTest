@@ -1194,6 +1194,24 @@ async function cmdInput(params) {
 // 前置步骤执行（录制前自动执行可复用页面步骤，如登录）
 // ---------------------------------------------------------------------------
 
+function _guessMimeType(name) {
+  const ext = String(name).split('.').pop().toLowerCase();
+  const map = {
+    txt: 'text/plain', csv: 'text/csv', json: 'application/json', xml: 'application/xml',
+    pdf: 'application/pdf', doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    zip: 'application/zip', rar: 'application/vnd.rar', '7z': 'application/x-7z-compressed',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    bmp: 'image/bmp', svg: 'image/svg+xml', webp: 'image/webp',
+    mp4: 'video/mp4', mov: 'video/quicktime', mp3: 'audio/mpeg', wav: 'audio/wav',
+  };
+  return map[ext] || 'application/octet-stream';
+}
+
 /** 按平台执行器同款映射构建 Playwright locator（支持 iframe 链式定位） */
 function buildLocator(page, selector) {
   if (!selector) return null;
@@ -1305,8 +1323,36 @@ async function runOneStep(page, step) {
     case 'press':
       await locator.press(inputValue || 'Enter');
       return null;
-    case 'upload':
-      return 'upload 步骤请手动录制';
+    case 'upload': {
+      // 平台已把附件解析为本地路径（opeValue.file_path / inputValue）
+      const filePath = inputValue;
+      if (!filePath) return '上传文件路径为空';
+      // 以原件名上传：本地路径为平台存储的 hash/临时名，读取内容并携带
+      // name/mimeType 载荷，目标系统收到原名（与执行器 _upload_file 同策）
+      let payload = filePath;
+      const originalName = (opeValue.file_name || '').trim();
+      if (originalName) {
+        try {
+          const buffer = fs.readFileSync(filePath);
+          const mime = opeValue.mime_type || _guessMimeType(originalName);
+          payload = [{ name: originalName, mimeType: mime, buffer }];
+        } catch (e) {
+          return '读取上传文件失败: ' + ((e && e.message) || String(e));
+        }
+      }
+      try {
+        await locator.setInputFiles(payload);
+      } catch (e) {
+        // 定位到的是可见触发区（如 el-upload__text，非 file input）：
+        // 与执行器同策略——点击触发原生文件选择器并拦截注入
+        const [chooser] = await Promise.all([
+          page.waitForEvent('filechooser', { timeout: 10000 }),
+          locator.click(),
+        ]);
+        await chooser.setFiles(payload);
+      }
+      return null;
+    }
     default:
       return '不支持的操作类型: ' + opeKey;
   }

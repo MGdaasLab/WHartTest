@@ -318,7 +318,17 @@ class TaskConsumer:
         
         # 记录发起用户
         self._current_user = socket_data.user
-        
+
+        # 停止请求不经任务队列：任务队列被长任务占用时（单消费者串行），
+        # 入队的停止请求要等当前任务结束才被处理——在接收循环立即执行，
+        # stop_now 关闭浏览器后，在途 Playwright 调用会快速失败（实测 <1s）
+        if socket_data.data.func_name == UiSocketEnum.STOP_EXECUTION:
+            try:
+                await self.stop_execution(socket_data.data.func_args or {})
+            except Exception as exc:
+                logger.warning(f"处理停止请求异常: {exc}")
+            return
+
         # 添加到任务队列
         await self.add_task(socket_data.data)
     
@@ -972,9 +982,9 @@ class TaskConsumer:
             await self._release_memory_after_task()
     
     async def stop_execution(self, args: dict):
-        """停止执行"""
-        logger.info("收到停止执行请求")
-        self.executor.stop()
+        """停止执行：置停止标志并立即硬中断（前端关闭执行画布时触发）"""
+        logger.info("收到停止执行请求，立即中断执行")
+        await self.executor.stop_now()
         # 清空任务队列
         while not self.task_queue.empty():
             try:
