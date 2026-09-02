@@ -3,7 +3,6 @@ import { ref, reactive, watch, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { Message, Modal } from '@arco-design/web-vue'
 import { testcaseService } from '../../services/testcaseService'
-import { toArray } from '../../services/responseHelpers'
 import type { ApiTestCase } from '../../types/testcase'
 import { useProjectStore } from '@/store/projectStore'
 import { useThemeStore } from '@/store/themeStore'
@@ -23,6 +22,7 @@ const { isEnglish, tl } = useAppI18n()
 const loading = ref(false)
 const testcases = ref<ApiTestCase[]>([])
 const isDarkTheme = computed(() => themeStore.isBlack)
+const testCaseTableRef = ref<InstanceType<typeof TestCaseTable>>()
 
 const emit = defineEmits(['run'])
 
@@ -68,7 +68,7 @@ const fetchTestCases = async (page: number = 1) => {
 
     const res = await testcaseService.list(projectStore.currentProjectId, queryParams)
     if (res.success && res.data) {
-      testcases.value = toArray<ApiTestCase>((res.data as any)?.results ?? res.data)
+      testcases.value = Array.isArray(res.data) ? res.data : (res.data as any).results || []
       pagination.total = (res.data as any).count || testcases.value.length
       pagination.current = page
     } else {
@@ -241,6 +241,63 @@ const handleDelete = async (testcase: ApiTestCase) => {
   })
 }
 
+const formatDeleteCasesContent = (cases: ApiTestCase[]) => {
+  const namesPreview = cases
+    .slice(0, 3)
+    .map(item => item.name)
+    .join('、')
+  const moreText = cases.length > 3
+    ? (isEnglish.value ? ` etc. (${cases.length} in total)` : ` 等 ${cases.length} 个`)
+    : ''
+  const caseLabel = cases.length === 1 ? 'test case' : 'test cases'
+  return isEnglish.value
+    ? `Are you sure you want to delete ${cases.length} ${caseLabel} "${namesPreview}"${moreText}? This will also delete all test steps and execution records and cannot be undone.`
+    : `确定要删除「${namesPreview}」${moreText}吗？删除后将同时删除所有测试步骤和执行记录，且无法恢复。`
+}
+
+const handleBatchDelete = (records: ApiTestCase[]) => {
+  if (!projectStore.currentProjectId) return
+  const targets = (records || []).filter(item => item?.id !== null && item?.id !== undefined)
+  if (targets.length === 0) {
+    Message.warning(tl('请先选择要删除的用例'))
+    return
+  }
+
+  Modal.confirm({
+    title: tl('确认批量删除'),
+    content: formatDeleteCasesContent(targets),
+    okText: tl('确认删除'),
+    cancelText: tl('取消'),
+    okButtonProps: {
+      status: 'danger'
+    },
+    async onOk() {
+      if (!projectStore.currentProjectId) return
+      try {
+        const ids = targets.map(item => item.id!)
+        const res = await testcaseService.batchDelete(projectStore.currentProjectId, ids)
+        if (res.success) {
+          const deletedCount = res.data?.deleted_count ?? ids.length
+          Message.success(isEnglish.value
+            ? `Successfully deleted ${deletedCount} ${deletedCount === 1 ? 'test case' : 'test cases'}`
+            : `成功删除 ${deletedCount} 个用例`)
+        } else {
+          throw new Error(res.error || tl('批量删除用例失败'))
+        }
+        testCaseTableRef.value?.clearSelection()
+        const remainingInPage = testcases.value.length - ids.length
+        const nextPage = remainingInPage <= 0 && pagination.current > 1
+          ? pagination.current - 1
+          : pagination.current
+        await fetchTestCases(nextPage)
+      } catch (error) {
+        console.error('批量删除用例失败:', error)
+        Message.error(error instanceof Error ? error.message : tl('批量删除用例失败'))
+      }
+    }
+  })
+}
+
 const handlePageSizeChange = (size: number) => {
   pagination.page_size = size
   pagination.current = 1
@@ -291,6 +348,7 @@ fetchTestCases()
     <div class="panel-shell flex-1 overflow-hidden">
       <div class="p-6">
         <TestCaseTable
+          ref="testCaseTableRef"
           :data="testcases"
           :loading="loading"
           @sort="handleSortChange"
@@ -300,6 +358,7 @@ fetchTestCases()
           @edit="handleEdit"
           @copy="handleCopy"
           @delete="handleDelete"
+          @batch-delete="handleBatchDelete"
         />
       </div>
     </div>
