@@ -1,8 +1,19 @@
 <template>
-  <div class="ui-automation-layout">
+  <div ref="layoutRef" class="ui-automation-layout">
     <ModulePanel ref="modulePanelRef" @select="onModuleSelect" @updated="onModuleUpdated" />
     <div class="layout-content">
-      <a-tabs :key="`ui-automation-tabs-${locale}`" v-model:active-key="activeTab" type="card-gutter">
+      <a-tooltip :content="isFullscreen ? tl('退出全屏') : tl('全屏')">
+        <button class="fullscreen-btn" type="button" @click="toggleFullscreen">
+          <icon-fullscreen-exit v-if="isFullscreen" />
+          <icon-fullscreen v-else />
+        </button>
+      </a-tooltip>
+      <a-tabs
+        :key="`ui-automation-tabs-${locale}`"
+        v-model:active-key="activeTab"
+        type="card-gutter"
+        class="layout-tabs"
+      >
         <a-tab-pane key="pages" :title="tl('页面管理')">
           <PageList ref="pageListRef" :selected-module-id="selectedModuleId" />
         </a-tab-pane>
@@ -33,7 +44,8 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { IconFullscreen, IconFullscreenExit } from '@arco-design/web-vue/es/icon'
 import { useAppI18n } from '@/composables/useAppI18n'
 import ModulePanel from '../components/ModulePanel.vue'
 import PageList from './PageList.vue'
@@ -60,6 +72,37 @@ const publicDataListRef = ref()
 const envConfigListRef = ref()
 const actuatorListRef = ref()
 void [modulePanelRef, pageListRef, pageStepListRef, testCaseListRef, executionRecordListRef, batchRecordListRef, publicDataListRef, envConfigListRef, actuatorListRef]
+
+const layoutRef = ref<HTMLElement | null>(null)
+const isFullscreen = ref(false)
+
+const syncFullscreenState = () => {
+  isFullscreen.value = document.fullscreenElement === layoutRef.value
+}
+
+const toggleFullscreen = async () => {
+  const el = layoutRef.value
+  if (!el) return
+
+  try {
+    if (document.fullscreenElement === el) {
+      await document.exitFullscreen()
+    } else {
+      await el.requestFullscreen()
+    }
+    syncFullscreenState()
+  } catch (error) {
+    console.error('切换全屏失败:', error)
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('fullscreenchange', syncFullscreenState)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('fullscreenchange', syncFullscreenState)
+})
 
 // 页签切换时刷新对应数据
 watch(activeTab, (newTab) => {
@@ -120,6 +163,7 @@ const onModuleUpdated = async () => {
 }
 
 .layout-content {
+  position: relative;
   flex: 1;
   height: 100%;
   overflow: hidden;
@@ -129,6 +173,42 @@ const onModuleUpdated = async () => {
   border-radius: 8px;
   box-shadow: 4px 0 10px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
   padding: 20px;
+}
+
+/* 页签导航右侧预留全屏按钮宽度（28px 按钮 + 8px 间距），避免最右侧页签被按钮遮挡 */
+.layout-tabs :deep(.arco-tabs-nav) {
+  padding-right: 36px;
+}
+
+.fullscreen-btn {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--color-text-3, #86909c);
+  background: var(--color-fill-2, #f2f3f5);
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.fullscreen-btn:hover {
+  color: var(--color-text-2, #4e5969);
+  background: var(--color-fill-3, #e5e6eb);
+}
+
+/* 全屏态下铺满视口，保持内部布局不变 */
+.ui-automation-layout:fullscreen {
+  background-color: var(--color-bg-1);
+  border-radius: 0;
 }
 
 :deep(.arco-tabs) {
