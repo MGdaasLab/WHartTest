@@ -20,7 +20,11 @@
     </div>
     <div class="card-tabs-content">
       <template v-for="tab in tabs" :key="tab.key">
-        <div v-if="destroyOnHide ? modelValue === tab.key : true" v-show="modelValue === tab.key" class="card-tab-pane">
+        <div
+          v-if="destroyOnHide ? modelValue === tab.key : activatedKeys.includes(tab.key)"
+          v-show="modelValue === tab.key"
+          class="card-tab-pane"
+        >
           <slot :name="tab.key" />
         </div>
       </template>
@@ -29,7 +33,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { IconFullscreen, IconFullscreenExit } from '@arco-design/web-vue/es/icon'
 import { useAppI18n } from '@/composables/useAppI18n'
 
@@ -56,6 +60,31 @@ const { tl } = useAppI18n()
 
 const rootRef = ref<HTMLElement | null>(null)
 const isFullscreen = ref(false)
+
+// 非销毁模式下，记录已被激活过的页签：首次激活才挂载，之后保活，避免来回切换丢状态
+const activatedKeys = ref<string[]>([])
+
+watch(
+  () => props.modelValue,
+  (key) => {
+    if (!activatedKeys.value.includes(key)) {
+      activatedKeys.value.push(key)
+    }
+  },
+  { immediate: true }
+)
+
+// tabs 动态增删时同步清理，避免残留 key 在同名页签重新加入时复用旧状态
+watch(
+  () => props.tabs,
+  (tabs) => {
+    const validKeys = new Set(tabs.map(tab => tab.key))
+    if (activatedKeys.value.some(key => !validKeys.has(key))) {
+      activatedKeys.value = activatedKeys.value.filter(key => validKeys.has(key))
+    }
+  },
+  { deep: true }
+)
 
 const syncFullscreenState = () => {
   isFullscreen.value = document.fullscreenElement === rootRef.value
