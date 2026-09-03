@@ -226,7 +226,7 @@ defineExpose({
         </div>
       </div>
     </div>
-    <div class="flex items-center gap-2 pt-2 border-t border-[color:var(--color-border-2)]">
+    <div class="flex items-center justify-center gap-2 pt-2 border-t border-[color:var(--color-border-2)]">
       <a-button type="outline" :disabled="readonly" @click="addParam">
         <template #icon><icon-plus /></template>
         添加路径参数
