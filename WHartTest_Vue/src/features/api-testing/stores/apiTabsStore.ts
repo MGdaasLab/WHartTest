@@ -21,6 +21,7 @@ export interface InterfaceTab {
   module?: any;
   params?: any;
   headers?: any;
+  pathParams?: any;
   body?: any;
   setupHooks?: any;
   teardownHooks?: any;
@@ -29,6 +30,7 @@ export interface InterfaceTab {
   assertRules?: any;
   response?: any;
   activeTab?: string;
+  rawInterface?: any;
 }
 
 const STORAGE_KEY = 'api-testing-tabs';
@@ -88,10 +90,43 @@ export const useApiTabsStore = defineStore('apiTabs', () => {
     return tabIds;
   }
 
-  function openOrActivateInterface(api: { id?: number; name?: string; method?: string; url?: string; module?: any }): string {
+  function openOrActivateInterface(api: {
+    id?: number;
+    name?: string;
+    method?: string;
+    url?: string;
+    module?: any;
+    params?: any;
+    headers?: any;
+    path_params?: any;
+    pathParams?: any;
+    body?: any;
+    setup_hooks?: any;
+    setupHooks?: any;
+    teardown_hooks?: any;
+    teardownHooks?: any;
+    extract?: any;
+    extractRules?: any;
+    extract_meta?: any;
+    extractMeta?: any;
+    validators?: any;
+    assertRules?: any;
+    [key: string]: any;
+  }): string {
     if (api.id) {
       const existing = tabs.value.find(t => t.interfaceId === api.id);
       if (existing) {
+        const isExistingBodyEmpty = !existing.body || existing.body.type === 'none';
+        const isApiBodyNonEmpty = api.body && api.body.type !== 'none';
+        if ((isExistingBodyEmpty && isApiBodyNonEmpty) || (!existing.body && api.body)) {
+          existing.body = api.body;
+        }
+        if (!existing.params && api.params) existing.params = api.params;
+        if (!existing.headers && api.headers) existing.headers = api.headers;
+        if (!existing.pathParams && (api.path_params ?? api.pathParams)) {
+          existing.pathParams = api.path_params ?? api.pathParams;
+        }
+        if (!existing.rawInterface) existing.rawInterface = api;
         activeTabId.value = existing.id;
         return existing.id;
       }
@@ -103,6 +138,16 @@ export const useApiTabsStore = defineStore('apiTabs', () => {
       url: (api.url as string) || '',
       name: api.name || '新接口',
       module: api.module,
+      params: api.params,
+      headers: api.headers,
+      pathParams: api.path_params ?? api.pathParams,
+      body: api.body,
+      setupHooks: api.setup_hooks ?? api.setupHooks,
+      teardownHooks: api.teardown_hooks ?? api.teardownHooks,
+      extractRules: api.extract ?? api.extractRules,
+      extractMeta: api.extract_meta ?? api.extractMeta,
+      assertRules: api.validators ?? api.assertRules,
+      rawInterface: api,
     };
     tabs.value.push(tab);
     activeTabId.value = tab.id;
@@ -136,6 +181,7 @@ export const useApiTabsStore = defineStore('apiTabs', () => {
       const data = tabs.value.map(t => ({
         ...t,
         response: undefined, // don't persist response data
+        rawInterface: undefined, // don't persist rawInterface to avoid serialization failure
       }));
       localStorage.setItem(STORAGE_KEY, JSON.stringify({ tabs: data, activeTabId: activeTabId.value }));
     } catch { /* ignore quota errors */ }
