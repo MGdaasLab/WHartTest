@@ -96,7 +96,7 @@ const pagination = reactive({
 // 模块树展开等面板状态按项目持久化到 sessionStorage：
 // 查看报告/编辑页是独立路由，跳转会卸载本面板，返回时重新挂载，
 // 若不做恢复会导致已展开的模块树被自动收起
-const PANEL_STATE_STORAGE_KEY = 'api-te…e-map'
+const PANEL_STATE_STORAGE_KEY = 'api-interface-cases-panel-state-v1'
 
 interface PanelStateSnapshot {
   expandedModuleIds?: number[]
@@ -677,12 +677,12 @@ const hydratePanel = async () => {
   hydratedProjectId = projectId
   const snapshot = loadPanelStateMap()[String(projectId)]
   const hasSnapshot = !!snapshot
-  // 切换项目时清空选中状态；同一项目重新挂载（如查看报告返回）时恢复快照，
-  // 保证已展开的模块树不被自动折叠
+  // 每次水合先清理当前实例的选中状态，避免切换项目时沿用旧项目节点；
+  // 同一项目重新挂载（如查看报告返回）时再根据快照恢复
+  selectedModule.value = null
+  selectedInterface.value = null
+  selectedNoModuleScope.value = false
   if (!hasSnapshot) {
-    selectedModule.value = null
-    selectedInterface.value = null
-    selectedNoModuleScope.value = false
     // 无快照时默认收起，由用户手动点击展开
     expandedModuleIds.value = []
     pagination.current = 1

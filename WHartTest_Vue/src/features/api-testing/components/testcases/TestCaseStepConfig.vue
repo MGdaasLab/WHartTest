@@ -2,6 +2,7 @@
 import type { TestCaseStep } from '../../services/testcaseService'
 import ApiHeadersConfig from '../interfaces/ApiHeadersConfig.vue'
 import ApiParamsConfig from '../interfaces/ApiParamsConfig.vue'
+import ApiPathParamsConfig from '../interfaces/ApiPathParamsConfig.vue'
 import ApiBodyConfig from '../interfaces/ApiBodyConfig.vue'
 import ApiSetupHooksConfig from '../interfaces/ApiSetupHooksConfig.vue'
 import ApiTeardownHooksConfig from '../interfaces/ApiTeardownHooksConfig.vue'
@@ -22,6 +23,7 @@ const emit = defineEmits(['update:modelValue'])
 
 const headersRef = ref()
 const paramsRef = ref()
+const pathParamsRef = ref()
 const bodyRef = ref()
 const setupHooksRef = ref()
 const teardownHooksRef = ref()
@@ -55,6 +57,7 @@ const updateConfig = (key: string, value: any) => {
 defineExpose({
   headersRef,
   paramsRef,
+  pathParamsRef,
   bodyRef,
   setupHooksRef,
   teardownHooksRef,
@@ -83,6 +86,18 @@ defineExpose({
             ref="paramsRef"
             :model-value="modelValue.interface_data.params"
             @update:model-value="val => updateInterfaceData('params', val)"
+            :readonly="readonly"
+          />
+        </div>
+      </a-tab-pane>
+
+      <a-tab-pane key="path_params" title="Path Params">
+        <div class="p-4">
+          <api-path-params-config
+            ref="pathParamsRef"
+            :path-params="modelValue.interface_data.path_params"
+            :url="modelValue.interface_data.url"
+            @update:path-params="val => updateInterfaceData('path_params', val)"
             :readonly="readonly"
           />
         </div>

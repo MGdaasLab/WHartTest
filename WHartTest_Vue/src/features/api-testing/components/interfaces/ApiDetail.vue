@@ -5,6 +5,7 @@ import { Message } from '@arco-design/web-vue'
 import { useDraggable } from '@vueuse/core'
 import ApiRequestHeader from './ApiRequestHeader.vue'
 import ApiParamsConfig from './ApiParamsConfig.vue'
+import ApiPathParamsConfig from './ApiPathParamsConfig.vue'
 import ApiHeadersConfig from './ApiHeadersConfig.vue'
 import ApiBodyConfig from './ApiBodyConfig.vue'
 import ApiResponse from './ApiResponse.vue'
@@ -86,6 +87,7 @@ provide('apiResponse', response)
 
 // 组件引用
 const paramsRef = ref()
+const pathParamsRef = ref()
 const headersRef = ref()
 const bodyRef = ref()
 const setupHooksRef = ref()
@@ -195,6 +197,7 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
       sendingLoading.value = true
     }
     const params = paramsRef.value?.getParams()
+    const pathParams = pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.()
     const headers = headersRef.value?.getHeaders()
     const body = bodyRef.value?.getBody()
     const setupHooks = setupHooksRef.value?.getHooks()
@@ -222,6 +225,11 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
             quickDebugData.params![param.key] = param.value;
           }
         });
+      }
+
+      // 添加path_params
+      if (pathParams) {
+        (quickDebugData as any).path_params = pathParams;
       }
 
       // 添加body - 按原项目格式传递，runner 能识别 {type, content} 结构
@@ -280,6 +288,7 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
         url: requestData.url,
         headers,
         params,
+        path_params: pathParams,
         body,
         setup_hooks: setupHooks,
         teardown_hooks: teardownHooks,
@@ -386,6 +395,7 @@ const handleSave = async (requestData: { method: string, url: string, name: stri
   try {
     savingLoading.value = true
     const params = paramsRef.value?.getParams() ?? props.interface?.params ?? {}
+    const pathParams = pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.() ?? props.interface?.path_params ?? []
     const headers = headersRef.value?.getHeaders() ?? props.interface?.headers ?? {}
     const body = bodyRef.value?.getBody() ?? props.interface?.body ?? { type: 'none', content: null }
     const setupHooks = setupHooksRef.value?.getHooks() ?? props.interface?.setup_hooks ?? []
@@ -423,6 +433,7 @@ const handleSave = async (requestData: { method: string, url: string, name: stri
       status: requestData.status || props.interface?.status || DEFAULT_INTERFACE_STATUS,
       headers,
       params,
+      path_params: pathParams,
       body,
       setup_hooks: processHooks(setupHooks),
       teardown_hooks: processHooks(teardownHooks),
@@ -664,6 +675,11 @@ watch(() => props.autoDebug, async (newValue) => {
         <!-- 参数配置 -->
         <a-tab-pane key="params" title="Params">
           <ApiParamsConfig ref="paramsRef" :params="(props.interface?.params as any)" />
+        </a-tab-pane>
+
+        <!-- 路径参数配置 -->
+        <a-tab-pane key="path_params" title="Path Params">
+          <ApiPathParamsConfig ref="pathParamsRef" :path-params="(props.interface?.path_params as any)" :url="requestHeaderRef?.requestData?.url || props.interface?.url || ''" />
         </a-tab-pane>
 
         <!-- Body配置 -->
