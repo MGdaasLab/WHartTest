@@ -271,6 +271,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.RECORDER_ADD_WAIT: self.handle_recorder_add_wait,
                 UiSocketEnum.RECORDER_LOCATE_UPLOAD: self.handle_recorder_locate_upload,
                 UiSocketEnum.RECORDER_ADD_UPLOAD: self.handle_recorder_add_upload,
+                UiSocketEnum.RECORDER_SWITCH_ACCOUNT: self.handle_recorder_switch_account,
                 UiSocketEnum.RECORDER_STOP: self.handle_recorder_stop,
             }
         
@@ -434,6 +435,37 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             UiSocketEnum.RECORDER_STATUS,
             {'status': 'upload_located', 'selector': state.get('selector')},
             msg='上传控件已定位',
+        )
+
+    async def handle_recorder_switch_account(self, args, user):
+        """无痕切换账号：销毁当前录制上下文并新开干净上下文。
+
+        切换账号不点目标系统"退出登录"（退出会在服务端作废旧账号会话，
+        使已保存的登录态失效），而是整个上下文重建——旧账号会话原样保留。
+        """
+        from .recorder.session_manager import recorder_manager, RecorderSessionError
+
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            result = await sync_to_async(session.request)(
+                'reset_context',
+                {'url': args.get('url') or ''},
+                timeout=60,
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'切换账号失败: {exc}')
+            return
+        if not (isinstance(result, dict) and result.get('ok')):
+            await self._send_recorder_error(
+                (result or {}).get('error') or '切换账号失败'
+            )
+            return
+        await self._send_recorder(
+            UiSocketEnum.RECORDER_STATUS,
+            {'status': 'context_reset', 'url': args.get('url') or ''},
         )
 
     async def handle_recorder_add_upload(self, args, user):
@@ -669,7 +701,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         - 结果按 u_page_step_result / u_case_result 形状回传（页面步骤更新状态、
           用例落 UiExecutionRecord）。
         """
-        from .views import _resolve_recorder_skill_dir, _serialize_page_step_for_recorder, _active_login_state
+        from .views import _resolve_recorder_skill_dir, _serialize_page_step_for_recorder, _auth_state_by_id
         from .recorder.session_manager import recorder_manager, RecorderSessionError
         from .models import UiEnvironmentConfig, UiPageSteps, UiTestCase, UiCaseStepsDetailed
         import time as _time
@@ -680,10 +712,6 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             env_config = await sync_to_async(
                 UiEnvironmentConfig.objects.filter(id=env_config_id).first
             )()
-        storage_state = None
-        if env_config is not None:
-            storage_state = await sync_to_async(_active_login_state)(env_config)
-
         groups = []
         project_id = 0
         if kind == 'page_steps':
@@ -712,6 +740,14 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             if not groups:
                 await self._recorder_exec_error(kind, args, user, '用例没有可执行的页面步骤')
                 return
+
+        # 仅注入显式绑定的登录态（取首个步骤的绑定）；未绑定 → 无痕启动
+        storage_state = None
+        first_auth_id = getattr(groups[0], 'auth_state_id', None) if groups else None
+        if first_auth_id:
+            bound = await sync_to_async(_auth_state_by_id)(first_auth_id)
+            if bound is not None:
+                storage_state = bound.state_json
 
         try:
             skill_dir = _resolve_recorder_skill_dir()
@@ -788,13 +824,36 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             failed_steps = 0
             message = ''
             group_index = 0
+            # 组间登录态切换与执行器同语义："向上匹配"——未绑定步骤沿用上一个
+            # 已绑定步骤的登录态（不清理），仅生效登录态变化时才切换上下文
+            pending_auth = getattr(groups[0], 'auth_state_id', None) if groups else None
+            current_auth = pending_auth  # start 时按首个生效登录态注入
             for page_step in groups:
                 group_index += 1
+                if getattr(page_step, 'auth_state_id', None):
+                    pending_auth = getattr(page_step, 'auth_state_id', None) or None
+                if pending_auth != current_auth:
+                    group_storage = None
+                    if pending_auth:
+                        bound = await sync_to_async(_auth_state_by_id)(pending_auth)
+                        if bound is not None:
+                            group_storage = bound.state_json
+                    switch_resp = await asyncio.to_thread(
+                        session.request, 'switch_context', {'storage_state': group_storage}, 60,
+                    )
+                    if not (isinstance(switch_resp, dict) and switch_resp.get('ok')):
+                        raise RecorderSessionError(
+                            (switch_resp or {}).get('error') or f'第 {group_index} 组切换登录态失败'
+                        )
+                    current_auth = pending_auth
                 steps = await sync_to_async(_serialize_page_step_for_recorder)(page_step)
                 logger.info(
                     '[recorder-exec] 第 %d/%d 组执行 page_step=%s steps=%d base_url=%s',
                     group_index, len(groups), page_step.id, len(steps), group_bases[group_index - 1],
                 )
+                # 步骤统计只算库里存储的操作步骤；goto 仅导航用不计数
+                #（与执行器 total_steps 口径一致：sum(len(ps.steps))）
+                group_step_count = len(steps)
                 base_url = group_bases[group_index - 1]
                 if base_url:
                     steps = [{
@@ -803,7 +862,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                         'step_type': 0,
                         'element': None,
                     }] + steps
-                total_steps += len(steps)
+                total_steps += group_step_count
                 resp = await asyncio.to_thread(
                     session.request, 'run_steps', {'steps': steps}, 180,
                 )
@@ -813,10 +872,10 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                     group_index, resp.get('ok'), resp_state.get('failed'),
                 )
                 if not resp.get('ok') or resp_state.get('failed'):
-                    failed_steps += len(steps)
+                    failed_steps += group_step_count
                     message = resp.get('error') or f'第 {group_index} 组步骤执行失败'
                     break
-                passed_steps += len(steps)
+                passed_steps += group_step_count
                 await asyncio.sleep(0.1)
 
             duration = round(_time.time() - started, 2)

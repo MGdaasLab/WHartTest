@@ -70,16 +70,16 @@
     >
       <a-alert type="info" style="margin-bottom: 12px">
         执行任务时执行器会自动按环境注入此登录态（cookies + localStorage，兼容 Cookie/Session 与
-        JWT 系统），无需登录页与验证码。可在录制画布中登录后点「保存登录态」，也可上传采集的 auth.json。
+        JWT 系统），无需登录页与验证码。点「录制登录态」在录制窗口中完成登录后保存即可捕获。
       </a-alert>
       <div class="auth-toolbar">
-        <a-button type="primary" size="mini" :loading="authUploading" @click="triggerUpload">
-          <template #icon><icon-upload /></template>
-          上传快照 (auth.json)
+        <a-button type="primary" size="mini" @click="authCaptureVisible = true">
+          <template #icon><icon-safe /></template>
+          录制登录态
         </a-button>
-        <input ref="authFileInput" type="file" accept=".json,application/json" style="display: none" @change="onAuthFileChange" />
         <span class="auth-tip">
-          同环境多份登录态仅启用一份；启用的那份会在执行时自动注入。
+          点击「录制登录态」，在录制窗口中登录目标系统并点「保存登录态」即可捕获。
+          登录态仅在录制/编排时显式选择绑定后才会注入。
         </span>
       </div>
       <a-table
@@ -87,24 +87,52 @@
         :data="authStates"
         :pagination="false"
         :loading="authLoading"
-        :scroll="{ x: 620 }"
       >
-        <template #is_active="{ record }">
-          <a-switch :model-value="record.is_active" @change="(val: unknown) => toggleAuthActive(record, Boolean(val))" />
-        </template>
         <template #credentials="{ record }">
-          <span>{{ credentialSummary(record) }}</span>
+          <span class="auth-cred-cell" :title="credentialSummary(record)">{{ credentialSummary(record) }}</span>
+        </template>
+        <template #auth_expiry="{ record }">
+          <span :class="{ 'auth-expired': isAuthExpired(record) }">{{ authExpiryText(record) }}</span>
+        </template>
+        <template #updated_at="{ record }">
+          <span>{{ formatAuthTime(record.updated_at) }}</span>
         </template>
         <template #auth_operations="{ record }">
-          <a-popconfirm content="确定删除该登录态？" @ok="deleteAuthState(record)">
-            <a-button type="text" status="danger" size="mini">
-              <template #icon><icon-delete /></template>
-              删除
+          <div class="auth-ops-row">
+            <a-button type="text" size="mini" @click="openEditAuth(record)">
+              <template #icon><icon-edit /></template>
+              编辑
             </a-button>
-          </a-popconfirm>
+            <a-popconfirm content="确定删除该登录态？" @ok="deleteAuthState(record)">
+              <a-button type="text" status="danger" size="mini">
+                <template #icon><icon-delete /></template>
+                删除
+              </a-button>
+            </a-popconfirm>
+          </div>
         </template>
       </a-table>
     </a-modal>
+
+    <!-- 编辑登录态名称 -->
+    <a-modal v-model:visible="authEditVisible" title="编辑登录态名称" :footer="false" width="420px">
+      <a-form layout="vertical">
+        <a-form-item label="登录态名称">
+          <a-input v-model="authEditName" :max-length="64" allow-clear @press-enter="submitEditAuth" />
+        </a-form-item>
+      </a-form>
+      <div class="auth-edit-actions">
+        <a-button @click="authEditVisible = false">取消</a-button>
+        <a-button type="primary" :loading="authEditing" @click="submitEditAuth">保存</a-button>
+      </div>
+    </a-modal>
+
+    <!-- 录制登录态（登录态采集录制窗口：仅保留保存登录态） -->
+    <AuthCaptureModal
+      v-model:visible="authCaptureVisible"
+      :env="currentAuthEnv"
+      @saved="onAuthRecorded"
+    />
 
     <!-- 新增/编辑弹窗 -->
     <a-modal
@@ -184,9 +212,10 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconCheck, IconSafe, IconUpload } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconEdit, IconDelete, IconCheck, IconSafe } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
 import { envConfigApi, authStateApi } from '../api'
+import AuthCaptureModal from '../components/AuthCaptureModal.vue'
 import type { UiEnvironmentConfig, UiEnvironmentConfigForm, UiAuthState } from '../types'
 import { extractPaginationData } from '../types'
 
@@ -242,18 +271,59 @@ const columns = [
 // ---------------- 环境登录态管理 ----------------
 const authModalVisible = ref(false)
 const authLoading = ref(false)
-const authUploading = ref(false)
 const currentAuthEnv = ref<UiEnvironmentConfig | null>(null)
 const authStates = ref<UiAuthState[]>([])
-const authFileInput = ref<HTMLInputElement>()
+// 录制登录态（登录态采集录制窗口）
+const authCaptureVisible = ref(false)
+
+const onAuthRecorded = () => {
+  authCaptureVisible.value = false
+  fetchAuthStates()
+  fetchData()
+}
 
 const authColumns = [
-  { title: '名称', dataIndex: 'name', ellipsis: true, tooltip: true, width: 160, align: 'center' as const },
-  { title: '凭据摘要', slotName: 'credentials', width: 180, align: 'center' as const },
-  { title: '启用', slotName: 'is_active', width: 70, align: 'center' as const },
-  { title: '更新时间', dataIndex: 'updated_at', width: 160, align: 'center' as const },
-  { title: '操作', slotName: 'auth_operations', width: 80, align: 'center' as const },
+  { title: '名称', dataIndex: 'name', ellipsis: true, tooltip: true, width: 140, align: 'center' as const },
+  { title: '凭据摘要', slotName: 'credentials', width: 130, align: 'center' as const },
+  { title: '过期时间', slotName: 'auth_expiry', width: 140, align: 'center' as const },
+  { title: '更新时间', slotName: 'updated_at', width: 140, align: 'center' as const },
+  { title: '操作', slotName: 'auth_operations', width: 140, align: 'center' as const },
 ]
+
+/** ISO 时间串 → 本地 'YYYY-MM-DD HH:mm:ss' */
+const formatAuthTime = (value?: string | null): string => {
+  if (!value) return '-'
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return String(value)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+/** 登录态最短 cookie 过期时间：字符显示 + 过期判断（会话型 cookie 视为长期有效） */
+const authExpiryText = (record: UiAuthState): string => {
+  const state = record.state_json || {}
+  const cookies = Array.isArray(state.cookies) ? state.cookies : []
+  let min: number | null = null
+  for (const c of cookies) {
+    const e = Number(c?.expires)
+    if (Number.isFinite(e) && e > 0 && (min === null || e < min)) min = e
+  }
+  if (min === null) return '会话型（长期）'
+  const d = new Date(min * 1000)
+  if (Number.isNaN(d.getTime())) return '-'
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+const isAuthExpired = (record: UiAuthState): boolean => {
+  const state = record.state_json || {}
+  const cookies = Array.isArray(state.cookies) ? state.cookies : []
+  for (const c of cookies) {
+    const e = Number(c?.expires)
+    if (Number.isFinite(e) && e > 0 && e * 1000 < Date.now()) return true
+  }
+  return false
+}
 
 const credentialSummary = (record: UiAuthState) => {
   const state = record.state_json || {}
@@ -287,15 +357,35 @@ const openAuthModal = (record: UiEnvironmentConfig) => {
   fetchAuthStates()
 }
 
-const toggleAuthActive = async (record: UiAuthState, val: boolean) => {
+const authEditVisible = ref(false)
+const authEditing = ref(false)
+const authEditName = ref('')
+const editingAuth = ref<UiAuthState | null>(null)
+
+const openEditAuth = (record: UiAuthState) => {
+  editingAuth.value = record
+  authEditName.value = record.name || ''
+  authEditVisible.value = true
+}
+
+const submitEditAuth = async () => {
+  if (!editingAuth.value) return
+  const name = authEditName.value.trim()
+  if (!name) {
+    Message.error('登录态名称不能为空')
+    return
+  }
+  authEditing.value = true
   try {
-    await authStateApi.update(record.id, { is_active: val })
-    Message.success(val ? '已启用（该环境执行时自动注入）' : '已停用（执行时不再注入）')
+    await authStateApi.update(editingAuth.value.id, { name })
+    Message.success('名称已更新')
+    authEditVisible.value = false
     fetchAuthStates()
-    fetchData()
-  } catch {
-    Message.error('更新失败')
-    fetchAuthStates()
+  } catch (err) {
+    const detail = (err as { detail?: string })?.detail
+    Message.error(detail || '更新失败')
+  } finally {
+    authEditing.value = false
   }
 }
 
@@ -307,40 +397,6 @@ const deleteAuthState = async (record: UiAuthState) => {
     fetchAuthStates()
   } catch {
     Message.error('删除失败')
-  }
-}
-
-const triggerUpload = () => {
-  authFileInput.value?.click()
-}
-
-const onAuthFileChange = async (event: Event) => {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file || !currentAuthEnv.value) return
-  try {
-    const text = await file.text()
-    const state = JSON.parse(text)
-    if (!state || typeof state !== 'object' || !Array.isArray(state.cookies)) {
-      throw new Error('不是有效的 Playwright storageState JSON（需要包含 cookies 数组）')
-    }
-    authUploading.value = true
-    const name = file.name.replace(/\.json$/i, '') || `登录态-${currentAuthEnv.value.name}`
-    await authStateApi.create({
-      name,
-      env_config: currentAuthEnv.value.id,
-      state_json: state,
-    })
-    Message.success(`已上传登录态「${name}」`)
-    fetchAuthStates()
-    fetchData()
-  } catch (err) {
-    // 后端校验失败时 detail 报文优先展示
-    const detail = (err as { detail?: string })?.detail
-    Message.error(detail || (err instanceof Error ? err.message : '上传失败'))
-  } finally {
-    authUploading.value = false
   }
 }
 
@@ -535,6 +591,29 @@ watch(projectId, () => {
   border-radius: 6px;
   margin-top: 8px;
 }
+.auth-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.auth-ops-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.auth-cred-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
 .auth-toolbar {
   display: flex;
   align-items: center;
@@ -553,5 +632,9 @@ watch(projectId, () => {
 }
 .mysql-config-form :deep(.arco-form-item-label-col) {
   flex: 0 0 70px;
+}
+.auth-expired {
+  color: var(--color-danger-6, #f53f3f);
+  font-weight: 500;
 }
 </style>

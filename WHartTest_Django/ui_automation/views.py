@@ -1005,34 +1005,9 @@ class UiAuthStateViewSet(viewsets.ModelViewSet):
         serializer.save(creator=self.request.user)
 
     def perform_update(self, serializer):
-        # 更新某环境的登录态时，其余同环境条目自动停用，保证"每环境一份生效登录态"
-        if serializer.instance and 'is_active' in serializer.validated_data:
-            state = serializer.instance
-            if serializer.validated_data.get('is_active') and state.env_config_id:
-                UiAuthState.objects.filter(
-                    env_config_id=state.env_config_id, is_active=True
-                ).exclude(pk=state.pk).update(is_active=False)
+        # 登录态注入仅由"是否显式选择绑定"决定，不再维护"环境生效登录态"互斥
         serializer.save()
 
-    @action(detail=False, methods=['get'], url_path='by-env/(?P<env_id>[^/.]+)')
-    def by_env(self, request, env_id=None):
-        """执行器/前端获取某环境当前生效的登录态快照。
-
-        返回 {id, name, state_json, updated_at}；环境无启用登录态时返回 200 + {}，
-        由调用方（执行器）决定不注入。
-        """
-        state = UiAuthState.objects.filter(
-            env_config_id=env_id, is_active=True
-        ).order_by('-updated_at').first()
-        if state is None:
-            return Response({'active': False})
-        return Response({
-            'active': True,
-            'id': state.id,
-            'name': state.name,
-            'state_json': state.state_json,
-            'updated_at': state.updated_at.isoformat() if state.updated_at else None,
-        })
 _ACTUATOR_CONFIG_FIELDS = frozenset({
     'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
     'retry_count', 'step_interval', 'max_concurrent', 'log_level',
@@ -1534,24 +1509,26 @@ def _resolve_recorder_skill_dir() -> str:
     return ''
 
 
-def _active_login_state(env_config):
-    """返回环境当前生效的登录态快照（state_json dict），无则 None。
-
-    与执行器 auth-states/by-env 同源：每环境一份启用中的登录态，
-    录制器勾选"注入已保存登录态"时复用，直达登录后页面。
-    """
-    if env_config is None:
+def _parse_opt_int(value):
+    """请求参数转 int，空/非法返回 None（避免各处重复 try）。"""
+    if value in (None, ''):
         return None
-    state = UiAuthState.objects.filter(
-        env_config=env_config, is_active=True,
-    ).order_by('-updated_at').first()
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _auth_state_by_id(auth_state_id):
+    """按 id 取登录态快照（录制表单选择的绑定登录态），无效返回 None。"""
+    if not auth_state_id:
+        return None
+    state = UiAuthState.objects.filter(id=auth_state_id).first()
     if state is None or not isinstance(state.state_json, dict):
         return None
-    return state.state_json
+    return state
 
-
-def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta,
-                            inject_login_state=True):
+def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta):
     """创建录制会话并启动浏览器（含可选前置步骤执行）。
 
     失败时关闭会话并抛出 RecorderSessionError（detail 可直接展示给用户）。
@@ -1570,16 +1547,18 @@ def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta
     session_id = session.session_id
     try:
         session.start(timeout=120)
+        # 仅当录制表单选择了绑定登录态时才注入；清空选择框 → 无痕启动（不注入任何登录态）
         storage_state = None
-        if inject_login_state:
-            storage_state = _active_login_state(env_config)
-            if storage_state:
+        if meta.auth_state_id:
+            bound = _auth_state_by_id(meta.auth_state_id)
+            if bound is not None:
+                storage_state = bound.state_json
                 logger.info(
-                    '录制器注入环境登录态（env_config=%s）', env_config.id,
+                    '录制器注入绑定登录态（auth_state_id=%s）', meta.auth_state_id,
                 )
             else:
                 logger.info(
-                    '环境 %s 无启用中的登录态，录制器按无痕上下文启动', env_config.id,
+                    '绑定登录态无效（auth_state_id=%s），录制器按无痕上下文启动', meta.auth_state_id,
                 )
         start_params = {
             'url': base_url,
@@ -1753,6 +1732,7 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 int(pre_step_id) if pre_step_id not in (None, '') else None
             ),
             env_config_id=env_config.id,
+            auth_state_id=_parse_opt_int(request.data.get('auth_state_id')),
         )
 
         try:
@@ -1763,10 +1743,6 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 skill_dir=skill_dir,
                 request=request,
                 meta=meta,
-                # 录制表单"注入已保存登录态"勾选（默认勾选）
-                inject_login_state=str(
-                    request.data.get('inject_login_state', 'true')
-                ).lower() not in ('0', 'false', 'no', 'off'),
             )
         except RecorderSessionError as exc:
             return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1845,6 +1821,7 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 int(module_id) if module_id not in (None, '') else None
             ),
             env_config_id=env_config.id,
+            auth_state_id=_parse_opt_int(request.data.get('auth_state_id')),
         )
 
         try:
@@ -1855,10 +1832,6 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 skill_dir=skill_dir,
                 request=request,
                 meta=meta,
-                # 录制表单"注入已保存登录态"勾选（默认勾选）
-                inject_login_state=str(
-                    request.data.get('inject_login_state', 'true')
-                ).lower() not in ('0', 'false', 'no', 'off'),
             )
         except RecorderSessionError as exc:
             return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1927,6 +1900,9 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             if meta.case_module_id:
                 case_module = UiModule.objects.filter(id=meta.case_module_id).first()
 
+            # 中途保存登录态的分界（前端在保存成功时记录当前动作序号）：
+            # 组内最大动作序号 >= 分界 after_seq 的步骤（组）改用最新保存的登录态
+            auth_marks = request.data.get('auth_marks') or []
             case_stats = apply_recorded_case(
                 page=page,
                 user=request.user,
@@ -1936,6 +1912,8 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                 project=page.project,
                 module=case_module,
                 pre_page_step=pre_page_step,
+                auth_state_id=meta.initial_auth_state_id,  # 初始：录制表单选择的登录态
+                auth_marks=auth_marks,
             )
             recorder_manager.close(session_id)
             return Response({
@@ -1959,6 +1937,7 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
                     page_step=page_step,
                     user=request.user,
                     actions=actions,
+                    auth_state_id=meta.auth_state_id,  # 录制表单选择的登录态：绑定到所选步骤
                 )
 
         recorder_manager.close(session_id)
@@ -1967,6 +1946,55 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             'actions_count': len(actions),
             **apply_stats,
         })
+
+    @action(detail=False, methods=['post'], url_path='auth-capture')
+    def auth_capture(self, request):
+        """POST recorder-sessions/auth-capture/
+        登录态录制会话：无痕启动浏览器导航到环境登录页，仅暴露"保存登录态"，
+        保存后会话由 cancel 关闭。不注入既有登录态（本次就是要录登录流程）。
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError, RecorderSessionMeta,
+        )
+        env_config = UiEnvironmentConfig.objects.filter(
+            id=request.data.get('env_config_id')
+        ).first()
+        if env_config is None:
+            return Response({'detail': '请选择有效的环境配置'}, status=status.HTTP_400_BAD_REQUEST)
+        skill_dir = _resolve_recorder_skill_dir()
+        if not skill_dir:
+            return Response(
+                {'detail': '未找到 playwright skill 目录（可设置环境变量 RECORDER_SKILL_DIR）'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        meta = RecorderSessionMeta(
+            user_id=request.user.username,
+            project_id=env_config.project_id,
+            page_id=None,
+            page_step_id=None,
+            create_elements=False,
+            create_steps=False,
+            base_url=env_config.base_url or '',
+            viewport=_DEFAULT_RECORDER_VIEWPORT,
+            kind='auth',
+            env_config_id=env_config.id,
+        )
+        try:
+            session_id, viewport, _pre = _start_recorder_session(
+                env_config=env_config,
+                page=None,
+                base_url=env_config.base_url or '',
+                skill_dir=skill_dir,
+                request=request,
+                meta=meta,
+            )
+        except RecorderSessionError as exc:
+            return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'session_id': session_id,
+            'viewport': viewport,
+            'base_url': env_config.base_url or '',
+        }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
@@ -2024,16 +2052,15 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
 
         name = str(request.data.get('name') or '').strip() or f"录制登录态-{env_config.name}"
         description = str(request.data.get('description') or '').strip()
-        # 每环境一份生效登录态：同环境旧条目自动停用
-        UiAuthState.objects.filter(env_config=env_config, is_active=True).update(is_active=False)
         auth_state = UiAuthState.objects.create(
             name=name,
             env_config=env_config,
             state_json=storage_state,
-            is_active=True,
             description=description,
             creator=request.user,
         )
+        # 录制过程中重新保存的登录态：作为会话当前生效绑定，本步骤及以下步骤继承
+        meta.auth_state_id = auth_state.id
         return Response({
             'message': '登录态已保存到环境「%s」' % env_config.name,
             'auth_state_id': auth_state.id,

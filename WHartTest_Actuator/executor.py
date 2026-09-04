@@ -101,6 +101,9 @@ class PageStepConfig:
     page_name: str
     steps: list[StepConfig] = field(default_factory=list)
     env_config: Optional[dict] = None
+    # 步骤绑定的登录态：auth_state_id 来自平台，auth 为解析后的 storage_state（执行时按组切换）
+    auth_state_id: Optional[int] = None
+    auth: Optional[dict] = None
 
 
 @dataclass
@@ -166,6 +169,7 @@ class PlaywrightExecutor:
         self._page_errors = []
         # 任务级认证配置（auth），通过 apply_runtime_options 注入，执行后随 restore 还原
         self._auth_config: Optional[dict] = None
+        self._auth_context_key: Optional[str] = None  # 当前 context 对应 auth 签名（组间切换判断）
         # 执行画面帧采集钩子：browser_session 上下文进入后回调 page（consumer 侧挂 FrameStreamer）
         self.on_execution_page = None
         
@@ -434,6 +438,55 @@ class PlaywrightExecutor:
         await page.goto(url, **kwargs)
         await self._assert_logged_in(page)
 
+    async def ensure_auth_context(self, auth: Optional[dict]) -> bool:
+        """按组切换登录态注入：auth 与当前 context 一致则直接复用（不清理，
+        覆盖"同登录态无需逐步清理"的场景）；不同则关闭旧 context、以新 auth
+        重建（保留 browser 复用）。返回是否发生重建。"""
+        key = json.dumps(auth or {}, sort_keys=True)
+        if key == self._auth_context_key and self._context is not None:
+            return False
+        if self._context is not None:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+            self._page = None
+        self._auth_config = auth
+        await self._init_browser_context()
+        self._auth_context_key = key
+        # 重建出的新页面须重新挂执行画面帧流：CDP screencast 会话随旧 context
+        # 关闭而失效，不重挂会导致画布停留在重建前的最后一帧
+        if self.on_execution_page is not None:
+            try:
+                await self.on_execution_page(self._page)
+            except Exception as exc:
+                logger.warning(f'执行画面帧流重挂失败（不影响用例执行）: {exc}')
+        return True
+
+    async def _init_browser_context(self) -> None:
+        """按当前 _auth_config 创建 context/page（init_browser 与 ensure_auth_context 共用）。"""
+        browser_launcher = getattr(self._playwright, self.browser_type)
+        launch_options = self._build_browser_launch_options()
+        context_options = self._build_browser_context_options()
+        if self.persistent:
+            ctx_options = dict(context_options)
+            storage_state = ctx_options.pop("storage_state", None)
+            self._context = await browser_launcher.launch_persistent_context(
+                self.user_data_dir, **launch_options, **ctx_options,
+            )
+            if storage_state is not None:
+                await self._apply_storage_state(self._context, storage_state)
+            await self._apply_context_init_scripts(self._context)
+            pages = self._context.pages
+            self._page = pages[0] if pages else await self._context.new_page()
+        else:
+            self._context = await self._browser.new_context(**context_options)
+            await self._apply_context_init_scripts(self._context)
+            self._page = await self._context.new_page()
+        self._page.set_default_timeout(self.action_timeout)
+        self._log_auth_injection()
+
     async def init_browser(self) -> None:
         """初始化浏览器"""
         # 若上次未正常关闭，先释放，避免叠加启动多个 Chromium
@@ -444,34 +497,12 @@ class PlaywrightExecutor:
             self._playwright = await async_playwright().start()
         
         browser_launcher = getattr(self._playwright, self.browser_type)
-        launch_options = self._build_browser_launch_options()
-        context_options = self._build_browser_context_options()
-        
         if self.persistent:
-            # 持久化上下文不支持 storage_state 参数（登录态缓存在用户数据目录），
-            # 取出后手动注入 cookies + localStorage，保持与普通上下文一致的行为
-            ctx_options = dict(context_options)
-            storage_state = ctx_options.pop("storage_state", None)
-            self._context = await browser_launcher.launch_persistent_context(
-                self.user_data_dir,
-                **launch_options,
-                **ctx_options,
-            )
-            if storage_state is not None:
-                await self._apply_storage_state(self._context, storage_state)
-            await self._apply_context_init_scripts(self._context)
-            pages = self._context.pages
-            self._page = pages[0] if pages else await self._context.new_page()
+            await self._init_browser_context()
         else:
-            self._browser = await browser_launcher.launch(
-                **launch_options,
-            )
-            self._context = await self._browser.new_context(**context_options)
-            await self._apply_context_init_scripts(self._context)
-            self._page = await self._context.new_page()
-        
-        self._page.set_default_timeout(self.action_timeout)
-        self._log_auth_injection()
+            self._browser = await browser_launcher.launch(**self._build_browser_launch_options())
+            await self._init_browser_context()
+        self._auth_context_key = json.dumps(self._auth_config or {}, sort_keys=True)
         logger.info(f"浏览器已初始化: {self.browser_type}, headless={self.headless}")
 
     def _log_auth_injection(self) -> None:
@@ -1334,9 +1365,22 @@ class PlaywrightExecutor:
                     logger.info(f"导航到环境 base_url: {base_url}")
                     await self._goto_with_login_check(page, base_url, wait_until="networkidle")
 
+                pending_auth = None
                 for page_step in config.page_steps:
                     if self._stop_requested:
                         raise Exception("用例被手动停止")
+
+                    # 组间登录态切换：未绑定步骤"向上匹配"最近绑定的登录态
+                    # （沿用 pending_auth，不触发清理）；显式绑定变更时才重建 context
+                    if getattr(page_step, 'auth_state_id', None):
+                        pending_auth = getattr(page_step, 'auth', None)
+                    rebuilt = await self.ensure_auth_context(pending_auth)
+                    page = self._page
+                    if rebuilt:
+                        self._setup_page_listeners(page)
+                        nav_url = page_step.page_url or base_url
+                        if nav_url:
+                            await self._goto_with_login_check(page, nav_url, wait_until="domcontentloaded")
 
                     logger.info(f"执行页面步骤: {page_step.page_name}")
 

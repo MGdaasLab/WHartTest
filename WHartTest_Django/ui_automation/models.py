@@ -200,6 +200,11 @@ class UiPageSteps(models.Model):
         related_name='created_ui_page_steps', verbose_name=_('创建人')
     )
     created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    # 步骤绑定的登录态（执行时优先注入；用例内多步骤绑定不同登录态时逐步切换并清理）
+    auth_state = models.ForeignKey(
+        'UiAuthState', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='page_steps', verbose_name=_('绑定登录态'),
+    )
     updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
 
     class Meta:

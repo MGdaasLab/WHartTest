@@ -9,6 +9,16 @@
             <a-tag v-if="env.is_default" size="small" color="arcoblue" style="margin-left: 4px">{{ stepText.default }}</a-tag>
           </a-option>
         </a-select>
+        <a-select
+          v-model="selectedAuthState"
+          :placeholder="stepText.authStatePlaceholder"
+          size="small"
+          style="width: 160px"
+          allow-clear
+          @change="onAuthStateChange"
+        >
+          <a-option v-for="a in envAuthStates" :key="a.id" :value="a.id">{{ a.name }}</a-option>
+        </a-select>
         <a-select v-model="selectedActuator" :placeholder="stepText.selectActuator" size="small" style="width: 150px" allow-clear>
           <a-option v-for="act in allActuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
             {{ act.name || act.id }}
@@ -420,8 +430,9 @@ import { Message } from '@arco-design/web-vue'
 import { IconPlus, IconEdit, IconDelete, IconDragDotVertical, IconPlayArrow, IconUpload } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
-import { pageStepsDetailedApi, elementApi, actuatorApi, envConfigApi, moduleApi, pageApi, type ActuatorInfo } from '../api'
+import { pageStepsApi, pageStepsDetailedApi, elementApi, actuatorApi, envConfigApi, moduleApi, pageApi, authStateApi, type ActuatorInfo } from '../api'
 import type { UiPageStepsDetailed, UiPageSteps, UiElement, UiModule, UiPage, StepType, UiEnvironmentConfig } from '../types'
+import type { UiAuthState } from '../types'
 import { STEP_TYPE_LABELS, extractListData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
 import ExecutionScreenModal from '../components/ExecutionScreenModal.vue'
@@ -512,6 +523,8 @@ const stepText = computed(() => isEnglish.value
       executionEnv: 'Environment',
       default: 'Default',
       selectActuator: 'Select actuator',
+      authStatePlaceholder: 'Select login state',
+      authStateSaved: 'Step login-state binding updated',
       offline: 'Offline',
       debugRun: 'Debug Run',
       addAction: 'Add action',
@@ -623,6 +636,7 @@ const stepText = computed(() => isEnglish.value
       batchDeleteConfirm: 'Delete the selected steps?',
       selectAll: 'Select all',
       sortSaved: 'Order saved',
+      saveFailed: 'Save failed',
       saveSortFailed: 'Failed to save order',
     }
   : {
@@ -630,6 +644,8 @@ const stepText = computed(() => isEnglish.value
       executionEnv: '执行环境',
       default: '默认',
       selectActuator: '选择执行器',
+      authStatePlaceholder: '请选择登录态',
+      authStateSaved: '步骤登录态绑定已更新',
       offline: '离线',
       debugRun: '调试执行',
       addAction: '添加操作',
@@ -741,6 +757,7 @@ const stepText = computed(() => isEnglish.value
       batchDeleteConfirm: '确定删除选中的步骤？',
       selectAll: '全选',
       sortSaved: '排序已保存',
+      saveFailed: '保存失败',
       saveSortFailed: '保存排序失败',
     }
 )
@@ -1046,6 +1063,57 @@ const fetchSteps = async () => {
   }
 }
 
+// 步骤绑定的登录态（执行时优先注入该登录态；留空随环境生效登录态）
+const envAuthStates = ref<Array<{ id: number; name: string }>>([])
+const selectedAuthState = ref<number | undefined>(undefined)
+
+const fetchEnvAuthStates = async () => {
+  envAuthStates.value = []
+  if (!props.pageStep?.id) return
+  const boundId = props.pageStep.auth_state_id ?? undefined
+  if (!selectedEnvConfig.value) {
+    selectedAuthState.value = boundId
+    return
+  }
+  try {
+    const res = await authStateApi.list({ env_config: selectedEnvConfig.value })
+    const items = extractListData<UiAuthState>(res)
+    // 与执行环境下拉同源：按当前所选环境展示其登录态（名称+绑定回显）
+    envAuthStates.value = items.map((i) => ({ id: i.id, name: i.name }))
+    selectedAuthState.value = boundId
+    // 绑定的登录态不属于当前所选环境（如录制时绑定了其他环境的登录态）：
+    // 兜底拉取其名称补进下拉，避免选择框显示为空/裸 id
+    if (boundId && !envAuthStates.value.some((i) => i.id === boundId)) {
+      try {
+        const boundRes = await authStateApi.get(boundId)
+        const bound = extractResponseData<UiAuthState>(boundRes)
+        if (bound?.id) {
+          envAuthStates.value = [...envAuthStates.value, { id: bound.id, name: bound.name }]
+        }
+      } catch {
+        // 登录态可能已被删除：清空回显，避免残留失效绑定
+        selectedAuthState.value = undefined
+      }
+    }
+  } catch {
+    // 加载失败时回显当前绑定，避免误清空
+    selectedAuthState.value = boundId
+  }
+}
+
+// 环境选择变化即刷新（含默认环境自动选中后触发）
+watch(selectedEnvConfig, () => { fetchEnvAuthStates() }, { immediate: true })
+
+const onAuthStateChange = async (val: unknown) => {
+  try {
+    await pageStepsApi.update(props.pageStep.id, { auth_state_id: val ? Number(val) : null })
+    Message.success(stepText.value.authStateSaved)
+  } catch {
+    Message.error(stepText.value.saveFailed || '保存失败')
+    fetchEnvAuthStates()
+  }
+}
+
 const fetchActuators = async () => {
   try {
     const res = await actuatorApi.list()
@@ -1126,6 +1194,7 @@ const executePageStep = async () => {
     page_step_id: props.pageStep.id,
     env_config_id: selectedEnvConfig.value,
     actuator_id: selectedActuator.value,
+    auth_state_id: selectedAuthState.value,
   })
 
   if (!sent) {
@@ -1549,6 +1618,7 @@ watch(() => props.pageStep, async () => {
 onMounted(() => {
   fetchActuators()
   fetchEnvConfigs()
+  fetchEnvAuthStates()
   // 监听页面步骤执行结果
   offStepResult = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, handleStepResult)
   // 监听生效运行时回执（决定是否弹执行画面）

@@ -1500,6 +1500,95 @@ async function cmdRunSteps(params) {
  * 关闭旧页面并在同一上下文新建页面（登录态/cookie 保留），
  * 导航到当前地址并重新建立帧推流——彻底消除滚动/弹层/半渲染等残留.
  */
+/**
+ * 切换登录态：关闭当前 context，按新 storageState 重建 context+page（多步骤
+ * 绑定不同登录态的用例按组切换注入）。重建后重新绑定帧流（screencast CDP
+ * 会话随旧 page 失效；截图循环引用 state.page 自动生效）。
+ */
+async function cmdSwitchContext(params) {
+  const storageState = params.storage_state || undefined;
+  if (!state.browser) return { ok: false, error: '浏览器未启动' };
+  try {
+    if (state.context) {
+      try { await state.context.close(); } catch (_) {}
+    }
+    state.context = await state.browser.newContext(buildContextOptions(state.viewport, storageState));
+    await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
+    try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
+    state.page = await state.context.newPage();
+    try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
+    state.page.on('framenavigated', (frame) => {
+      if (frame === state.page.mainFrame()) {
+        recordNavigation(frame.url());
+        ensureInjection();
+      }
+    });
+    state.running = true;
+    state.finished = false;
+    stopFrameStream();
+    state.lastFrameTs = 0;
+    const streamed = await startFrameStream(state.page);
+    if (streamed) {
+      startFrameLoop(400, 300);
+    } else {
+      startFrameLoop(250, 0);
+    }
+    return { ok: true, state: { viewport: state.viewport } };
+  } catch (e) {
+    return { ok: false, error: '切换登录态失败: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
+ * 无痕切换账号：关闭整个 context（含页面），新开干净上下文。
+ * 与点"退出登录"不同：服务端会话（TGT 等）不会被销毁，
+ * 此前已保存的登录态保持有效。重建后重绑帧流。
+ */
+async function cmdResetContext(params) {
+  if (!state.browser) return { ok: false, error: '录制会话未启动' };
+  const url = (params && params.url) || state.startedUrl || 'about:blank';
+  try {
+    stopFrameLoop();
+    stopFrameStream();
+    if (state.context) {
+      try { await state.context.close(); } catch (_) {}
+    }
+    state.context = await state.browser.newContext(buildContextOptions(state.viewport, undefined));
+    await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
+    try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
+    state.page = await state.context.newPage();
+    try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
+    state.page.on('framenavigated', (frame) => {
+      if (frame === state.page.mainFrame()) {
+        recordNavigation(frame.url());
+        ensureInjection();
+      }
+    });
+    state.running = true;
+    state.finished = false;
+    state.lastFrameTs = 0;
+    if (url && url !== 'about:blank') {
+      try {
+        await state.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (e) {
+        serverLog('切换账号后导航失败:', e && e.message ? e.message : String(e));
+      }
+      state.startedUrl = url;
+      state.lastNavUrl = url;
+    }
+    await ensureInjection();
+    const streamed = await startFrameStream(state.page);
+    if (streamed) {
+      startFrameLoop(400, 300);
+    } else {
+      startFrameLoop(250, 0);
+    }
+    return { ok: true, state: { viewport: state.viewport, url: state.lastNavUrl || '' } };
+  } catch (e) {
+    return { ok: false, error: '切换账号失败: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 async function cmdResetPage(params) {
   if (!state.browser || !state.context) {
     return { ok: false, error: '录制会话未启动' };
@@ -1757,6 +1846,10 @@ rl.on('line', (line) => {
           return respond(await cmdAddUpload(msg.params || {}));
         case 'reset_page':
           return respond(await cmdResetPage(msg.params || {}));
+        case 'switch_context':
+          return respond(await cmdSwitchContext(msg.params || {}));
+        case 'reset_context':
+          return respond(await cmdResetContext(msg.params || {}));
         case 'assert':
           return respond(await cmdAssert(msg.params || {}));
         case 'save_login_state':

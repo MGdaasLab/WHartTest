@@ -44,19 +44,32 @@
             </a-button>
           </div>
         </a-form-item>
-        <a-form-item :label="text.environment" :required="true">
+        <a-form-item class="recorder-env-item" :label="text.environment" :required="true">
+          <!-- 与页面步骤下拉同结构（flex-1 + 图标按钮等宽占位）：下拉固定同宽，
+               超长内容由选择框原生省略显示 -->
+          <div class="recorder-select-with-add recorder-env-select-row">
+            <a-select
+              v-model="form.env_config_id"
+              :options="envOptions"
+              :placeholder="text.selectEnvironment"
+              allow-search
+              allow-clear
+              :loading="loadingEnvs"
+              class="env-select"
+              style="width: 205px !important"
+            />
+            <span class="recorder-select-spacer" aria-hidden="true" />
+          </div>
+          <div class="recorder-form-hint">{{ text.envHint }}</div>
           <a-select
-            v-model="form.env_config_id"
-            :options="envOptions"
-            :placeholder="text.selectEnvironment"
+            v-model="form.auth_state_id"
+            :options="authStateOptions"
+            :placeholder="text.authStatePlaceholder"
             allow-search
             allow-clear
-            :loading="loadingEnvs"
+            size="small"
+            style="width: 100%; margin-top: 4px"
           />
-          <div class="recorder-form-hint">{{ text.envHint }}</div>
-          <a-checkbox v-model="form.inject_login_state" class="recorder-inject-login">
-            {{ text.injectLoginState }}
-          </a-checkbox>
         </a-form-item>
         <a-form-item :label="text.preStep">
           <a-select
@@ -295,6 +308,25 @@
         </div>
       </div>
     </div>
+    <!-- 保存登录态：自定义名称 -->
+    <a-modal v-model:visible="authNameVisible" :title="text.saveLoginState" :footer="false" width="420px">
+      <a-form layout="vertical">
+        <a-form-item :label="text.authNameLabel">
+          <a-input
+            v-model="authName"
+            :placeholder="text.authNamePlaceholder"
+            :max-length="64"
+            allow-clear
+            @press-enter="submitSaveLoginState"
+          />
+        </a-form-item>
+      </a-form>
+      <div class="recorder-setup-actions">
+        <a-button @click="authNameVisible = false">{{ text.cancel }}</a-button>
+        <a-button type="primary" :loading="savingAuth" @click="submitSaveLoginState">{{ text.create }}</a-button>
+      </div>
+    </a-modal>
+
   </a-modal>
 </template>
 
@@ -304,9 +336,10 @@ import { Message, Modal } from '@arco-design/web-vue'
 import { IconDelete, IconClockCircle, IconSafe } from '@arco-design/web-vue/es/icon'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
-import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../api'
+import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi, authStateApi } from '../api'
 import type { RecorderSessionInfo, RecorderFinishResult, RecorderSaveLoginStateResult } from '../api'
 import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm, UiPageStepsForm } from '../types'
+import type { UiAuthState } from '../types'
 import { extractListData, extractResponseData } from '../types'
 import { fileService } from '@/features/file-management/services/fileService'
 import type { FileAsset } from '@/features/file-management/types'
@@ -335,7 +368,7 @@ const text = computed(() => (
         environment: 'Environment',
         selectEnvironment: 'Select an environment',
         envHint: 'Recording navigates to the environment base URL (falls back to the page URL).',
-        injectLoginState: 'Inject saved login state (uncheck to record the login flow)',
+        authStatePlaceholder: 'Select login state',
         preStep: 'Pre-step (optional)',
         preStepPlaceholder: 'Select a page step to auto-run before recording',
         preStepHint: 'Auto executes this step (e.g. login) before recording starts; its actions are not recorded.',
@@ -398,7 +431,9 @@ const text = computed(() => (
         selectPageFirst: 'Select a page first',
         finishRecord: 'Finish',
         saveLoginState: 'Save Login State',
-        saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
+        authNameLabel: 'Login state name',
+        authNamePlaceholder: 'Enter a name (leave empty to auto-generate)',
+                saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
         saveLoginStateFailed: 'Failed to save login state',
         recordHint: 'Operate in the browser view below. Hover an element then click Assert to record an assertion.',
         noActions: 'No actions yet. Operate in the browser view.',
@@ -424,7 +459,7 @@ const text = computed(() => (
         environment: '环境',
         selectEnvironment: '请选择环境',
         envHint: '录制时先导航到环境的基础 URL（环境未配置时使用页面 URL）。',
-        injectLoginState: '注入已保存登录态（取消勾选可录制登录流程）',
+        authStatePlaceholder: '请选择登录态',
         preStep: '前置步骤（可选）',
         preStepPlaceholder: '选择录制前自动执行的页面步骤',
         preStepHint: '开始录制前自动执行该步骤（如登录），执行过程不会进入录制动作。',
@@ -488,7 +523,9 @@ const text = computed(() => (
         selectPageFirst: '请先选择页面',
         finishRecord: '结束录制',
         saveLoginState: '保存登录态',
-        saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
+        authNameLabel: '登录态名称',
+        authNamePlaceholder: '填写登录态名称（留空自动生成）',
+                saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
         saveLoginStateFailed: '保存登录态失败',
         recordHint: '在左侧浏览器画面中操作；悬停目标元素后点击「断言」可记录断言。',
         noActions: '暂无动作，请在浏览器画面中操作',
@@ -515,15 +552,18 @@ const recording = ref(false)
 const finishing = ref(false)
 const savingAuth = ref(false)
 
+
 const form = reactive({
   page_id: undefined as number | undefined,
   page_step_id: undefined as number | undefined,
   env_config_id: undefined as number | undefined,
   pre_page_step_id: undefined as number | undefined,
-  // 注入已保存登录态（默认勾选）：直达登录后页面；取消勾选可录制登录流程本身
-  inject_login_state: true,
+  // 选择绑定的登录态（录制的步骤/用例继承该绑定；留空随环境生效登录态）
+  auth_state_id: undefined as number | undefined,
 })
 
+
+watch(() => form.env_config_id, (v) => { fetchAuthStateOptions(v) })
 const projectId = computed(() => props.projectId ?? useProjectStore().currentProject?.id)
 
 // ---- 快捷新增页面/步骤 ----
@@ -849,7 +889,7 @@ async function handleStart() {
       page_id: form.page_id,
       page_step_id: form.page_step_id,
       pre_page_step_id: form.pre_page_step_id,
-      inject_login_state: form.inject_login_state,
+      auth_state_id: form.auth_state_id,
     }))
     if (!info) throw new Error(text.value.startFailed)
     if (info.pre_failed) Message.error(text.value.preFailed)
@@ -899,15 +939,27 @@ async function handleFinish() {
   }
 }
 
+const authNameVisible = ref(false)
+const authName = ref('')
+
+/** 保存登录态：先让用户填写自定义名称（留空则后端自动生成） */
 async function handleSaveLoginState() {
+  if (!sessionId.value) return
+  authName.value = ''
+  authNameVisible.value = true
+}
+
+async function submitSaveLoginState() {
   // 保存当前录制浏览器（已完成登录，含验证码）的登录态到所属环境
   if (!sessionId.value) return
   savingAuth.value = true
+  const name = authName.value.trim() || undefined
   try {
     const result = extractResponseData<RecorderSaveLoginStateResult>(
-      await recorderApi.saveLoginState(sessionId.value),
+      await recorderApi.saveLoginState(sessionId.value, name ? { name } : undefined),
     )
     if (!result) throw new Error(text.value.saveLoginStateFailed)
+    authNameVisible.value = false
     Message.success(
       text.value.saveLoginStateSuccess
         .replace('{cookies}', String(result.cookies))
@@ -1321,7 +1373,22 @@ let offAction: (() => void) | null = null
 let offStatus: (() => void) | null = null
 let resizeObserver: ResizeObserver | null = null
 
+const authStateOptions = ref<Array<{ label: string; value: number }>>([])
+const fetchAuthStateOptions = async (envId: number | undefined) => {
+  authStateOptions.value = []
+  if (!envId) return
+  try {
+    const res = await authStateApi.list({ env_config: envId })
+    const items = extractListData<UiAuthState>(res)
+    authStateOptions.value = items.map((i) => ({ label: i.name, value: i.id }))
+  } catch {
+    authStateOptions.value = []
+  }
+}
+
 onMounted(() => {
+  fetchAuthStateOptions(form.env_config_id)
+
   offFrame = uiWebSocket.on(UiSocketEnum.RECORDER_FRAME, onRecorderFrame as any)
   offAction = uiWebSocket.on(UiSocketEnum.RECORDER_ACTION, onRecorderAction as any)
   offStatus = uiWebSocket.on(UiSocketEnum.RECORDER_STATUS, onRecorderStatus as any)
@@ -1368,6 +1435,30 @@ onUnmounted(() => {
   color: var(--color-text-3);
 }
 
+
+.recorder-select-spacer {
+  width: 24px;
+  flex: 0 0 auto;
+}
+
+.recorder-env-item :deep(.arco-form-item-label-col) {
+  /* 环境标题与选择框间距收紧（纵向表单默认 8px）：
+     !important 压过组件默认规则，与"页面/页面步骤"表单项视觉一致 */
+  margin-bottom: 2px !important;
+}
+
+.recorder-env-select-row .env-select {
+  /* 固定宽度：不随选项内容变化，超长以省略号截断 */
+  width: 205px;
+  flex: none;
+  min-width: 0;
+}
+
+.recorder-env-select-row :deep(.arco-select-view-value) {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
 
 .recorder-select-with-add {
   display: flex;

@@ -20,7 +20,7 @@
           />
         </a-form-item>
         <a-form-item :label="text.page" :required="true">
-          <div class="recorder-select-with-add">
+          <div ref="stepSelectRowRef" class="recorder-select-with-add">
             <a-select
               v-model="form.page_id"
               :options="pageOptions"
@@ -35,18 +35,31 @@
             </a-button>
           </div>
         </a-form-item>
-        <a-form-item :label="text.environment" :required="true">
+        <a-form-item class="recorder-env-item" :label="text.environment" :required="true">
+          <!-- 与页面步骤下拉同结构（flex-1 + 图标按钮等宽占位）：下拉固定同宽，
+               超长内容由选择框原生省略显示 -->
+          <div ref="envSelectRowRef" class="recorder-select-with-add recorder-env-select-row">
+            <a-select
+              v-model="form.env_config_id"
+              :options="envOptions"
+              :placeholder="text.selectEnvironment"
+              allow-search
+              allow-clear
+              :loading="loadingEnvs"
+              class="env-select"
+              style="width: 205px !important"
+            />
+            <span class="recorder-select-spacer" aria-hidden="true" />
+          </div>
           <a-select
-            v-model="form.env_config_id"
-            :options="envOptions"
-            :placeholder="text.selectEnvironment"
+            v-model="form.auth_state_id"
+            :options="authStateOptions"
+            :placeholder="text.authStatePlaceholder"
             allow-search
             allow-clear
-            :loading="loadingEnvs"
+            size="small"
+            style="width: 100%; margin-top: 4px"
           />
-          <a-checkbox v-model="form.inject_login_state" class="recorder-inject-login">
-            {{ text.injectLoginState }}
-          </a-checkbox>
           <div class="recorder-form-hint">{{ text.envHint }}</div>
         </a-form-item>
         <a-form-item :label="text.preStep">
@@ -147,6 +160,16 @@
           >
             <template #icon><icon-safe /></template>
             {{ text.saveLoginState }}
+          </a-button>
+          <a-button
+            type="outline"
+            size="small"
+            :loading="switchingAccount"
+            :disabled="!recording"
+            @click="handleSwitchAccount"
+          >
+            <template #icon><icon-user /></template>
+            {{ text.switchAccount }}
           </a-button>
           <a-button
             :status="uploadActive ? 'warning' : undefined"
@@ -330,19 +353,39 @@
         <a-button type="primary" :loading="addPageSubmitting" @click="submitAddPage">{{ text.create }}</a-button>
       </div>
     </a-modal>
+    <!-- 保存登录态：自定义名称 -->
+    <a-modal v-model:visible="authNameVisible" :title="text.saveLoginState" :footer="false" width="420px">
+      <a-form layout="vertical">
+        <a-form-item :label="text.authNameLabel">
+          <a-input
+            v-model="authName"
+            :placeholder="text.authNamePlaceholder"
+            :max-length="64"
+            allow-clear
+            @press-enter="submitSaveLoginState"
+          />
+        </a-form-item>
+      </a-form>
+      <div class="recorder-setup-actions">
+        <a-button @click="authNameVisible = false">{{ text.cancel }}</a-button>
+        <a-button type="primary" :loading="savingAuth" @click="submitSaveLoginState">{{ text.create }}</a-button>
+      </div>
+    </a-modal>
+
   </a-modal>
 </template>
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle, IconSafe } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle, IconSafe, IconUser } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
-import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi } from '../api'
+import { pageApi, pageStepsApi, envConfigApi, moduleApi, recorderApi, authStateApi } from '../api'
 import type { RecorderSessionInfo, RecorderCaseFinishResult, RecorderSaveLoginStateResult } from '../api'
 import type { UiPage, UiPageSteps, UiEnvironmentConfig, UiModule, UiPageForm } from '../types'
+import type { UiAuthState } from '../types'
 import { extractListData, extractResponseData } from '../types'
 import { fileService } from '@/features/file-management/services/fileService'
 import type { FileAsset } from '@/features/file-management/types'
@@ -371,7 +414,7 @@ const text = computed(() => (
         environment: 'Environment',
         selectEnvironment: 'Select an environment',
         envHint: 'Recording navigates to the environment base URL (falls back to the page URL).',
-        injectLoginState: 'Inject saved login state (uncheck to record the login flow)',
+        authStatePlaceholder: 'Select login state',
         preStep: 'Pre-step (optional)',
         preStepPlaceholder: 'Select a page step to auto-run before recording',
         preStepHint: 'Auto executes this step (e.g. login) before recording; it will also be added to the case.',
@@ -382,7 +425,12 @@ const text = computed(() => (
         assert: 'Assert',
         finishRecord: 'Finish',
         saveLoginState: 'Save Login State',
-        saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
+        switchAccount: 'Switch Account (keep previous login states)',
+        switchAccountFailed: 'Switch account failed',
+        switchAccountDone: 'Switched to a clean session. Please log in with the new account, then save its login state.',
+        authNameLabel: 'Login state name',
+        authNamePlaceholder: 'Enter a name (leave empty to auto-generate)',
+                saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
         saveLoginStateFailed: 'Failed to save login state',
         wait: 'Wait',
         waitSeconds: (sec: number) => `${sec}s`,
@@ -463,7 +511,7 @@ const text = computed(() => (
         environment: '环境',
         selectEnvironment: '请选择环境',
         envHint: '录制时先导航到环境的基础 URL（环境未配置时使用页面 URL）。',
-        injectLoginState: '注入已保存登录态（取消勾选可录制登录流程）',
+        authStatePlaceholder: '请选择登录态',
         preStep: '前置步骤（可选）',
         preStepPlaceholder: '选择录制前自动执行的页面步骤',
         preStepHint: '开始录制前自动执行该步骤（如登录），执行过程不会进入录制动作；结束后该步骤也会加入用例。',
@@ -474,7 +522,12 @@ const text = computed(() => (
         assert: '断言',
         finishRecord: '结束录制',
         saveLoginState: '保存登录态',
-        saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
+        switchAccount: '切换账号（已存登录态不受影响）',
+        switchAccountFailed: '切换账号失败',
+        switchAccountDone: '已切换到全新会话，请登录下一个账号后保存登录态。',
+        authNameLabel: '登录态名称',
+        authNamePlaceholder: '填写登录态名称（留空自动生成）',
+                saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
         saveLoginStateFailed: '保存登录态失败',
         recordHint: '在左侧浏览器画面中操作；录制前请先点击「添加步骤」分组后续动作。',
         noActions: '该步骤下暂无动作',
@@ -556,15 +609,51 @@ const recording = ref(false)
 const finishing = ref(false)
 const savingAuth = ref(false)
 
+// 环境下拉与页面对齐：实测页面选择框宽度并固定应用到环境选择框
+const stepSelectRowRef = ref<HTMLElement | null>(null)
+const envSelectRowRef = ref<HTMLElement | null>(null)
+let syncTimer: number | null = null
+const syncEnvSelectWidth = (): number => {
+  const stepSel = stepSelectRowRef.value?.querySelector<HTMLElement>('.arco-select')
+  const envSel = envSelectRowRef.value?.querySelector<HTMLElement>('.arco-select')
+  if (!stepSel || !envSel) return 0
+  const w = stepSel.getBoundingClientRect().width
+  if (w > 0) {
+    envSel.style.width = `${w}px`
+  }
+  return w
+}
+/** 轮询等待弹窗内容完成布局（弹窗异步可见，过早测量会得到 0 把宽度写死） */
+const startEnvWidthSync = () => {
+  let tries = 0
+  if (syncTimer !== null) window.clearInterval(syncTimer)
+  syncTimer = window.setInterval(() => {
+    const w = syncEnvSelectWidth()
+    tries += 1
+    if (w > 0 || tries > 50) {
+      window.clearInterval(syncTimer!)
+      syncTimer = null
+    }
+  }, 100)
+}
+onUnmounted(() => {
+  if (syncTimer !== null) {
+    window.clearInterval(syncTimer)
+    syncTimer = null
+  }
+})
+
 const form = reactive({
   case_name: '',
   page_id: undefined as number | undefined,
   env_config_id: undefined as number | undefined,
   pre_page_step_id: undefined as number | undefined,
-  // 注入已保存登录态（默认勾选）：直达登录后页面；取消勾选可录制登录流程本身
-  inject_login_state: true,
+  // 选择绑定的登录态（录制的步骤/用例继承该绑定；留空随环境生效登录态）
+  auth_state_id: undefined as number | undefined,
 })
 
+
+watch(() => form.env_config_id, (v) => { fetchAuthStateOptions(v) })
 const projectId = computed(() => props.projectId ?? useProjectStore().currentProject?.id)
 
 const loadingPages = ref(false)
@@ -573,6 +662,8 @@ const loadingPreSteps = ref(false)
 const pageOptions = ref<Array<{ label: string; value: number; module?: number }>>([])
 const envOptions = ref<Array<{ label: string; value: number; base_url?: string | null }>>([])
 const preStepOptions = ref<Array<{ label: string; value: number }>>([])
+// 所选环境的基础 URL（切换账号时导航用）
+const selectedEnvBaseUrl = computed(() => envOptions.value.find((e) => e.value === form.env_config_id)?.base_url || '')
 
 // ---- 快捷新增页面 ----
 const addPageVisible = ref(false)
@@ -841,7 +932,7 @@ async function handleStart() {
       page_id: form.page_id,
       env_config_id: form.env_config_id,
       pre_page_step_id: form.pre_page_step_id,
-      inject_login_state: form.inject_login_state,
+      auth_state_id: form.auth_state_id,
     }))
     if (!info) throw new Error(text.value.startFailed)
     if (info.pre_failed) Message.error(text.value.preFailed)
@@ -880,7 +971,10 @@ async function handleFinish() {
     uiWebSocket.recorderStop()
     const result = extractResponseData<RecorderCaseFinishResult>(await recorderApi.finish(
       sessionId.value,
-      { groups: recordGroups.value.map((g) => ({ name: g.name, seqs: g.seqs.slice() })) },
+      {
+        groups: recordGroups.value.map((g) => ({ name: g.name, seqs: g.seqs.slice() })),
+        auth_marks: authMarks.value.map((m) => ({ after_seq: m.afterSeq, auth_state_id: m.authStateId })),
+      },
     ))
     if (!result) throw new Error(text.value.finishFailed)
     const stats = text.value.stats
@@ -898,15 +992,50 @@ async function handleFinish() {
   }
 }
 
+const authNameVisible = ref(false)
+const authName = ref('')
+
+// 录制过程中"重新保存登录态"的分界：保存成功时记录当前动作序号，
+// 其后录制的步骤（组）继承新保存的登录态，直至再次保存
+const authMarks = ref<Array<{ afterSeq: number; authStateId: number }>>([])
+
+const switchingAccount = ref(false)
+
+/** 切换账号：无痕重建上下文（不点目标系统"退出登录"，已保存的登录态保持有效） */
+async function handleSwitchAccount() {
+  if (!recording.value || !sessionId.value) return
+  switchingAccount.value = true
+  try {
+    const url = selectedEnvBaseUrl.value || undefined
+    if (!uiWebSocket.recorderSwitchAccount(url)) throw new Error(text.value.switchAccountFailed)
+  } catch (e: any) {
+    Message.error(e?.message || text.value.switchAccountFailed)
+  } finally {
+    switchingAccount.value = false
+  }
+}
+
+/** 保存登录态：先让用户填写自定义名称（留空则后端自动生成） */
 async function handleSaveLoginState() {
+  if (!sessionId.value) return
+  authName.value = ''
+  authNameVisible.value = true
+}
+
+async function submitSaveLoginState() {
   // 保存当前录制浏览器（已完成登录，含验证码）的登录态到所属环境
   if (!sessionId.value) return
   savingAuth.value = true
+  const name = authName.value.trim() || undefined
   try {
     const result = extractResponseData<RecorderSaveLoginStateResult>(
-      await recorderApi.saveLoginState(sessionId.value),
+      await recorderApi.saveLoginState(sessionId.value, name ? { name } : undefined),
     )
     if (!result) throw new Error(text.value.saveLoginStateFailed)
+    // 本步骤（当前已录制的最后一个动作）及以下步骤绑定新保存的登录态
+    const lastSeq = allActions.value.reduce((m, a) => Math.max(m, Number(a?.seq) || 0), 0)
+    authMarks.value.push({ afterSeq: lastSeq, authStateId: result.auth_state_id })
+    authNameVisible.value = false
     Message.success(
       text.value.saveLoginStateSuccess
         .replace('{cookies}', String(result.cookies))
@@ -1311,6 +1440,8 @@ function onRecorderStatus(data: any) {
     Message.error(args.message || text.value.assertFailed)
   } else if (status === 'asserted') {
     Message.success(text.value.assertRecorded)
+  } else if (status === 'context_reset') {
+    Message.success(text.value.switchAccountDone)
   } else if (status === 'upload_located') {
     if (args.selector) {
       openUploadDialog(args.selector)
@@ -1324,7 +1455,23 @@ let offFrame: (() => void) | null = null
 let offAction: (() => void) | null = null
 let offStatus: (() => void) | null = null
 
+const authStateOptions = ref<Array<{ label: string; value: number }>>([])
+const fetchAuthStateOptions = async (envId: number | undefined) => {
+  authStateOptions.value = []
+  if (!envId) return
+  try {
+    const res = await authStateApi.list({ env_config: envId })
+    const items = extractListData<UiAuthState>(res)
+    authStateOptions.value = items.map((i) => ({ label: i.name, value: i.id }))
+  } catch {
+    authStateOptions.value = []
+  }
+}
+
 onMounted(() => {
+  fetchAuthStateOptions(form.env_config_id)
+  startEnvWidthSync()
+
   offFrame = uiWebSocket.on(UiSocketEnum.RECORDER_FRAME, onRecorderFrame as any)
   offAction = uiWebSocket.on(UiSocketEnum.RECORDER_ACTION, onRecorderAction as any)
   offStatus = uiWebSocket.on(UiSocketEnum.RECORDER_STATUS, onRecorderStatus as any)
@@ -1339,6 +1486,30 @@ onUnmounted(() => {
 </script>
 
 <style lang="postcss" scoped>
+.recorder-select-spacer {
+  width: 24px;
+  flex: 0 0 auto;
+}
+
+.recorder-env-item :deep(.arco-form-item-label-col) {
+  /* 环境标题与选择框间距收紧（纵向表单默认 8px）：
+     !important 压过组件默认规则，与"页面/页面步骤"表单项视觉一致 */
+  margin-bottom: 2px !important;
+}
+
+.recorder-env-select-row .env-select {
+  /* 固定宽度：不随选项内容变化，超长以省略号截断 */
+  width: 205px;
+  flex: none;
+  min-width: 0;
+}
+
+.recorder-env-select-row :deep(.arco-select-view-value) {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
 .recorder-select-with-add {
   display: flex;
   gap: 8px;

@@ -528,27 +528,20 @@ class TaskConsumer:
             source_mode="local_merge",
         )
 
-    async def _resolve_env_auth(self, env_config_id) -> Optional[dict]:
-        """按环境配置自动拉取平台保存的生效登录态（storageState 快照）。
-
-        平台登录态绑定环境配置（UiAuthState），执行时未显式指定 auth 时自动注入，
-        无需调用方关心目标系统认证类型（Cookie/Session 或 JWT，快照一并覆盖）。
-        """
-        if not env_config_id:
-            return None
-        try:
-            data = await self._api_get(f"/api/ui-automation/auth-states/by-env/{env_config_id}/")
-        except Exception as exc:
-            logger.warning(f"拉取环境登录态失败: {exc}")
-            return None
-        if not isinstance(data, dict) or not data.get("active"):
-            logger.info(f"环境 {env_config_id} 未配置启用中的登录态，本次执行不注入登录态")
-            return None
-        state_json = data.get("state_json")
-        if not isinstance(state_json, dict):
-            return None
-        logger.info(f"已按环境 {env_config_id} 拉取登录态（auth_state_id={data.get('id')}）")
-        return {"storage_state": state_json}
+    async def _resolve_auth(self, env_config_id, auth_state_id=None) -> Optional[dict]:
+        """解析执行注入的登录态：优先步骤绑定 auth_state_id；未绑定则返回 None
+        （不注入，也不回落环境生效登录态）——用例内未绑定步骤执行器按"向上匹配"
+        沿用上一个已绑定步骤的登录态。"""
+        if auth_state_id:
+            try:
+                data = await self._api_get(f"/api/ui-automation/auth-states/{auth_state_id}/")
+            except Exception as exc:
+                logger.warning(f"拉取步骤绑定登录态失败: {exc}")
+                data = None
+            if isinstance(data, dict) and isinstance(data.get('state_json'), dict):
+                logger.info(f"使用步骤绑定登录态 auth_state_id={auth_state_id}")
+                return {'storage_state': data['state_json']}
+        return None
 
     async def _runtime_for_executor(self, effective: dict, args: dict | None = None) -> dict:
         opts = {
@@ -565,7 +558,7 @@ class TaskConsumer:
                 opts["auth"] = args.get("auth")
             else:
                 # 未指定时按环境配置自动拉取平台保存的生效登录态
-                opts["auth"] = await self._resolve_env_auth(args.get("env_config_id"))
+                opts["auth"] = await self._resolve_auth(args.get("env_config_id"), args.get("auth_state_id"))
         return opts
 
     # ------------------------------------------------------------------
@@ -584,6 +577,14 @@ class TaskConsumer:
         async def _on_page(page):
             # 帧采集为旁路：任何异常都不允许影响用例执行
             try:
+                # 组间切换登录态会重建 context（页面更换）→ 旧 streamer 的 CDP
+                # 会话已随旧页面失效，先停掉再挂新页面，避免泄漏采集循环
+                old_streamer, self._exec_frame_streamer = self._exec_frame_streamer, None
+                if old_streamer is not None:
+                    try:
+                        await old_streamer.stop()
+                    except Exception:
+                        pass
                 streamer = FrameStreamer(page, self._push_exec_frame)
                 await streamer.start()
                 self._exec_frame_streamer = streamer
@@ -651,6 +652,8 @@ class TaskConsumer:
         
         # 构建配置，传入 base_url 和数据处理器
         config = self._build_page_step_config(page_step_data, base_url, data_processor, env_config)
+        # 步骤绑定的登录态（execute-data 已带）→ 并入任务 auth 解析
+        args['auth_state_id'] = args.get('auth_state_id') or getattr(config, 'auth_state_id', None)
         
         # 执行（使用同一浏览器会话）
         logger.info(f"开始执行页面步骤: {config.page_name}")
@@ -788,6 +791,10 @@ class TaskConsumer:
 
         # 构建配置（传入数据处理器进行变量替换）
         config = self._build_test_case_config(case_data, env_config, data_processor)
+        # 每组步骤绑定的登录态：解析后交由执行器按组切换（绑定一致则复用不清理）
+        _env_auth_id = env_config.get('id') if isinstance(env_config, dict) else args.get('env_config_id')
+        for _ps in config.page_steps:
+            _ps.auth = await self._resolve_auth(_env_auth_id, _ps.auth_state_id)
 
         # 执行
         effective = self._resolve_task_runtime(args, env_config)
@@ -1621,6 +1628,7 @@ class TaskConsumer:
             page_name=data.get('name', ''),  # 页面步骤名称
             steps=steps,
             env_config=env_config,
+            auth_state_id=data.get('auth_state_id') or data.get('auth_state'),
         )
     
     def _build_test_case_config(self, data: dict, env_config: Optional[dict] = None, data_processor: Optional[DataProcessor] = None) -> TestCaseConfig:

@@ -105,6 +105,22 @@
         </a-form-item>
         <a-row :gutter="16">
           <a-col :span="12">
+            <a-form-item :label="pageText.stepAuthEnv">
+              <a-select v-model="authEnvId" :placeholder="pageText.stepAuthEnvPlaceholder" allow-clear @change="onAuthEnvChange">
+                <a-option v-for="env in envOptionsAuth" :key="env.id" :value="env.id">{{ env.name }}</a-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item :label="pageText.stepAuthState">
+              <a-select v-model="formAuthStateId" :placeholder="pageText.stepAuthStatePlaceholder" allow-clear @change="saveStepAuth">
+                <a-option v-for="a in authStateOptions" :key="a.id" :value="a.id">{{ a.name }}</a-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
             <a-form-item field="switch_step_open_url" :label="pageText.switchPageUrl">
               <a-switch v-model="formData.switch_step_open_url" />
             </a-form-item>
@@ -154,8 +170,8 @@ import { ref, reactive, computed, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
 import { IconPlus, IconEdit, IconDelete, IconDragDotVertical } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
-import { caseStepsApi, pageStepsApi, moduleApi } from '../api'
-import type { UiCaseStepsDetailed, UiPageSteps, UiTestCase, ExecutionStatus, UiModule } from '../types'
+import { caseStepsApi, pageStepsApi, moduleApi, envConfigApi, authStateApi } from '../api'
+import type { UiCaseStepsDetailed, UiPageSteps, UiTestCase, ExecutionStatus, UiModule, UiEnvironmentConfig, UiAuthState } from '../types'
 import { STATUS_LABELS, extractListData, extractResponseData } from '../types'
 import { useProjectStore } from '@/store/projectStore'
 import { useAppI18n } from '@/composables/useAppI18n'
@@ -182,6 +198,11 @@ const pageText = computed(() => (
         selectPageStep: 'Select page step',
         selectPageStepPlaceholder: 'Select page step',
         switchPageUrl: 'Switch page URL',
+      stepAuthEnv: 'Environment (for auth)',
+      stepAuthEnvPlaceholder: 'Select environment',
+      stepAuthState: 'Login state',
+      stepAuthStatePlaceholder: 'Select login state',
+      stepAuthSaved: 'Step login state updated',
         retryCount: 'Retry count on failure',
         selectPageStepRequired: 'Select page step',
         fetchStepListFailed: 'Failed to fetch step list',
@@ -212,6 +233,11 @@ const pageText = computed(() => (
         selectPageStep: '选择页面步骤',
         selectPageStepPlaceholder: '请选择页面步骤',
         switchPageUrl: '切换页面URL',
+      stepAuthEnv: '绑定登录态-环境',
+      stepAuthEnvPlaceholder: '选择环境',
+      stepAuthState: '登录态',
+      stepAuthStatePlaceholder: '请选择登录态',
+      stepAuthSaved: '步骤登录态已更新',
         retryCount: '失败重试次数',
         selectPageStepRequired: '请选择页面步骤',
         fetchStepListFailed: '获取步骤列表失败',
@@ -338,6 +364,53 @@ const loadPageStepDetails = async (pageStepId: number) => {
   }
 }
 
+// 步骤绑定的登录态（编辑用例步骤时同步更新所选页面步骤的绑定）
+const envOptionsAuth = ref<Array<{ id: number; name: string }>>([])
+const authStateOptions = ref<Array<{ id: number; name: string }>>([])
+const authEnvId = ref<number | undefined>(undefined)
+const formAuthStateId = ref<number | undefined>(undefined)
+
+const fetchAuthEnvs = async () => {
+  envOptionsAuth.value = []
+  if (!projectId.value) return
+  try {
+    const res = await envConfigApi.list({ project: projectId.value })
+    envOptionsAuth.value = extractListData<UiEnvironmentConfig>(res).map((e) => ({ id: e.id, name: e.name }))
+  } catch {
+    envOptionsAuth.value = []
+  }
+}
+
+const fetchAuthStates = async () => {
+  authStateOptions.value = []
+  if (!authEnvId.value) return
+  try {
+    const res = await authStateApi.list({ env_config: authEnvId.value })
+    authStateOptions.value = extractListData<UiAuthState>(res).map((i) => ({ id: i.id, name: i.name }))
+  } catch {
+    authStateOptions.value = []
+  }
+}
+
+const onAuthEnvChange = () => {
+  formAuthStateId.value = undefined
+  fetchAuthStates()
+}
+
+/** 变更即保存到所选页面步骤 */
+const saveStepAuth = async (val: unknown) => {
+  if (!formData.page_step) {
+    Message.warning('请先选择页面步骤')
+    return
+  }
+  try {
+    await pageStepsApi.update(formData.page_step, { auth_state_id: val ? Number(val) : null })
+    Message.success(pageText.value.stepAuthSaved)
+  } catch {
+    Message.error('更新登录态绑定失败')
+  }
+}
+
 const onPageStepChange = async () => {
   Object.keys(caseOverrides).forEach(k => delete caseOverrides[Number(k)])
   if (formData.page_step) {
@@ -359,6 +432,33 @@ const onModuleChange = () => {
   selectedPageStepDetails.value = []
   Object.keys(caseOverrides).forEach(k => delete caseOverrides[Number(k)])
 }
+
+watch(modalVisible, (v) => {
+  if (v) {
+    // 每次打开弹窗先清零回显状态：formAuthStateId/authEnvId 是组件级单例，
+    // 不清零会把上一次编辑的步骤绑定串显到本次（如：上一步有登录态、本步未绑定时误显示）
+    formAuthStateId.value = undefined
+    authEnvId.value = undefined
+    fetchAuthEnvs()
+    // 回显当前页面步骤绑定
+    if (formData.page_step) {
+      pageStepsApi.get(formData.page_step).then((res) => {
+        const step = extractResponseData<UiPageSteps>(res)
+        if (step && step.auth_state_id) {
+          formAuthStateId.value = step.auth_state_id
+          authStateApi.get(step.auth_state_id).then((r) => {
+            const a = extractResponseData<UiAuthState>(r)
+            if (a && a.env_config) {
+              // 按绑定登录态所属环境刷新下拉选项（环境可能与会话前一次不同）
+              authEnvId.value = a.env_config
+              fetchAuthStates()
+            }
+          }).catch(() => {})
+        }
+      }).catch(() => {})
+    }
+  }
+})
 
 const formData = reactive({
   page_step: undefined as number | undefined,

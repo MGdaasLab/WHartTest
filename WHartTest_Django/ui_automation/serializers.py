@@ -174,13 +174,17 @@ class UiPageStepsListSerializer(serializers.ModelSerializer):
     module_name = serializers.CharField(source='module.name', read_only=True)
     creator_name = serializers.CharField(source='creator.username', read_only=True)
     step_count = serializers.SerializerMethodField()
+    # 绑定登录态：前端步骤详情/执行按列表行数据直接回显（详情抽屉不重新拉详情）
+    auth_state_id = serializers.PrimaryKeyRelatedField(
+        source='auth_state', read_only=True, allow_null=True,
+    )
 
     class Meta:
         model = UiPageSteps
         fields = [
             'id', 'project', 'page', 'page_name', 'module', 'module_name',
             'name', 'status', 'file_ids', 'step_count', 'creator', 'creator_name',
-            'created_at', 'updated_at'
+            'auth_state_id', 'created_at', 'updated_at'
         ]
         read_only_fields = ['status', 'creator', 'created_at', 'updated_at']
 
@@ -194,6 +198,11 @@ class UiPageStepsSerializer(serializers.ModelSerializer):
     module_name = serializers.CharField(source='module.name', read_only=True)
     creator_name = serializers.CharField(source='creator.username', read_only=True)
     step_count = serializers.SerializerMethodField()
+    # 输入键兼容：前端以 auth_state_id 绑定/清空登录态（DRF 对 FK 默认只认 auth_state 键，'xxx_id' 会被静默忽略）
+    auth_state_id = serializers.PrimaryKeyRelatedField(
+        source='auth_state', queryset=UiAuthState.objects.all(),
+        required=False, allow_null=True,
+    )
 
     class Meta:
         model = UiPageSteps
@@ -213,7 +222,13 @@ class UiPageStepsDetailSerializer(UiPageStepsSerializer):
 
 
 class UiPageStepsExecuteSerializer(UiPageStepsSerializer):
-    """页面步骤执行序列化器（含步骤详情列表和元素定位信息）"""
+    """页面步骤执行序列化器（含步骤详情列表和元素定位信息）
+
+    auth_state_id：步骤绑定的登录态，执行器按组优先注入/切换。
+    """
+    auth_state_id = serializers.PrimaryKeyRelatedField(
+        source='auth_state', read_only=True, required=False, allow_null=True,
+    )
     step_details = UiPageStepsDetailedExecuteSerializer(many=True, read_only=True)
     page_url = serializers.CharField(source='page.url', read_only=True)
     managed_files = serializers.SerializerMethodField()

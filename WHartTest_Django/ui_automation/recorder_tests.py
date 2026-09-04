@@ -708,9 +708,12 @@ class RecorderLoginInjectTests(TestCase):
         self.page = UiPage.objects.create(
             project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
         )
+        self.env = UiEnvironmentConfig.objects.create(
+            project=self.project, name='测试环境', base_url='http://e.local', creator=self.user,
+        )
         self._meta = None
 
-    def _start(self, *, auth_state, inject_flag: bool):
+    def _start(self, *, bound_auth_id):
         from unittest.mock import patch
         from ui_automation.views import _start_recorder_session
         from ui_automation.recorder.session_manager import RecorderSessionMeta
@@ -719,16 +722,17 @@ class RecorderLoginInjectTests(TestCase):
         env = UiEnvironmentConfig.objects.create(
             project=self.project, name='环境A', base_url='http://env.local', creator=self.user,
         )
-        if auth_state:
-            UiAuthState.objects.create(
-                env_config=env, is_active=True, name='登录态',
-                state_json={'cookies': [{'name': 'S', 'value': 'x', 'domain': '.env.local', 'path': '/'}]},
-                creator=self.user,
-            )
+        # 环境存在启用中的登录态：新语义下未显式绑定也绝不注入
+        UiAuthState.objects.create(
+            env_config=env, is_active=True, name='环境生效登录态',
+            state_json={'cookies': [{'name': 'S', 'value': 'x', 'domain': '.env.local', 'path': '/'}]},
+            creator=self.user,
+        )
         meta = RecorderSessionMeta(
             user_id='u1', project_id=self.project.id, page_id=self.page.id, page_step_id=1,
             create_elements=True, create_steps=True, base_url='http://env.local',
             viewport={'width': 1400, 'height': 900}, kind='record', env_config_id=env.id,
+            auth_state_id=bound_auth_id,
         )
         from unittest.mock import Mock
         session = Mock()
@@ -741,38 +745,29 @@ class RecorderLoginInjectTests(TestCase):
             _start_recorder_session(
                 env_config=env, page=self.page, base_url='http://env.local',
                 skill_dir='/tmp/x', request=self._SimpleNamespace(user=self._SimpleNamespace(username='u1')),
-                meta=meta, inject_login_state=inject_flag,
+                meta=meta,
             )
         return session.request.call_args_list[0].args[1]
 
-    def test_inject_on_with_active_state(self):
-        params = self._start(auth_state=True, inject_flag=True)
-        self.assertEqual(params['storage_state']['cookies'][0]['name'], 'S')
+    def test_bound_auth_injected(self):
+        from ui_automation.models import UiAuthState
+        bound = UiAuthState.objects.create(
+            env_config=self.env, name='绑定登录态',
+            state_json={'cookies': [{'name': 'B', 'value': 'y'}]}, creator=self.user,
+        )
+        params = self._start(bound_auth_id=bound.id)
+        self.assertEqual(params['storage_state']['cookies'][0]['name'], 'B')
 
-    def test_inject_off_no_storage_state(self):
-        params = self._start(auth_state=True, inject_flag=False)
+    def test_unbound_never_injected_even_with_active_state(self):
+        # 环境有启用中的登录态，但选择框未绑定 → 无痕启动
+        params = self._start(bound_auth_id=None)
         self.assertNotIn('storage_state', params)
 
-    def test_inject_on_without_active_state(self):
-        params = self._start(auth_state=False, inject_flag=True)
+    def test_invalid_bound_id_no_injection(self):
+        params = self._start(bound_auth_id=999999)
         self.assertNotIn('storage_state', params)
 
-    def test_active_login_state_helper(self):
-        from ui_automation.views import _active_login_state
-        from ui_automation.models import UiEnvironmentConfig
-        env = UiEnvironmentConfig.objects.create(
-            project=self.project, name='环境B', base_url='http://b.local', creator=self.user,
-        )
-        self.assertIsNone(_active_login_state(env))
-        UiAuthState.objects.create(
-            env_config=env, is_active=False, name='停用', state_json={'cookies': []}, creator=self.user,
-        )
-        self.assertIsNone(_active_login_state(env))
-        UiAuthState.objects.create(
-            env_config=env, is_active=True, name='生效',
-            state_json={'cookies': [{'name': 'K', 'value': 'v'}]}, creator=self.user,
-        )
-        self.assertEqual(_active_login_state(env)['cookies'][0]['name'], 'K')
+
 
 
 class RecorderUploadApplyTests(TestCase):
@@ -913,11 +908,11 @@ class RecorderBrowserExecTests(TestCase):
         eff = [m for m in received if m.data.func_name == 'effective_runtime']
         self.assertEqual(len(eff), 1)
         self.assertIs(eff[0].data.func_args['headless'], False)
-        # 结果回传
+        # 结果回传（goto 导航步骤不计数：库里 1 条明细 + 1 条 goto 拼接 → 统计 1）
         msg = received[-1]
         self.assertEqual(msg.data.func_name, 'u_page_step_result')
         self.assertEqual(msg.data.func_args['status'], 'success')
-        self.assertEqual(msg.data.func_args['total_steps'], 2)
+        self.assertEqual(msg.data.func_args['total_steps'], 1)
         # 步骤状态已更新
         self.page_step.refresh_from_db()
         self.assertEqual(self.page_step.status, 2)
@@ -931,14 +926,80 @@ class RecorderBrowserExecTests(TestCase):
                 await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
         self._run(scenario)()
         # 用例结果广播（与执行器 handle_case_result 同路径）+ 执行记录落库
+        # （goto 导航步骤不计数：用例含 1 组 1 条明细 → 统计 1）
         case_broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
         self.assertEqual(len(case_broadcasts), 1)
         self.assertEqual(case_broadcasts[0]['data']['args']['status'], 'success')
-        self.assertEqual(case_broadcasts[0]['data']['args']['total_steps'], 2)
-        self.assertEqual(case_broadcasts[0]['data']['args']['passed_steps'], 2)
+        self.assertEqual(case_broadcasts[0]['data']['args']['total_steps'], 1)
+        self.assertEqual(case_broadcasts[0]['data']['args']['passed_steps'], 1)
         record = UiExecutionRecord.objects.get(test_case=self.case)
         self.assertEqual(record.status, 2)
         self.assertEqual(record.executor_name if hasattr(record, 'executor_name') else 'recorder-browser', 'recorder-browser')
+
+    def test_case_auth_upward_inherit_skips_context_switch(self):
+        """未绑定步骤"向上匹配"最近绑定的登录态：绑定 A/无/B/无 的用例只在
+        第 3 步切换一次上下文（注入 B），第 2/4 步沿用不清空（与执行器同语义）。"""
+        from ui_automation.models import UiCaseStepsDetailed, UiAuthState, UiTestCase
+        env_a = self.env
+        auth_a = UiAuthState.objects.create(
+            env_config=env_a, name='登录态A', state_json={'cookies': [{'name': 'A'}]}, creator=self.user,
+        )
+        auth_b = UiAuthState.objects.create(
+            env_config=env_a, name='登录态B', state_json={'cookies': [{'name': 'B'}]}, creator=self.user,
+        )
+        # 独立用例（不复用 setUp 的 self.case）：4 个页面步骤 1绑A、2未绑、3绑B、4未绑
+        case = UiTestCase.objects.create(
+            project=self.project, module=self.module, name='双账号用例', creator=self.user,
+        )
+        for i, auth in enumerate([auth_a, None, auth_b, None]):
+            ps = UiPageSteps.objects.create(
+                project=self.project, page=self.page, module=self.module,
+                name=f'向上匹配步骤{i + 1}', creator=self.user, auth_state=auth,
+            )
+            UiPageStepsDetailed.objects.create(
+                page_step=ps, step_type=0, ope_key='click', step_sort=0,
+            )
+            UiCaseStepsDetailed.objects.create(test_case=case, page_step=ps, case_sort=i)
+
+        consumer, session, received, layer = self._consumer_env()
+
+        async def scenario():
+            await consumer.handle_execute_test_case(
+                {'case_id': case.id, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'},
+                'alice',
+            )
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
+
+        self._run(scenario)()
+        switches = [(p.get('storage_state') or {}).get('cookies') for m, p in session.requests if m == 'switch_context']
+        # 仅第 3 步触发一次切换，且注入的是登录态 B
+        self.assertEqual(len(switches), 1)
+        self.assertEqual(switches[0], [{'name': 'B'}])
+        # 4 组全部执行成功
+        run_calls = [p for m, p in session.requests if m == 'run_steps']
+        self.assertEqual(len(run_calls), 4)
+        broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
+        self.assertEqual(broadcasts[0]['data']['args']['status'], 'success')
+
+    def test_case_all_unbound_never_switches_context(self):
+        """全部步骤未绑定登录态：无痕启动后全程不切换上下文。"""
+        from ui_automation.models import UiCaseStepsDetailed
+        consumer, session, received, layer = self._consumer_env()
+
+        async def scenario():
+            await consumer.handle_execute_test_case(
+                {'case_id': self.case.id, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'},
+                'alice',
+            )
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
+
+        self._run(scenario)()
+        self.assertEqual([m for m, _p in session.requests if m == 'switch_context'], [])
+        broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
+        self.assertEqual(broadcasts[0]['data']['args']['status'], 'success')
+
 
     def test_page_steps_recorder_error_reports_failed(self):
         consumer, session, received, _layer = self._consumer_env()
@@ -1057,3 +1118,115 @@ class RecorderBrowserExecTests(TestCase):
         steps = _serialize_page_step_for_recorder(self.page_step)
         upload_step = next(s for s in steps if s['ope_key'] == 'upload')
         self.assertNotIn('file_path', upload_step['ope_value'])
+
+
+class ApplyRecordedCaseAuthMarksTests(TestCase):
+    """用例录制：中途重新保存登录态后，该步骤及以下步骤绑定最新登录态。"""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        self.user = get_user_model().objects.create_superuser(username='rec-auth-marks', password='secret')
+        self.project = Project.objects.create(name='Auth Marks Project')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/p', creator=self.user,
+        )
+        self.env = UiEnvironmentConfig.objects.create(
+            project=self.project, name='Env', base_url='http://e.local', creator=self.user,
+        )
+        self.initial_auth = UiAuthState.objects.create(
+            env_config=self.env, name='初始登录态', state_json={'cookies': []}, creator=self.user,
+        )
+        self.mid_auth = UiAuthState.objects.create(
+            env_config=self.env, name='中途登录态', state_json={'cookies': []}, creator=self.user,
+        )
+        self.late_auth = UiAuthState.objects.create(
+            env_config=self.env, name='再次登录态', state_json={'cookies': []}, creator=self.user,
+        )
+
+    def _apply(self, marks):
+        from ui_automation.recorder_apply import apply_recorded_case
+        return apply_recorded_case(
+            page=self.page, user=self.user, actions=[],
+            groups=[
+                {'name': '步骤1', 'seqs': [1, 2]},
+                {'name': '步骤2', 'seqs': [3, 4]},
+                {'name': '步骤3', 'seqs': [5, 6]},
+            ],
+            case_name='用例',
+            project=self.project,
+            auth_state_id=self.initial_auth.id,
+            auth_marks=marks,
+        )
+
+    def test_inherit_initial_without_marks(self):
+        # 未中途保存：全部继承表单初始选择的登录态
+        stats = self._apply([])
+        from ui_automation.models import UiPageSteps
+        binds = list(UiPageSteps.objects.filter(
+            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
+        self.assertEqual(binds, [self.initial_auth.id] * 3)
+
+    def test_mid_save_rebinds_current_and_below(self):
+        # 步骤2 录制中途保存登录态（分界 after_seq=3）：步骤2 及以下绑定新登录态
+        stats = self._apply([{'after_seq': 3, 'auth_state_id': self.mid_auth.id}])
+        from ui_automation.models import UiPageSteps
+        binds = list(UiPageSteps.objects.filter(
+            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
+        self.assertEqual(binds, [self.initial_auth.id, self.mid_auth.id, self.mid_auth.id])
+
+    def test_latest_mark_wins_for_below_steps(self):
+        # 步骤2 保存一次、步骤3 又保存一次：步骤3 用最新保存的登录态
+        stats = self._apply([
+            {'after_seq': 3, 'auth_state_id': self.mid_auth.id},
+            {'after_seq': 5, 'auth_state_id': self.late_auth.id},
+        ])
+        from ui_automation.models import UiPageSteps
+        binds = list(UiPageSteps.objects.filter(
+            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
+        self.assertEqual(binds, [self.initial_auth.id, self.mid_auth.id, self.late_auth.id])
+
+    def test_initial_auth_deleted_mid_recording(self):
+        # 录制中表单选择的登录态被删除：落库不报错，该组步骤不绑定
+        self.initial_auth.delete()
+        stats = self._apply([])
+        from ui_automation.models import UiPageSteps
+        binds = list(UiPageSteps.objects.filter(
+            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
+        self.assertEqual(binds, [None, None, None])
+        self.assertEqual(stats['page_steps_created'], 3)
+
+
+class PageStepsListSerializerAuthStateTests(TestCase):
+    """列表序列化器携带 auth_state_id：详情抽屉按列表行数据直接回显绑定。"""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from projects.models import Project
+        self.user = get_user_model().objects.create_superuser(username='list-auth', password='secret')
+        self.project = Project.objects.create(name='List Auth Project')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.env = UiEnvironmentConfig.objects.create(
+            project=self.project, name='Env', base_url='http://e.local', creator=self.user,
+        )
+        self.auth = UiAuthState.objects.create(
+            env_config=self.env, name='录制登录态', state_json={'cookies': []}, creator=self.user,
+        )
+
+    def test_list_serializer_includes_auth_state_id(self):
+        from ui_automation.serializers import UiPageStepsListSerializer
+        bound = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module,
+            name='已绑定', creator=self.user, auth_state=self.auth,
+        )
+        unbound = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module,
+            name='未绑定', creator=self.user,
+        )
+        bound_data = UiPageStepsListSerializer(bound).data
+        unbound_data = UiPageStepsListSerializer(unbound).data
+        self.assertEqual(bound_data['auth_state_id'], self.auth.id)
+        self.assertIsNone(unbound_data['auth_state_id'])

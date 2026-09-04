@@ -178,12 +178,25 @@ def _coalesce_consecutive_fills(actions: list[dict[str, Any]]) -> list[dict[str,
 
 
 @transaction.atomic
+def _valid_auth_state_id(auth_state_id):
+    """校验登录态仍存在（录制过程中可能被删除）：无效返回 None，避免外键 500。"""
+    if not auth_state_id:
+        return None
+    from .models import UiAuthState
+    try:
+        exists = UiAuthState.objects.filter(id=int(auth_state_id)).exists()
+    except (TypeError, ValueError):
+        return None
+    return int(auth_state_id) if exists else None
+
+
 def apply_recorded_actions(
     *,
     page: UiPage,
     page_step: UiPageSteps,
     user,
     actions: list[dict[str, Any]],
+    auth_state_id: int | None = None,
 ) -> dict[str, Any]:
     """把录制动作解析入库：元素（复用/新建）+ 步骤明细（追加）。
 
@@ -191,6 +204,10 @@ def apply_recorded_actions(
         {'elements_created', 'elements_updated', 'steps_created', 'actions_count'}
     """
     actions = _coalesce_consecutive_fills(actions)
+    # 录制表单选择的登录态：绑定到本次录制的页面步骤（录制中可能已被删除，无效则不绑定）
+    valid_auth = _valid_auth_state_id(auth_state_id)
+    if valid_auth and page_step.auth_state_id != valid_auth:
+        UiPageSteps.objects.filter(id=page_step.id).update(auth_state_id=valid_auth)
     elements_created = 0
     elements_updated = 0
     steps_created = 0
@@ -347,6 +364,8 @@ def apply_recorded_case(
     project,
     module: Any = None,
     pre_page_step: UiPageSteps | None = None,
+    auth_state_id: int | None = None,
+    auth_marks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """用例录制落库：
 
@@ -366,10 +385,25 @@ def apply_recorded_case(
     total_elements_updated = 0
     total_actions = 0
 
+    def _resolve_group_auth(max_seq: int):
+        """本组及以下步骤的登录态绑定：取最后一条 分界序号 <= 组内最大序号 的保存记录，
+        无命中则用录制表单初始选择的登录态（向上继承）。"""
+        best = None
+        for mark in (auth_marks or []):
+            try:
+                after = int(mark.get('after_seq'))
+                aid = int(mark.get('auth_state_id'))
+            except (TypeError, ValueError):
+                continue
+            if aid and after <= max_seq and (best is None or after > best[0]):
+                best = (after, aid)
+        return _valid_auth_state_id(best[1] if best else auth_state_id)
+
     for idx, group in enumerate(groups):
         name = str(group.get('name') or '').strip() or f'录制步骤{idx + 1}'
         seqs = group.get('seqs') or []
-        group_actions = [actions_by_seq[int(s)] for s in seqs if int(s) in actions_by_seq]
+        int_seqs = [int(s) for s in seqs]
+        group_actions = [actions_by_seq[s] for s in int_seqs if s in actions_by_seq]
 
         page_step = UiPageSteps.objects.create(
             project=page.project,
@@ -377,6 +411,7 @@ def apply_recorded_case(
             module=page.module,
             name=name[:64],
             creator=user,
+            auth_state_id=_resolve_group_auth(max(int_seqs) if int_seqs else 0),
         )
         stats = apply_recorded_actions(
             page=page,
