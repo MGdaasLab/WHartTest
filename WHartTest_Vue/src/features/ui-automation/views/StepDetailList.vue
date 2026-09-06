@@ -1606,6 +1606,10 @@ const handleEffectiveRuntime = (data: any) => {
 watch(() => props.pageStep, async () => {
   fetchSteps()
   moduleOptions.value = []
+  // 组件被抽屉复用（v-if 只看 currentPageStep 非空，切换步骤不重建），
+  // 先清掉上一个步骤的登录态回显，防止串显（前一步绑 B、本步绑 A 时误显 B）
+  selectedAuthState.value = undefined
+  envAuthStates.value = []
   // 页面和元素按当前页面步骤默认值初始化；同时加载模块树确保初次渲染不会回显ID，支持跨模块/页面
   await Promise.all([
     fetchModules(true),
@@ -1613,6 +1617,8 @@ watch(() => props.pageStep, async () => {
     fetchActuators(),
     fetchEnvConfigs()
   ])
+  // 按当前步骤的绑定重拉登录态回显（fetchEnvAuthStates 读取最新的 props.pageStep.auth_state_id）
+  await fetchEnvAuthStates()
 }, { immediate: true })
 
 onMounted(() => {

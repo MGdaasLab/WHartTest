@@ -385,18 +385,20 @@ def apply_recorded_case(
     total_elements_updated = 0
     total_actions = 0
 
-    def _resolve_group_auth(max_seq: int):
-        """本组及以下步骤的登录态绑定：取最后一条 分界序号 <= 组内最大序号 的保存记录，
+    def _resolve_group_auth(group_index: int):
+        """本步骤组（按组顺序 group_index）的登录态绑定：取最后一条
+        组序号 >= 归属组序号 的保存记录（保存登录态时刻正在录的组及其后
+        都绑定该登录态，之前的组保持原绑定/初始登录态）；
         无命中则用录制表单初始选择的登录态（向上继承）。"""
         best = None
         for mark in (auth_marks or []):
             try:
-                after = int(mark.get('after_seq'))
+                gidx = int(mark.get('group_index'))
                 aid = int(mark.get('auth_state_id'))
             except (TypeError, ValueError):
                 continue
-            if aid and after <= max_seq and (best is None or after > best[0]):
-                best = (after, aid)
+            if aid and group_index >= gidx and (best is None or gidx >= best[0]):
+                best = (gidx, aid)
         return _valid_auth_state_id(best[1] if best else auth_state_id)
 
     for idx, group in enumerate(groups):
@@ -411,7 +413,7 @@ def apply_recorded_case(
             module=page.module,
             name=name[:64],
             creator=user,
-            auth_state_id=_resolve_group_auth(max(int_seqs) if int_seqs else 0),
+            auth_state_id=_resolve_group_auth(idx),
         )
         stats = apply_recorded_actions(
             page=page,

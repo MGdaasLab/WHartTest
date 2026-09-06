@@ -133,15 +133,16 @@ class UiWebSocketService {
   private handleMessage(rawData: string) {
     try {
       const data: SocketDataModel = JSON.parse(rawData)
-      console.log('[WebSocket] Received:', data)
-      
+      // 不整体 console.log：录制帧消息含满屏 base64，JSON.stringify + 打印
+      // 在动画页每秒几十帧时会产生可观的 GC/序列化开销，加剧画布卡顿
+
       // 根据 func_name 触发对应的处理函数
       const funcName = data.data?.func_name
       if (funcName) {
         const handlers = this.handlers.get(funcName) || []
         handlers.forEach(handler => handler(data))
       }
-      
+
       // 触发通用消息处理
       const allHandlers = this.handlers.get('*') || []
       allHandlers.forEach(handler => handler(data))

@@ -376,8 +376,8 @@ export interface RecorderCaseFinishResult {
 
 export interface RecorderFinishBody {
   groups?: Array<{ name: string; seqs: number[] }>
-  /** 录制过程中重新保存登录态的分界（after_seq 之后的组改用新登录态） */
-  auth_marks?: Array<{ after_seq: number; auth_state_id: number }>
+  /** 录制过程中重新保存登录态的归属（group_index 及其后的组改用新登录态） */
+  auth_marks?: Array<{ group_index: number; auth_state_id: number }>
 }
 
 export interface RecorderSaveLoginStateResult {

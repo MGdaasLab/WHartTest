@@ -1900,8 +1900,9 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             if meta.case_module_id:
                 case_module = UiModule.objects.filter(id=meta.case_module_id).first()
 
-            # 中途保存登录态的分界（前端在保存成功时记录当前动作序号）：
-            # 组内最大动作序号 >= 分界 after_seq 的步骤（组）改用最新保存的登录态
+            # 中途保存登录态的归属（前端在保存成功时记录当时的活动步骤组序号）：
+            # 组顺序 >= 归属组序号的步骤（组）——含保存时刻正在录的组及其后——
+            # 改用最新保存的登录态；更早的组保持原绑定
             auth_marks = request.data.get('auth_marks') or []
             case_stats = apply_recorded_case(
                 page=page,

@@ -11,68 +11,93 @@
     <!-- 阶段1：录制参数表单 -->
     <div v-if="phase === 'setup'" class="recorder-setup">
       <a-form :model="form" layout="vertical">
-        <a-form-item :label="text.caseName" :required="true">
-          <a-input
-            v-model="form.case_name"
-            :placeholder="text.enterCaseName"
-            :max-length="255"
-            allow-clear
-          />
-        </a-form-item>
-        <a-form-item :label="text.page" :required="true">
-          <div ref="stepSelectRowRef" class="recorder-select-with-add">
-            <a-select
-              v-model="form.page_id"
-              :options="pageOptions"
-              :placeholder="text.selectPage"
-              allow-search
-              allow-clear
-              :loading="loadingPages"
-              class="flex-1"
-            />
-            <a-button type="outline" size="small" :disabled="starting" :title="text.addPage" @click="openAddPage">
-              <template #icon><icon-plus /></template>
-            </a-button>
-          </div>
-        </a-form-item>
-        <a-form-item class="recorder-env-item" :label="text.environment" :required="true">
-          <!-- 与页面步骤下拉同结构（flex-1 + 图标按钮等宽占位）：下拉固定同宽，
-               超长内容由选择框原生省略显示 -->
-          <div ref="envSelectRowRef" class="recorder-select-with-add recorder-env-select-row">
-            <a-select
-              v-model="form.env_config_id"
-              :options="envOptions"
-              :placeholder="text.selectEnvironment"
-              allow-search
-              allow-clear
-              :loading="loadingEnvs"
-              class="env-select"
-              style="width: 205px !important"
-            />
-            <span class="recorder-select-spacer" aria-hidden="true" />
-          </div>
-          <a-select
-            v-model="form.auth_state_id"
-            :options="authStateOptions"
-            :placeholder="text.authStatePlaceholder"
-            allow-search
-            allow-clear
-            size="small"
-            style="width: 100%; margin-top: 4px"
-          />
-          <div class="recorder-form-hint">{{ text.envHint }}</div>
-        </a-form-item>
-        <a-form-item :label="text.preStep">
-          <a-select
-            v-model="form.pre_page_step_id"
-            :options="preStepOptions"
-            :placeholder="text.preStepPlaceholder"
-            allow-search
-            allow-clear
-            :loading="loadingPreSteps"
-          />
-          <div class="recorder-form-hint">{{ text.preStepHint }}</div>
-        </a-form-item>
+        <!-- 用例名称 + 页面 一行两列；各行尾部统一 28px 槽位（按钮/占位/图标），
+             保证所有输入框、选择框宽度一致（等于列宽 - 槽位 - 间距） -->
+        <div class="recorder-form-row">
+          <a-form-item :label="text.caseName" :required="true" class="recorder-form-col">
+            <div class="recorder-select-with-add">
+              <a-input
+                v-model="form.case_name"
+                :placeholder="text.enterCaseName"
+                :max-length="255"
+                allow-clear
+                class="flex-1"
+              />
+              <span class="recorder-select-spacer" aria-hidden="true" />
+            </div>
+          </a-form-item>
+          <a-form-item :label="text.page" :required="true" class="recorder-form-col">
+            <div class="recorder-select-with-add">
+              <a-select
+                v-model="form.page_id"
+                :options="pageOptions"
+                :placeholder="text.selectPage"
+                allow-search
+                allow-clear
+                :loading="loadingPages"
+                class="flex-1"
+              />
+              <a-button type="outline" size="small" :disabled="starting" :title="text.addPage" @click="openAddPage">
+                <template #icon><icon-plus /></template>
+              </a-button>
+            </div>
+          </a-form-item>
+        </div>
+        <!-- 环境 + 登录态 一行两列 -->
+        <div class="recorder-form-row">
+          <a-form-item :label="text.environment" :required="true" class="recorder-form-col">
+            <div class="recorder-select-with-add">
+              <a-select
+                v-model="form.env_config_id"
+                :options="envOptions"
+                :placeholder="text.selectEnvironment"
+                allow-search
+                allow-clear
+                :loading="loadingEnvs"
+                class="flex-1"
+              />
+              <span class="recorder-hint-slot">
+                <a-tooltip :content="text.envHint" position="top">
+                  <span class="recorder-hint-icon"><icon-question-circle /></span>
+                </a-tooltip>
+              </span>
+            </div>
+          </a-form-item>
+          <a-form-item :label="text.authState" class="recorder-form-col">
+            <div class="recorder-select-with-add">
+              <a-select
+                v-model="form.auth_state_id"
+                :options="authStateOptions"
+                :placeholder="text.authStatePlaceholder"
+                allow-search
+                allow-clear
+                class="flex-1"
+              />
+              <span class="recorder-select-spacer" aria-hidden="true" />
+            </div>
+          </a-form-item>
+        </div>
+        <!-- 前置步骤：单列行按半列宽限制，控件宽度与其余行一致 -->
+        <div class="recorder-form-row">
+          <a-form-item :label="text.preStep" class="recorder-form-col">
+            <div class="recorder-select-with-add">
+              <a-select
+                v-model="form.pre_page_step_id"
+                :options="preStepOptions"
+                :placeholder="text.preStepPlaceholder"
+                allow-search
+                allow-clear
+                :loading="loadingPreSteps"
+                class="flex-1"
+              />
+              <span class="recorder-hint-slot">
+                <a-tooltip :content="text.preStepHint" position="top">
+                  <span class="recorder-hint-icon"><icon-question-circle /></span>
+                </a-tooltip>
+              </span>
+            </div>
+          </a-form-item>
+        </div>
       </a-form>
       <div class="recorder-setup-actions">
         <a-button :disabled="starting" @click="handleCancel">{{ text.cancel }}</a-button>
@@ -109,87 +134,97 @@
 
       <div class="recorder-side">
         <div class="recorder-toolbar">
-          <a-select
-            v-model="assertMode"
-            size="small"
-            style="width: 132px"
-            @change="onAssertModeChange"
-          >
-            <a-option-group :label="text.assertGroupState">
-              <a-option v-for="o in assertStateOptions" :key="o.value" :value="o.value">{{ o.label }}</a-option>
-            </a-option-group>
-            <a-option-group :label="text.assertGroupContent">
-              <a-option v-for="o in assertContentOptions" :key="o.value" :value="o.value">{{ o.label }}</a-option>
-            </a-option-group>
-            <a-option-group :label="text.assertGroupPage">
-              <a-option v-for="o in assertPageOptions" :key="o.value" :value="o.value">{{ o.label }}</a-option>
-            </a-option-group>
-          </a-select>
-          <a-input
-            v-if="needAssertValue"
-            v-model="assertValue"
-            :placeholder="assertValuePlaceholder"
-            size="small"
-            style="width: 130px"
-            allow-clear
-          />
-          <a-button
-            type="primary"
-            :status="assertActive ? 'warning' : undefined"
-            size="small"
-            :disabled="!recording"
-            @click="handleAssert"
-          >
-            {{ assertActive ? text.assertPickElement : text.assert }}
-          </a-button>
-          <a-dropdown :disabled="!recording" @select="handleAddWait">
-            <a-button size="small" :disabled="!recording">
-              <template #icon><icon-clock-circle /></template>
-              {{ text.wait }}
+          <!-- 第一行：断言（模式下拉 + 期望值输入 + 断言按钮） -->
+          <div class="recorder-toolbar-row">
+            <a-select
+              v-model="assertMode"
+              size="small"
+              style="width: 132px"
+              @change="onAssertModeChange"
+            >
+              <a-option-group :label="text.assertGroupState">
+                <a-option v-for="o in assertStateOptions" :key="o.value" :value="o.value">{{ o.label }}</a-option>
+              </a-option-group>
+              <a-option-group :label="text.assertGroupContent">
+                <a-option v-for="o in assertContentOptions" :key="o.value" :value="o.value">{{ o.label }}</a-option>
+              </a-option-group>
+              <a-option-group :label="text.assertGroupPage">
+                <a-option v-for="o in assertPageOptions" :key="o.value" :value="o.value">{{ o.label }}</a-option>
+              </a-option-group>
+            </a-select>
+            <a-input
+              v-if="needAssertValue"
+              v-model="assertValue"
+              :placeholder="assertValuePlaceholder"
+              size="small"
+              style="width: 130px"
+              allow-clear
+            />
+            <a-button
+              class="recorder-assert-btn"
+              type="primary"
+              :status="assertActive ? 'warning' : undefined"
+              size="small"
+              :disabled="!recording"
+              :title="assertActive ? text.assertPickElement : undefined"
+              @click="handleAssert"
+            >
+              <!-- Arco 按钮文字是裸文本节点，必须自包 span 才能做省略号截断 -->
+              <span class="recorder-btn-label">{{ assertActive ? text.assertPickElement : text.assert }}</span>
             </a-button>
-            <template #content>
-              <a-doption v-for="sec in waitOptions" :key="sec" :value="sec">{{ text.waitSeconds(sec) }}</a-doption>
-            </template>
-          </a-dropdown>
-          <a-button
-            type="outline"
-            size="small"
-            :loading="savingAuth"
-            :disabled="!recording"
-            @click="handleSaveLoginState"
-          >
-            <template #icon><icon-safe /></template>
-            {{ text.saveLoginState }}
-          </a-button>
-          <a-button
-            type="outline"
-            size="small"
-            :loading="switchingAccount"
-            :disabled="!recording"
-            @click="handleSwitchAccount"
-          >
-            <template #icon><icon-user /></template>
-            {{ text.switchAccount }}
-          </a-button>
-          <a-button
-            :status="uploadActive ? 'warning' : undefined"
-            size="small"
-            :disabled="!recording"
-            @click="handleUploadLocate"
-          >
-            <template #icon><icon-upload /></template>
-            {{ uploadActive ? text.uploadPick : text.upload }}
-          </a-button>
-          <a-button
-            type="outline"
-            status="danger"
-            size="small"
-            :loading="finishing"
-            :disabled="!recording"
-            @click="handleFinish"
-          >
-            {{ text.finishRecord }}
-          </a-button>
+          </div>
+          <!-- 第二行：等待 + 更多操作（上传文件/清空上下文收纳于此） -->
+          <div class="recorder-toolbar-row">
+            <a-dropdown :disabled="!recording" @select="handleAddWait">
+              <a-button size="small" :disabled="!recording">
+                <template #icon><icon-clock-circle /></template>
+                {{ text.wait }}
+              </a-button>
+              <template #content>
+                <a-doption v-for="sec in waitOptions" :key="sec" :value="sec">{{ text.waitSeconds(sec) }}</a-doption>
+              </template>
+            </a-dropdown>
+            <a-dropdown :disabled="!recording" @select="onMoreActionSelect">
+              <a-button size="small" :disabled="!recording">
+                {{ text.moreActions }}
+                <template #icon><icon-down /></template>
+              </a-button>
+              <template #content>
+                <a-doption value="upload" :disabled="!recording">
+                  <template #icon><icon-upload /></template>
+                  {{ text.upload }}
+                </a-doption>
+                <a-doption value="switchAccount" :disabled="!recording">
+                  <template #icon><icon-user /></template>
+                  {{ text.switchAccount }}
+                </a-doption>
+              </template>
+            </a-dropdown>
+          </div>
+          <!-- 第三行：保存登录态 + 结束录制（两按钮等宽对齐） -->
+          <div class="recorder-toolbar-row">
+            <a-button
+              type="outline"
+              size="small"
+              :loading="savingAuth"
+              :disabled="!recording"
+              @click="handleSaveLoginState"
+            >
+              <template #icon><icon-safe /></template>
+              {{ text.saveLoginState }}
+            </a-button>
+            <a-button
+              class="recorder-finish-btn"
+              type="outline"
+              status="danger"
+              size="small"
+              :loading="finishing"
+              :disabled="!recording"
+              @click="handleFinish"
+            >
+              {{ text.finishRecord }}
+            </a-button>
+          </div>
         </div>
         <div class="recorder-hint">{{ text.recordHint }}</div>
 
@@ -200,7 +235,9 @@
               <template #icon><icon-plus /></template>
               {{ text.addStep }}
             </a-button>
-            <span class="recorder-type-hint">{{ text.dragHint }}</span>
+            <a-tooltip :content="text.dragHint" position="top">
+              <span class="recorder-hint-icon recorder-hint-icon-small"><icon-question-circle /></span>
+            </a-tooltip>
           </div>
           <!-- 步骤分组列表：点击切换录制归属，拖动调整顺序（顺序即用例步骤顺序） -->
           <draggable
@@ -378,7 +415,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Message, Modal } from '@arco-design/web-vue'
-import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle, IconSafe, IconUser } from '@arco-design/web-vue/es/icon'
+import { IconDelete, IconPlus, IconDragDotVertical, IconClockCircle, IconSafe, IconUser, IconQuestionCircle, IconDown } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useProjectStore } from '@/store/projectStore'
@@ -414,6 +451,7 @@ const text = computed(() => (
         environment: 'Environment',
         selectEnvironment: 'Select an environment',
         envHint: 'Recording navigates to the environment base URL (falls back to the page URL).',
+        authState: 'Login state',
         authStatePlaceholder: 'Select login state',
         preStep: 'Pre-step (optional)',
         preStepPlaceholder: 'Select a page step to auto-run before recording',
@@ -425,9 +463,10 @@ const text = computed(() => (
         assert: 'Assert',
         finishRecord: 'Finish',
         saveLoginState: 'Save Login State',
-        switchAccount: 'Switch Account (keep previous login states)',
+        switchAccount: 'Clear Context',
         switchAccountFailed: 'Switch account failed',
         switchAccountDone: 'Switched to a clean session. Please log in with the new account, then save its login state.',
+        moreActions: 'More Actions',
         authNameLabel: 'Login state name',
         authNamePlaceholder: 'Enter a name (leave empty to auto-generate)',
                 saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
@@ -511,6 +550,7 @@ const text = computed(() => (
         environment: '环境',
         selectEnvironment: '请选择环境',
         envHint: '录制时先导航到环境的基础 URL（环境未配置时使用页面 URL）。',
+        authState: '登录态',
         authStatePlaceholder: '请选择登录态',
         preStep: '前置步骤（可选）',
         preStepPlaceholder: '选择录制前自动执行的页面步骤',
@@ -522,9 +562,10 @@ const text = computed(() => (
         assert: '断言',
         finishRecord: '结束录制',
         saveLoginState: '保存登录态',
-        switchAccount: '切换账号（已存登录态不受影响）',
+        switchAccount: '清空上下文',
         switchAccountFailed: '切换账号失败',
         switchAccountDone: '已切换到全新会话，请登录下一个账号后保存登录态。',
+        moreActions: '更多操作',
         authNameLabel: '登录态名称',
         authNamePlaceholder: '填写登录态名称（留空自动生成）',
                 saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
@@ -609,39 +650,8 @@ const recording = ref(false)
 const finishing = ref(false)
 const savingAuth = ref(false)
 
-// 环境下拉与页面对齐：实测页面选择框宽度并固定应用到环境选择框
-const stepSelectRowRef = ref<HTMLElement | null>(null)
-const envSelectRowRef = ref<HTMLElement | null>(null)
-let syncTimer: number | null = null
-const syncEnvSelectWidth = (): number => {
-  const stepSel = stepSelectRowRef.value?.querySelector<HTMLElement>('.arco-select')
-  const envSel = envSelectRowRef.value?.querySelector<HTMLElement>('.arco-select')
-  if (!stepSel || !envSel) return 0
-  const w = stepSel.getBoundingClientRect().width
-  if (w > 0) {
-    envSel.style.width = `${w}px`
-  }
-  return w
-}
-/** 轮询等待弹窗内容完成布局（弹窗异步可见，过早测量会得到 0 把宽度写死） */
-const startEnvWidthSync = () => {
-  let tries = 0
-  if (syncTimer !== null) window.clearInterval(syncTimer)
-  syncTimer = window.setInterval(() => {
-    const w = syncEnvSelectWidth()
-    tries += 1
-    if (w > 0 || tries > 50) {
-      window.clearInterval(syncTimer!)
-      syncTimer = null
-    }
-  }, 100)
-}
-onUnmounted(() => {
-  if (syncTimer !== null) {
-    window.clearInterval(syncTimer)
-    syncTimer = null
-  }
-})
+// 环境下拉与页面下拉同用 flex-1 弹性布局（.recorder-form-col 锁宽），
+// 宽度天然一致且不随选项内容变化，无需 JS 实测同步
 
 const form = reactive({
   case_name: '',
@@ -900,6 +910,7 @@ function resetState() {
   activeGroupId.value = null
   assertActive.value = false
   assertValue.value = ''
+  authMarks.value = []
 }
 
 // ------------------------------------------------------------------
@@ -973,7 +984,7 @@ async function handleFinish() {
       sessionId.value,
       {
         groups: recordGroups.value.map((g) => ({ name: g.name, seqs: g.seqs.slice() })),
-        auth_marks: authMarks.value.map((m) => ({ after_seq: m.afterSeq, auth_state_id: m.authStateId })),
+        auth_marks: authMarks.value.map((m) => ({ group_index: m.groupIndex, auth_state_id: m.authStateId })),
       },
     ))
     if (!result) throw new Error(text.value.finishFailed)
@@ -995,9 +1006,9 @@ async function handleFinish() {
 const authNameVisible = ref(false)
 const authName = ref('')
 
-// 录制过程中"重新保存登录态"的分界：保存成功时记录当前动作序号，
-// 其后录制的步骤（组）继承新保存的登录态，直至再次保存
-const authMarks = ref<Array<{ afterSeq: number; authStateId: number }>>([])
+// 录制过程中"重新保存登录态"的归属：保存成功时记录当时的活动步骤组序号
+// （按结束时的组顺序），该组及其后的组绑定新登录态，之前的组保持原绑定
+const authMarks = ref<Array<{ groupIndex: number; authStateId: number }>>([])
 
 const switchingAccount = ref(false)
 
@@ -1032,9 +1043,14 @@ async function submitSaveLoginState() {
       await recorderApi.saveLoginState(sessionId.value, name ? { name } : undefined),
     )
     if (!result) throw new Error(text.value.saveLoginStateFailed)
-    // 本步骤（当前已录制的最后一个动作）及以下步骤绑定新保存的登录态
-    const lastSeq = allActions.value.reduce((m, a) => Math.max(m, Number(a?.seq) || 0), 0)
-    authMarks.value.push({ afterSeq: lastSeq, authStateId: result.auth_state_id })
+    // 归属组序号 = 保存时刻的活动步骤组在结束分组列表中的位置。语义：登录流程
+    // 动作隶属于保存时刻正在录制的组（如"进入登录页+输入账密"组），该组及其后
+    // 的组都绑定新登录态；更早的组（如 A 登录后录完的步骤 1、2）保持原绑定。
+    // 按 uid 找索引而非直接存 index：录制中可能拖动/删除分组，结束时以最终顺序为准。
+    const activeIdx = recordGroups.value.findIndex((g) => g.uid === activeGroupId.value)
+    if (activeIdx >= 0) {
+      authMarks.value.push({ groupIndex: activeIdx, authStateId: result.auth_state_id })
+    }
     authNameVisible.value = false
     Message.success(
       text.value.saveLoginStateSuccess
@@ -1105,16 +1121,39 @@ function submitAddGroup() {
 // 画布：帧绘制 + 输入转发（与录制步骤一致）
 // ------------------------------------------------------------------
 
+// 帧绘制去抖：动画页帧到达速率可能高于绘制速率，逐帧 new Image 解码重绘
+// 会积压回调白耗性能。只保留最新一帧，绘制中到达的帧在完成后补画一次。
+let pendingFrameSrc: string | null = null
+let drawingFrame = false
+
 function drawFrame(imageSrc: string) {
+  if (drawingFrame) {
+    pendingFrameSrc = imageSrc
+    return
+  }
+  drawingFrame = true
   const canvas = canvasRef.value
-  if (!canvas) return
+  if (!canvas) {
+    drawingFrame = false
+    return
+  }
   const img = new Image()
   img.onload = () => {
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    canvas.width = viewport.width
-    canvas.height = viewport.height
-    ctx.drawImage(img, 0, 0, viewport.width, viewport.height)
+    try {
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        canvas.width = viewport.width
+        canvas.height = viewport.height
+        ctx.drawImage(img, 0, 0, viewport.width, viewport.height)
+      }
+    } finally {
+      drawingFrame = false
+      if (pendingFrameSrc) {
+        const next = pendingFrameSrc
+        pendingFrameSrc = null
+        drawFrame(next)
+      }
+    }
   }
   img.src = imageSrc
 }
@@ -1230,6 +1269,17 @@ function handleAddWait(seconds: number) {
   if (!recording.value) return
   if (!uiWebSocket.recorderAddWait(seconds)) {
     Message.error(text.value.finishFailed)
+  }
+}
+
+/** 「更多操作」下拉分发：upload 进入上传定位模式，switchAccount 清空上下文 */
+function onMoreActionSelect(value: string | number | Record<string, any> | undefined) {
+  if (value === 'upload') {
+    handleUploadLocate()
+    return
+  }
+  if (value === 'switchAccount') {
+    handleSwitchAccount()
   }
 }
 
@@ -1470,7 +1520,6 @@ const fetchAuthStateOptions = async (envId: number | undefined) => {
 
 onMounted(() => {
   fetchAuthStateOptions(form.env_config_id)
-  startEnvWidthSync()
 
   offFrame = uiWebSocket.on(UiSocketEnum.RECORDER_FRAME, onRecorderFrame as any)
   offAction = uiWebSocket.on(UiSocketEnum.RECORDER_ACTION, onRecorderAction as any)
@@ -1486,25 +1535,40 @@ onUnmounted(() => {
 </script>
 
 <style lang="postcss" scoped>
-.recorder-select-spacer {
-  width: 24px;
-  flex: 0 0 auto;
+/* 表单一行两列（用例名称+页面 / 环境+登录态），与录制步骤表单布局一致 */
+.recorder-form-row {
+  display: flex;
+  gap: 12px;
 }
 
-.recorder-env-item :deep(.arco-form-item-label-col) {
-  /* 环境标题与选择框间距收紧（纵向表单默认 8px）：
-     !important 压过组件默认规则，与"页面/页面步骤"表单项视觉一致 */
-  margin-bottom: 2px !important;
-}
-
-.recorder-env-select-row .env-select {
-  /* 固定宽度：不随选项内容变化，超长以省略号截断 */
-  width: 205px;
-  flex: none;
+.recorder-form-col {
+  flex: 1 1 0;
   min-width: 0;
 }
 
-.recorder-env-select-row :deep(.arco-select-view-value) {
+/* 单列行（前置步骤独占一行）的列同样限制为半行宽：
+   flex:1 会占满整行，封顶后控件宽度与其余行的两列布局对齐 */
+.recorder-form-row > .recorder-form-col:only-child {
+  max-width: calc(50% - 6px);
+}
+
+/* 列内选择框锁定列宽：flex 子项默认 min-width:auto 会被超长选项撑开，
+   归零后宽度恒等于列宽，超长内容以省略号截断 */
+.recorder-form-col :deep(.arco-select) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 选择框行容器本身是 form-item-content（flex）的子项：min-width 默认 auto
+   会被超长选项文本撑开（选择框的 max-width:100% 随之失效），归零后行宽锁定列宽；
+   flex:1 保证短内容/空值时行也撑满列宽，宽度不随选中内容变化 */
+.recorder-form-col :deep(.recorder-select-with-add) {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.recorder-form-col :deep(.arco-select-view-value) {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -1514,6 +1578,26 @@ onUnmounted(() => {
   display: flex;
   gap: 8px;
   align-items: center;
+  /* 行容器是 form-item-content（flex）的子项：min-width 默认 auto 会被超长
+     选项文本撑开（内部固定宽随之失效），归零后行宽锁定列宽；flex:1 保证
+     短内容/空值时行也撑满列宽，宽度不随选中内容变化 */
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 行尾槽位（占位/问号图标）与 small 图标按钮（28px）等宽：
+   无按钮的行用它补齐，保证所有输入框/选择框宽度一致 */
+.recorder-select-spacer,
+.recorder-hint-slot {
+  width: 28px;
+  flex: 0 0 auto;
+}
+
+.recorder-hint-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .upload-source-tabs {
@@ -1541,6 +1625,27 @@ onUnmounted(() => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--color-text-3);
+}
+
+/* 表单提示问号图标：圆形边框内一个问号，悬停弹出气泡说明 */
+.recorder-hint-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-2);
+  color: var(--color-text-3);
+  font-size: 12px;
+  cursor: help;
+  flex: 0 0 auto;
+  transition: color 0.2s, border-color 0.2s;
+}
+
+.recorder-hint-icon:hover {
+  color: rgb(var(--primary-6));
+  border-color: rgb(var(--primary-6));
 }
 
 .recorder-live {
@@ -1602,9 +1707,39 @@ onUnmounted(() => {
 
 .recorder-toolbar {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 工具栏行：断言行 / 保存登录态+更多操作行 / 结束录制行 */
+.recorder-toolbar-row {
+  display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+/* 断言按钮固定宽度：激活后提示文案较长，不固定会被撑宽引起同行控件跳动 */
+.recorder-assert-btn {
+  width: 88px;
+  flex: 0 0 auto;
+}
+
+/* 按钮内动态文字截断：Arco 按钮文字是裸文本节点（无内容包裹元素），
+   截断样式只能作用于模板里自包的 .recorder-btn-label span */
+.recorder-btn-label {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* 结束录制按钮与保存登录态按钮同行等宽：flex:1 平分剩余空间，两按钮等宽对齐 */
+.recorder-finish-btn {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .recorder-hint {
@@ -1666,6 +1801,13 @@ onUnmounted(() => {
   color: var(--color-text-3);
   flex: 1;
   min-width: 0;
+}
+
+/* 小号问号提示图标（添加步骤旁）：与录制表单问号同款样式，尺寸略小适配按钮行 */
+.recorder-hint-icon-small {
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
 }
 
 .recorder-case-groups-list {

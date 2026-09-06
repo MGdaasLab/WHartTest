@@ -520,8 +520,16 @@ const deletePageStep = async (record: UiPageSteps) => {
   }
 }
 
-const viewStepDetails = (record: UiPageSteps) => {
-  currentPageStep.value = record
+const viewStepDetails = async (record: UiPageSteps) => {
+  // 现查最新数据再进抽屉：列表行可能已陈旧（如录制用例中途保存登录态
+  // 会在落库时改写各步骤的 auth_state_id，列表若未刷新会回显旧绑定）
+  try {
+    const res = await pageStepsApi.get(record.id)
+    const detail = extractResponseData<UiPageSteps>(res)
+    currentPageStep.value = detail || record
+  } catch {
+    currentPageStep.value = record
+  }
   detailDrawerVisible.value = true
 }
 

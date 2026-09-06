@@ -717,9 +717,17 @@ const state = {
   context: null,
   page: null,
   cdpSession: null,
-  frameMode: 'screencast',   // screencast（60fps 推流）| screenshot（截图回退）
+  frameMode: 'screencast',   // screencast（推流）| screenshot（截图回退）
   viewport: { width: 1400, height: 900 },
-  frameRate: Math.max(1, Math.min(60, parseInt(process.env.RECORDER_FRAME_RATE || '60', 10) || 60)),
+  // 目标帧率默认 25fps：录制画布只需"看清楚"，动画页 60fps 会产生巨量
+  // JPEG 编码+WS 传输压力，反压输入转发造成操作迟缓。可用 RECORDER_FRAME_RATE 调整。
+  frameRate: Math.max(1, Math.min(60, parseInt(process.env.RECORDER_FRAME_RATE || '25', 10) || 25)),
+  // 推流缩放比例（0.1~1，默认 1=原生分辨率）。<1 时 CDP 按比例缩小推流帧，
+  // 省带宽；浏览器页面本身仍按 viewport 原生分辨率渲染，录制动作定位不受影响。
+  frameScale: (() => {
+    const s = parseFloat(process.env.RECORDER_FRAME_SCALE || '1');
+    return Number.isFinite(s) ? Math.min(1, Math.max(0.1, s)) : 1;
+  })(),
   running: false,
   preRunning: false,      // 前置步骤执行中（不记录动作/导航）
   frameTimer: null,
@@ -857,9 +865,9 @@ async function startFrameStream(page) {
     });
     await cdpSession.send('Page.startScreencast', {
       format: 'jpeg',
-      quality: 65,
-      maxWidth: state.viewport.width,
-      maxHeight: state.viewport.height,
+      quality: parseInt(process.env.RECORDER_JPEG_QUALITY || '50', 10) || 50,
+      maxWidth: Math.round(state.viewport.width * state.frameScale),
+      maxHeight: Math.round(state.viewport.height * state.frameScale),
       everyNthFrame: 1,
       maxFrameRate: state.frameRate,
     });
@@ -895,7 +903,10 @@ function startFrameLoop(intervalMs = 250, minGapMs = 0) {
     if (minGapMs > 0 && gap < minGapMs) return;
     state.capturing = true;
     try {
-      const shot = await state.page.screenshot({ type: 'jpeg', quality: 60 });
+      const shot = await state.page.screenshot({
+        type: 'jpeg',
+        quality: parseInt(process.env.RECORDER_JPEG_QUALITY || '50', 10) || 50,
+      });
       pushEvent('frame', {
         mime: 'image/jpeg',
         data: shot.toString('base64'),
@@ -1141,53 +1152,105 @@ async function cmdStart(params) {
   return { ok: true, state: { viewport, url: state.startedUrl, frame_mode: state.frameMode, frame_rate: state.frameRate } };
 }
 
+// 输入事件串行执行队列：输入立即 ack，后台按序回放。
+// 动画复杂的页面单次 mouse.move 可能阻塞数百毫秒，若同步 await 会拖慢
+// 事件接收节奏（前端→Node 串行排队），表现为鼠标/点击/输入全面迟缓。
+// 排队深度设上限：积压超过阈值时丢弃最老的移动事件（保点击/键入优先）。
+const inputQueue = [];
+const INPUT_QUEUE_MAX = 24;
+let inputDraining = false;
+
+function enqueueInput(params) {
+  // 移动事件可合并：队列里已有未执行的 move 就地覆盖坐标（永不增加延迟）
+  if (params.type === 'mouse' && params.event === 'move') {
+    const pendingMove = inputQueue.findLast
+      ? inputQueue.findLast((p) => p.type === 'mouse' && p.event === 'move')
+      : null;
+    if (pendingMove) {
+      pendingMove.x = Number(params.x) || 0;
+      pendingMove.y = Number(params.y) || 0;
+      return { ok: true };
+    }
+    // 满载时优先丢弃队首的老 move，给新事件腾位
+    if (inputQueue.length >= INPUT_QUEUE_MAX) {
+      const oldMoveIdx = inputQueue.findIndex((p) => p.type === 'mouse' && p.event === 'move');
+      if (oldMoveIdx >= 0) inputQueue.splice(oldMoveIdx, 1);
+      else inputQueue.shift();
+    }
+    inputQueue.push(params);
+    drainInputQueue();
+    return { ok: true };
+  }
+  if (inputQueue.length >= INPUT_QUEUE_MAX) inputQueue.shift();
+  inputQueue.push(params);
+  drainInputQueue();
+  return { ok: true };
+}
+
+async function drainInputQueue() {
+  if (inputDraining || !state.page) return;
+  inputDraining = true;
+  try {
+    while (inputQueue.length > 0) {
+      const params = inputQueue.shift();
+      try {
+        await applyInput(params);
+      } catch (e) {
+        serverLog('输入回放失败:', e && e.message ? e.message : String(e));
+      }
+    }
+  } finally {
+    inputDraining = false;
+  }
+}
+
+async function applyInput(params) {
+  const type = params.type;
+  if (type === 'mouse') {
+    const x = Number(params.x) || 0;
+    const y = Number(params.y) || 0;
+    const button = params.button || 'left';
+    if (params.event === 'move') {
+      await state.page.mouse.move(x, y);
+    } else if (params.event === 'down') {
+      await state.page.mouse.down({ button, clickCount: Number(params.clickCount) || 1 });
+    } else if (params.event === 'up') {
+      await state.page.mouse.up({ button, clickCount: Number(params.clickCount) || 1 });
+    }
+  } else if (type === 'wheel') {
+    await state.page.mouse.wheel(Number(params.deltaX) || 0, Number(params.deltaY) || 0);
+  } else if (type === 'key') {
+    const key = String(params.key || '');
+    // 输入法组合键（Process/Dead/Unidentified）不产生可输入字符，直接忽略
+    if (key === 'Process' || key === 'Unidentified' || key === 'Dead') {
+      return;
+    }
+    if (params.event === 'down') {
+      if (key.length === 1 && key >= ' ' && key !== '\u0000') {
+        await state.page.keyboard.type(key);
+      } else if (key) {
+        await state.page.keyboard.down(key);
+      }
+    } else if (params.event === 'up') {
+      if (key && key.length > 1) {
+        await state.page.keyboard.up(key);
+      }
+    }
+  } else if (type === 'text') {
+    // 输入法组合完成后的最终文本（compositionend.data），直接插入聚焦元素
+    const text = String(params.text || '');
+    if (text) {
+      await state.page.keyboard.insertText(text);
+    }
+  }
+}
+
 async function cmdInput(params) {
   if (!state.page || !state.running) {
     return { ok: false, error: '录制会话未启动' };
   }
-  const type = params.type;
-  try {
-    if (type === 'mouse') {
-      const x = Number(params.x) || 0;
-      const y = Number(params.y) || 0;
-      const button = params.button || 'left';
-      if (params.event === 'move') {
-        await state.page.mouse.move(x, y);
-      } else if (params.event === 'down') {
-        await state.page.mouse.down({ button, clickCount: Number(params.clickCount) || 1 });
-      } else if (params.event === 'up') {
-        await state.page.mouse.up({ button, clickCount: Number(params.clickCount) || 1 });
-      }
-    } else if (type === 'wheel') {
-      await state.page.mouse.wheel(Number(params.deltaX) || 0, Number(params.deltaY) || 0);
-    } else if (type === 'key') {
-      const key = String(params.key || '');
-      // 输入法组合键（Process/Dead/Unidentified）不产生可输入字符，直接忽略
-      if (key === 'Process' || key === 'Unidentified' || key === 'Dead') {
-        return { ok: true };
-      }
-      if (params.event === 'down') {
-        if (key.length === 1 && key >= ' ' && key !== '\u0000') {
-          await state.page.keyboard.type(key);
-        } else if (key) {
-          await state.page.keyboard.down(key);
-        }
-      } else if (params.event === 'up') {
-        if (key && key.length > 1) {
-          await state.page.keyboard.up(key);
-        }
-      }
-    } else if (type === 'text') {
-      // 输入法组合完成后的最终文本（compositionend.data），直接插入聚焦元素
-      const text = String(params.text || '');
-      if (text) {
-        await state.page.keyboard.insertText(text);
-      }
-    }
-    return { ok: true };
-  } catch (e) {
-    return { ok: false, error: '输入回放失败: ' + (e && e.message ? e.message : String(e)) };
-  }
+  // 立即 ack、后台按序回放：前端输入不被页面阻塞反压
+  return enqueueInput(params);
 }
 
 // ---------------------------------------------------------------------------
