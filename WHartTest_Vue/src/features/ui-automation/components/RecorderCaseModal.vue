@@ -700,7 +700,9 @@ const moduleFlatOptions = computed(() => {
 })
 
 async function fetchModules() {
-  if (!projectId.value || moduleOptions.value.length) return
+  if (!projectId.value) return
+  // 模块列表按项目拉取：每次打开弹窗都重新请求（切换项目后旧项目的模块必须刷新），
+  // moduleOptions 无需跨弹窗缓存——模块树接口很轻，缓存反而导致串显上一项目数据
   loadingModules.value = true
   try {
     const res = await moduleApi.tree(projectId.value)
@@ -887,6 +889,9 @@ watch(
   (v) => {
     if (v) {
       resetState()
+      // 模块列表按项目维度：切换项目后必须重拉，否则快捷新增页面的
+      // 模块下拉会串显上一个项目的模块
+      moduleOptions.value = []
       fetchPages()
       fetchEnvs()
       fetchPreSteps()

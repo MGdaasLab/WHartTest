@@ -411,38 +411,178 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
-  // 生成相对定位 xpath（候选链，按优先级收集）：
-  // ① 自身分层锚点（data-testid/稳定id/name/placeholder/img-alt，带标签+唯一性校验）；
-  // ② 自身唯一 class 锚点（非状态类、非构建哈希类）；
-  // ③ 角色+文本锚点（唯一时，带标签）；
-  // ④ 子元素文本锚点（点击 div、文本在子 span 时直接指向子元素，运行时可点击等价）；
-  // ⑤ 向上找最近的唯一锚点祖先（属性锚点 / 唯一 class），从锚点向下写相对路径；
-  //    路径各层优先兄弟锚点语义步（preceding/following-sibling），序号仅兜底；
-  // ⑥ 兜底短绝对路径（index 保证唯一）。
-  // 全部候选校验唯一后按序收集：首位为主定位，第 2/3 位作为备用定位
-  // （执行器按 主→备1→备2 依次尝试，主定位失效时自动回退）。
-  function buildXPathCandidates(el) {
+  // ---------------------------------------------------------------------------
+  // 四梯队元素表达式提取（候选全部校验唯一后按梯队排序）：
+  //   T1 唯一标识：data-testid / 语义化稳定 id（动态 id 由 isDynamicId 过滤）
+  //   T2 业务属性：可见文本（按钮/链接等）、input 的 name/placeholder、img 的 alt
+  //   T3 CSS 类名组合：语义化 class（状态类/框架动态类被黑名单过滤）、父容器>子级组合
+  //   T4 XPath 轴/结构：兄弟轴、相对路径、contains 模糊匹配
+  //   兜底：绝对路径 xpath（/html/body/...）
+  // 每个候选为 {type, value}：type 是平台 locator_type 词汇（css/text/role/xpath/...），
+  // 执行端（执行器 _get_locator / 录制器 buildLocator）均原生支持。
+  // ---------------------------------------------------------------------------
+
+  // 唯一性校验（xpath 与 css 通用）
+  function isUniqueCss(sel) {
+    try {
+      return document.querySelectorAll(sel).length === 1;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // T1：data-testid → css [data-testid="x"]（Playwright 原生语义）
+  function testIdCandidate(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    var testId = el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-test-id');
+    if (!testId) return null;
+    var sel = tag + '[data-testid="' + testId + '"]';
+    return isUniqueCss(sel) ? { type: 'css', value: sel } : null;
+  }
+
+  // T1：语义化稳定 id → css #id（id 含特殊字符时转义，非法则放弃）
+  function idCandidate(el) {
+    var id = el.getAttribute('id');
+    if (!id || isDynamicId(id)) return null;
+    if (!/^[A-Za-z][\w-]*$/.test(id)) return null;  // 非 CSS 安全 id 不硬转义，直接走后续梯队
+    var sel = '#' + id;
+    return isUniqueCss(sel) ? { type: 'css', value: sel } : null;
+  }
+
+  // T2：input/textarea/select 的 placeholder → getByPlaceholder
+  function placeholderCandidate(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    var ph = el.getAttribute('placeholder');
+    if (!ph || (tag !== 'input' && tag !== 'textarea' && tag !== 'select')) return null;
+    try {
+      var n = document.querySelectorAll(tag + '[placeholder="' + ph.replace(/"/g, '\\"') + '"]').length;
+      return n === 1 ? { type: 'placeholder', value: ph } : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  // T2：表单元素 name → css [name="x"]
+  function nameCandidate(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    var name = el.getAttribute('name');
+    if (!name) return null;
+    var sel = tag + '[name="' + name + '"]';
+    return isUniqueCss(sel) ? { type: 'css', value: sel } : null;
+  }
+
+  // T2：img 的 alt → css img[alt="x"]
+  function altCandidate(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    var alt = el.getAttribute('alt');
+    if (!alt || tag !== 'img') return null;
+    var sel = 'img[alt="' + alt + '"]';
+    return isUniqueCss(sel) ? { type: 'css', value: sel } : null;
+  }
+
+  // T3：语义化 class（单个稳定 token）→ css .token 或 tag.token
+  function semanticClassCandidate(el) {
+    var cls = el.getAttribute && el.getAttribute('class');
+    if (typeof cls !== 'string' || !cls.trim()) return null;
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    var tokens = cls.trim().split(/\s+/);
+    // 优先语义化 token（含 - 或 __ 的 BEM 风格类，如 login-btn/el-input__inner），
+    // 再试其余非动态/非状态 token
+    tokens.sort(function (a, b) {
+      var sa = /-|__/.test(a) ? 0 : 1, sb = /-|__/.test(b) ? 0 : 1;
+      return sa - sb;
+    });
+    for (var i = 0; i < tokens.length; i++) {
+      var tk = tokens[i];
+      if (!tk || !isUniqueClassToken(tk)) continue;
+      var sel = '.' + tk.replace(/([:.#\\\s])/g, '\\$1');
+      if (!isUniqueCss(sel)) continue;
+      // 单类在文档唯一时输出 .token；否则 tag.token 收窄
+      return { type: 'css', value: sel };
+    }
+    return null;
+  }
+
+  // T3：父级语义容器 > 子级组合定位（缩小查找范围的组合 css）
+  function containerComboCandidate(el) {
+    var tag = el.tagName ? el.tagName.toLowerCase() : '';
+    var node = el;
+    for (var hop = 0; hop < 4 && node; hop++) {
+      node = node.parentElement;
+      if (!node || node === document.body) break;
+      var cls = (node.getAttribute && node.getAttribute('class')) || '';
+      var tokens = cls.trim().split(/\s+/);
+      for (var i = 0; i < tokens.length; i++) {
+        var tk = tokens[i];
+        if (!tk || isStateClass(tk) || isDynamicClassToken(tk)) continue;
+        var containerSel = '.' + tk;
+        if (!isUniqueCss(containerSel)) continue;
+        // 容器内定位子元素：tag 优先，容器内唯一即用；否则用自身语义 class
+        var childTag = tag;
+        var inner = containerSel + ' > ' + childTag;
+        if (isUniqueCss(inner)) return { type: 'css', value: inner };
+        var ownCls = (el.getAttribute && el.getAttribute('class')) || '';
+        var ownTokens = ownCls.trim().split(/\s+/);
+        for (var j = 0; j < ownTokens.length; j++) {
+          if (!ownTokens[j] || isStateClass(ownTokens[j]) || isDynamicClassToken(ownTokens[j])) continue;
+          var combo = containerSel + ' > ' + childTag + '.' + ownTokens[j].replace(/([:.#\\\s])/g, '\\$1');
+          if (isUniqueCss(combo)) return { type: 'css', value: combo };
+        }
+      }
+    }
+    return null;
+  }
+
+  // 生成元素表达式候选（四梯队降级，全部校验唯一后按梯队排序收集）：
+  // T1 唯一标识：data-testid → css / 语义化稳定 id → css #id（动态 id 黑名单过滤）
+  // T2 业务属性：可见文本（按钮/链接等 → text/xpath 文本锚点）、input name/placeholder、
+  //    img alt（均原生 locator 类型，语义明确）
+  // T3 CSS 类名组合：自身语义 class（状态类/构建哈希类黑名单过滤）、父语义容器>子级组合
+  // T4 XPath 轴/结构：兄弟轴语义步、祖先锚点+相对路径、contains 模糊匹配
+  // 兜底：绝对路径 xpath（/html/body/...，页面微调即崩，仅最后手段）
+  // 输出首位为主定位，第 2/3 位作为备用定位（执行器按 主→备1→备2 依次尝试）。
+  function buildCandidates(el) {
     var out = [];
-    function add(xp) {
-      if (xp && out.indexOf(xp) < 0) out.push(xp);
+    function add(cand) {
+      if (cand && cand.value) {
+        for (var i = 0; i < out.length; i++) {
+          if (out[i].type === cand.type && out[i].value === cand.value) return;
+        }
+        out.push(cand);
+      }
     }
 
-    var self = pickAnchor(el);
-    if (self) add(self);
-    var selfClass = selfClassAnchor(el);
-    if (selfClass) add(selfClass);
+    // ---- T1 唯一标识 ----
+    add(testIdCandidate(el));
+    add(idCandidate(el));
+
+    // ---- T2 业务属性 ----
+    // 文本内容（按钮/链接/标签/菜单项等，含子元素文本与短文本变体）
     var textSelf = textAnchor(el);
-    if (textSelf) add(textSelf);
+    if (textSelf) add({ type: 'xpath', value: textSelf });
     var childText = childTextAnchor(el);
-    if (childText) add(childText);
-    // 下拉选择框：只读 input 无锚点时，用容器内"请选择xx"占位文本锚点
+    if (childText) add({ type: 'xpath', value: childText });
+    // 表单属性：placeholder / name / img alt
+    add(placeholderCandidate(el));
+    add(nameCandidate(el));
+    add(altCandidate(el));
+
+    // ---- T3 CSS 类名组合 ----
+    var semanticCls = semanticClassCandidate(el);
+    if (semanticCls) add(semanticCls);
+    var combo = containerComboCandidate(el);
+    if (combo) add(combo);
+
+    // ---- T4 XPath 轴/结构（相对路径回溯 + 兄弟轴） ----
+    var self = pickAnchor(el);
+    var selfClass = selfClassAnchor(el);
     var selectBox = selectBoxAnchor(el);
-    if (selectBox) add(selectBox);
+    if (selectBox) add({ type: 'xpath', value: selectBox });
 
     // 结构路径：完整回溯到 body（不限层数）——截断的路径在真实 DOM 中不存在，
     // 宁长勿断；途中每个唯一锚点祖先都短路收集为相对路径候选（近的先收）。
-    // 每层节点：① 节点自身唯一文本步（菜单项，抗同级增删）；② 祖先绝对文本锚点短路；
-    // ③ 兄弟锚点语义步（轴，依赖兄弟顺序，折叠菜单最易错位，放最末）；④ 下标兜底。
+    // 每层节点：① 节点自身唯一文本步（菜单项，抗同级增删）；② 祖先属性/文本锚点短路；
+    // ③ 兄弟锚点语义步（轴）；④ 下标兜底。
     var parts = [];
     var node = el;
     while (node && node.nodeType === 1 && node !== document.documentElement) {
@@ -463,11 +603,10 @@ const INIT_SCRIPT = () => {
         break;
       }
       var anchor = pickAnchor(parent);
-      if (anchor) add(anchor + '/' + parts.join('/'));
-      // 祖先文本锚点短路：折叠菜单项（li 等）文本唯一——绝对文本锚点不依赖展开状态，
-      // 先于轴步收集。
+      if (anchor) add({ type: 'xpath', value: anchor + '/' + parts.join('/') });
+      // 祖先文本锚点短路：折叠菜单项（li 等）文本唯一——绝对文本锚点不依赖展开状态
       var parentTextAnchor = textAnchor(parent);
-      if (parentTextAnchor) add(parentTextAnchor + '/' + parts.join('/'));
+      if (parentTextAnchor) add({ type: 'xpath', value: parentTextAnchor + '/' + parts.join('/') });
       var cls = parent.getAttribute && parent.getAttribute('class');
       if (typeof cls === 'string' && cls.trim()) {
         var tokens = cls.trim().split(/\s+/);
@@ -476,7 +615,7 @@ const INIT_SCRIPT = () => {
           if (tk && isUniqueClassToken(tk)) {
             var cand = '//*[contains(@class,"' + tk.replace(/["\\]/g, '') + '")]/' + parts.join('/');
             if (isUniqueXPath(cand)) {
-              add(cand);
+              add({ type: 'xpath', value: cand });
               break;
             }
           }
@@ -485,15 +624,17 @@ const INIT_SCRIPT = () => {
       node = parent;
     }
     // 兜底前最后一次机会：短文本唯一锚点（动态容器内的文本项）
-    add(looseTextAnchor(el));
+    var loose = looseTextAnchor(el);
+    if (loose) add({ type: 'xpath', value: loose });
     // 兜底：完整绝对路径（含 body 层级），唯一性由 index 链保证
-    if (parts.length) add('/html/body/' + parts.join('/'));
+    if (parts.length) add({ type: 'xpath', value: '/html/body/' + parts.join('/') });
     return out;
   }
 
   function buildXPath(el) {
-    var cands = buildXPathCandidates(el);
-    return cands.length ? cands[0] : null;
+    var cands = buildCandidates(el);
+    // 兼容旧调用（hover 高亮等只需要字符串）：取首位候选的表达式
+    return cands.length ? cands[0].value : null;
   }
 
   // 控件类型识别：tag + type + class/role 特征 → 平台控件词表
@@ -579,24 +720,25 @@ const INIT_SCRIPT = () => {
     } else {
       name = text || attrs.id || attrs.name || attrs.placeholder || '元素';
     }
-    // 一律输出 xpath 相对定位：
-    // 动态 id（el-id-920-7 等）会被过滤，稳定的 id/name/placeholder/data-testid
-    // 作为 xpath 锚点保留，其余走唯一 class 锚点 / 结构化相对路径。
-    // 候选链第 2/3 位写入备用定位（locator_type_2/3），执行时主定位失效自动回退。
-    var cands = buildXPathCandidates(el);
+    // 四梯队候选链（typed：css/text/role/xpath 原生类型）：
+    // 首位为主定位，第 2/3 位写入备用定位（locator_type_2/3），
+    // 执行时主定位失效自动回退。locator_type 随候选真实类型输出，
+    // 执行端（执行器/录制器回放）原生支持这些类型。
+    var cands = buildCandidates(el);
+    var first = cands.length ? cands[0] : { type: 'xpath', value: '' };
     var out = {
-      locator_type: 'xpath',
-      locator_value: cands.length ? cands[0] : '',
+      locator_type: first.type,
+      locator_value: first.value,
       name: name.slice(0, 24),
       ctrl_type: ctrlType,
     };
     if (cands.length > 1) {
-      out.locator_type_2 = 'xpath';
-      out.locator_value_2 = cands[1];
+      out.locator_type_2 = cands[1].type;
+      out.locator_value_2 = cands[1].value;
     }
     if (cands.length > 2) {
-      out.locator_type_3 = 'xpath';
-      out.locator_value_3 = cands[2];
+      out.locator_type_3 = cands[2].type;
+      out.locator_value_3 = cands[2].value;
     }
     return out;
   }
@@ -741,6 +883,8 @@ const state = {
   lastFill: { sel: '', value: '', ts: 0 },
   lastPress: { sel: '', ts: 0 },
   lastFrameTs: 0,          // 最近一次推帧时间（screencast 高帧率 / 截图基线兜底）
+  tracePath: null,         // 执行 trace.zip 落盘路径（start_trace 设置，stop_trace 消费）
+  pageErrors: [],          // 页面 JS 错误（pageerror 事件，执行日志展示用）
   finished: false,
 };
 
@@ -1118,6 +1262,7 @@ async function cmdStart(params) {
     try {
       await state.page.addInitScript(INIT_SCRIPT);
     } catch (_) {}
+    attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
         recordNavigation(frame.url());
@@ -1256,6 +1401,17 @@ async function cmdInput(params) {
 // ---------------------------------------------------------------------------
 // 前置步骤执行（录制前自动执行可复用页面步骤，如登录）
 // ---------------------------------------------------------------------------
+
+/** 页面诊断挂钩：采集页面 JS 错误（执行日志展示，与执行器 _page_errors 对齐） */
+function attachPageDiagnostics(page) {
+  try {
+    page.on('pageerror', (err) => {
+      const msg = String((err && err.message) || err || 'undefined');
+      state.pageErrors.push(msg.slice(0, 200));
+      if (state.pageErrors.length > 20) state.pageErrors.shift();
+    });
+  } catch (_) {}
+}
 
 function _guessMimeType(name) {
   const ext = String(name).split('.').pop().toLowerCase();
@@ -1502,28 +1658,67 @@ async function cmdRunSteps(params) {
   }
   const steps = Array.isArray(params.steps) ? params.steps : [];
   if (!steps.length) {
-    return { ok: true, state: { executed: 0, failed: false } };
+    return { ok: true, state: { executed: 0, failed: false, step_results: [] } };
   }
   // 前置执行期间不记录任何动作/导航
   state.preRunning = true;
   let executed = 0;
   let failedStep = -1;
   let errorMsg = '';
+  // 逐步骤结果（含失败截图 base64）：供平台执行记录展示，与执行器路径对齐
+  const stepResults = [];
   try {
     for (let i = 0; i < steps.length; i++) {
+      const stepInfo = steps[i] || {};
+      const resultEntry = {
+        index: i + 1,
+        ope_key: String(stepInfo.ope_key || ''),
+        // 与执行器 description 同源：元素名称优先，回退步骤描述/操作名
+        description: String(
+          stepInfo.element_name
+          || (stepInfo.ope_value && stepInfo.ope_value.description)
+          || stepInfo.description
+          || stepInfo.ope_key
+          || ''
+        ).slice(0, 100),
+        status: 'success',
+        message: '',
+        screenshot: null,
+        duration: 0,
+      };
+      const stepStart = Date.now();
       try {
         const err = await runOneStep(state.page, steps[i]);
+        resultEntry.duration = (Date.now() - stepStart) / 1000;
         if (err) {
           failedStep = i;
           errorMsg = err;
+          resultEntry.status = 'failed';
+          resultEntry.message = String(err).slice(0, 300);
+          stepResults.push(resultEntry);
           break;
         }
         executed += 1;
+        // 成功消息与执行器同款："元素操作 click 执行成功"
+        resultEntry.message = `元素操作 ${resultEntry.ope_key} 执行成功`;
+        stepResults.push(resultEntry);
         await state.page.waitForTimeout(200);
       } catch (e) {
         failedStep = i;
         errorMsg = '第 ' + (i + 1) + ' 步执行失败: ' + (e && e.message ? e.message : String(e));
+        resultEntry.status = 'failed';
+        resultEntry.message = errorMsg.slice(0, 300);
+        resultEntry.duration = (Date.now() - stepStart) / 1000;
+        stepResults.push(resultEntry);
         break;
+      } finally {
+        // 失败步骤补一张现场截图（成功步骤不截，控制负载）
+        if (resultEntry.status === 'failed') {
+          try {
+            const shot = await state.page.screenshot({ type: 'jpeg', quality: 60 });
+            resultEntry.screenshot = 'data:image/jpeg;base64,' + shot.toString('base64');
+          } catch (_) {}
+        }
       }
     }
   } finally {
@@ -1553,9 +1748,21 @@ async function cmdRunSteps(params) {
     } catch (_) {}
   }
   if (failedStep >= 0) {
-    return { ok: false, error: errorMsg, state: { executed, failed_step: failedStep + 1 } };
+    // 注意：必须返回 ok:true + state.failed 标记。Python 侧 session.request()
+    // 对 ok:false 会抛 RecorderSessionError 并丢弃整个响应——step_results
+    // （含失败截图）会随之丢失，执行记录就没有步骤执行结果可展示。
+    return {
+      ok: true,
+      state: {
+        executed,
+        failed: true,
+        failed_step: failedStep + 1,
+        error: errorMsg,
+        step_results: stepResults,
+      },
+    };
   }
-  return { ok: true, state: { executed, failed: false } };
+  return { ok: true, state: { executed, failed: false, step_results: stepResults } };
 }
 
 /**
@@ -1580,6 +1787,7 @@ async function cmdSwitchContext(params) {
     try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
     state.page = await state.context.newPage();
     try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
+    attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
         recordNavigation(frame.url());
@@ -1590,6 +1798,10 @@ async function cmdSwitchContext(params) {
     state.finished = false;
     stopFrameStream();
     state.lastFrameTs = 0;
+    // 新 context 若处于录制执行模式，重新开启 tracing（context 重建会丢弃旧 trace）
+    if (state.tracePath) {
+      startTracing(state.context);
+    }
     const streamed = await startFrameStream(state.page);
     if (streamed) {
       startFrameLoop(400, 300);
@@ -1599,6 +1811,55 @@ async function cmdSwitchContext(params) {
     return { ok: true, state: { viewport: state.viewport } };
   } catch (e) {
     return { ok: false, error: '切换登录态失败: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 执行 Trace（录制器浏览器执行用例时采集 Playwright trace.zip，
+// 与执行器路径对齐：执行完成后平台拉取 zip 上传，展示 Trace 下载）
+// ---------------------------------------------------------------------------
+
+function ensureTraceDir() {
+  const dir = process.env.RECORDER_TRACE_DIR || path.join(process.cwd(), 'data', 'traces');
+  try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+  return dir;
+}
+
+/** 开启 context tracing（screenshots+snapshots+sources 与执行器默认一致） */
+async function startTracing(context) {
+  if (!context) return;
+  try {
+    await context.tracing.start({
+      screenshots: true,
+      snapshots: true,
+      sources: true,
+    });
+  } catch (e) {
+    serverLog('tracing 启动失败:', e && e.message ? e.message : String(e));
+  }
+}
+
+async function cmdStartTrace(params) {
+  if (!state.context) return { ok: false, error: '浏览器未启动' };
+  const dir = ensureTraceDir();
+  const name = String(params && params.name || 'recorder_exec');
+  state.tracePath = path.join(dir, `${name}_${Date.now()}.zip`);
+  await startTracing(state.context);
+  return { ok: true, state: { trace_path: state.tracePath } };
+}
+
+/** 停止 tracing 并落盘 zip，返回文件路径（由平台读取上传/转发） */
+async function cmdStopTrace() {
+  if (!state.context) return { ok: false, error: '浏览器未启动' };
+  const tracePath = state.tracePath;
+  state.tracePath = null;
+  const pageErrors = state.pageErrors.slice();
+  if (!tracePath) return { ok: true, state: { page_errors: pageErrors } };
+  try {
+    await state.context.tracing.stop({ path: tracePath });
+    return { ok: true, state: { trace_path: tracePath, page_errors: pageErrors } };
+  } catch (e) {
+    return { ok: false, error: 'tracing 停止失败: ' + (e && e.message ? e.message : String(e)), state: { page_errors: pageErrors } };
   }
 }
 
@@ -1621,6 +1882,7 @@ async function cmdResetContext(params) {
     try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
     state.page = await state.context.newPage();
     try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
+    attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
         recordNavigation(frame.url());
@@ -1663,6 +1925,7 @@ async function cmdResetPage(params) {
       await state.page.close();
     }
     state.page = await state.context.newPage();
+    attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
         recordNavigation(frame.url());
@@ -1911,6 +2174,10 @@ rl.on('line', (line) => {
           return respond(await cmdResetPage(msg.params || {}));
         case 'switch_context':
           return respond(await cmdSwitchContext(msg.params || {}));
+        case 'start_trace':
+          return respond(await cmdStartTrace(msg.params || {}));
+        case 'stop_trace':
+          return respond(await cmdStopTrace());
         case 'reset_context':
           return respond(await cmdResetContext(msg.params || {}));
         case 'assert':

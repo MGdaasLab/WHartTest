@@ -62,6 +62,7 @@ class TaskConsumer:
                 'screenshot_dir': getattr(config, 'screenshot_dir', './data/screenshots'),
                 'retry_count': getattr(config, 'retry_count', 3),
                 'step_interval': getattr(config, 'step_interval', 500),
+                'fail_fast': getattr(config, 'fail_fast', False),
                 'viewport_width': getattr(config, 'viewport_width', 1280),
                 'viewport_height': getattr(config, 'viewport_height', 720),
                 # Trace 配置
@@ -381,6 +382,7 @@ class TaskConsumer:
         'action_timeout': 'action_timeout',
         'retry_count': 'retry_count',
         'step_interval': 'step_interval',
+        'fail_fast': 'fail_fast',
         'max_concurrent': 'max_concurrent',
         'log_level': 'log_level',
         'trace_enabled': 'trace_enabled',
@@ -423,6 +425,8 @@ class TaskConsumer:
                 self.executor.retry_count = int(args['retry_count'])
             if 'step_interval' in args:
                 self.executor.step_interval = int(args['step_interval'])
+            if 'fail_fast' in args:
+                self.executor.fail_fast = bool(args['fail_fast'])
             if 'viewport_width' in args or 'viewport_height' in args:
                 self.executor.default_viewport = {
                     "width": int(args.get('viewport_width', self.executor.default_viewport.get('width', 1280))),
@@ -478,7 +482,7 @@ class TaskConsumer:
         for key in ('browser_type', 'persistent', 'launch_timeout', 'action_timeout', 'headless', 'viewport_width', 'viewport_height'):
             if key in updates and updates[key] is not None:
                 browser[key] = updates[key]
-        for key in ('retry_count', 'step_interval', 'max_concurrent'):
+        for key in ('retry_count', 'step_interval', 'max_concurrent', 'fail_fast'):
             if key in updates and updates[key] is not None:
                 execution[key] = updates[key]
         # config.toml 中 trace 组键名为 enabled/screenshots/snapshots/sources

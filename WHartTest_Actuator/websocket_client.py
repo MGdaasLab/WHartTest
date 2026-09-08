@@ -118,6 +118,7 @@ class WebSocketClient:
             'action_timeout': getattr(self.config, 'action_timeout', 30) if self.config else 30,
             'retry_count': getattr(self.config, 'retry_count', 3) if self.config else 3,
             'step_interval': getattr(self.config, 'step_interval', 500) if self.config else 500,
+            'fail_fast': bool(getattr(self.config, 'fail_fast', False)) if self.config else False,
             'log_level': getattr(self.config, 'log_level', 'INFO') if self.config else 'INFO',
             'trace_enabled': bool(getattr(self.config, 'trace_enabled', True)) if self.config else True,
             'trace_screenshots': bool(getattr(self.config, 'trace_screenshots', True)) if self.config else True,

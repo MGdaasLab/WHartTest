@@ -107,6 +107,7 @@ retry_count = 3
 step_interval = 500
 screenshot_dir = "./data/screenshots"
 max_concurrent = 3
+fail_fast = false
 
 [trace]
 enabled = true
@@ -161,6 +162,8 @@ class Config:
         self.step_interval = 500
         self.screenshot_dir = "./data/screenshots"
         self.max_concurrent = 3  # 批量执行最大并发数
+        # 失败中断：定位不到元素时立即中断用例并上报，不再尝试后续步骤
+        self.fail_fast = False
         
         # Trace 配置
         self.trace_enabled = True
@@ -221,6 +224,7 @@ class Config:
             self.step_interval = execution.get('step_interval', self.step_interval)
             self.screenshot_dir = execution.get('screenshot_dir', self.screenshot_dir)
             self.max_concurrent = execution.get('max_concurrent', self.max_concurrent)
+            self.fail_fast = execution.get('fail_fast', self.fail_fast)
         
         # Trace 配置
         if 'trace' in data:

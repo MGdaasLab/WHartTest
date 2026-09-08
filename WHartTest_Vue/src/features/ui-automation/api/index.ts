@@ -270,6 +270,7 @@ export interface ActuatorInfo {
   action_timeout?: number
   retry_count?: number
   step_interval?: number
+  fail_fast?: boolean
   log_level?: string
   trace_enabled?: boolean
   trace_screenshots?: boolean
@@ -291,6 +292,7 @@ export interface ActuatorConfigPayload {
   action_timeout?: number
   retry_count?: number
   step_interval?: number
+  fail_fast?: boolean
   max_concurrent?: number
   log_level?: string
   trace_enabled?: boolean

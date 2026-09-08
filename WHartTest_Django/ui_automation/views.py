@@ -1012,7 +1012,7 @@ _ACTUATOR_CONFIG_FIELDS = frozenset({
     'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
     'retry_count', 'step_interval', 'max_concurrent', 'log_level',
     'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
-    'headless', 'viewport_width', 'viewport_height',
+    'headless', 'viewport_width', 'viewport_height', 'fail_fast',
 })
 
 
@@ -1062,6 +1062,7 @@ class ActuatorViewSet(viewsets.ViewSet):
                 'action_timeout': raw.get('action_timeout', 30),
                 'retry_count': raw.get('retry_count', 3),
                 'step_interval': raw.get('step_interval', 500),
+                'fail_fast': raw.get('fail_fast', False),
                 'log_level': raw.get('log_level', 'INFO'),
                 'trace_enabled': raw.get('trace_enabled', True),
                 'trace_screenshots': raw.get('trace_screenshots', True),
@@ -1160,7 +1161,7 @@ class ActuatorViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless'):
+        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless', 'fail_fast'):
             if key in normalized:
                 normalized[key] = bool(normalized[key])
 
@@ -1644,6 +1645,9 @@ def _serialize_page_step_for_recorder(page_step: UiPageSteps) -> list[dict]:
             'ope_value': ope_value,
             'step_type': detail.step_type,
             'element': selector,
+            # 与执行器 description 同源：元素名称（回退步骤描述），执行记录步骤名展示用
+            'element_name': (detail.element.name if detail.element is not None else None),
+            'description': detail.description or (detail.element.name if detail.element is not None else ''),
         })
     return steps
 

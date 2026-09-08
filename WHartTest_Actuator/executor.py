@@ -129,6 +129,7 @@ class PlaywrightExecutor:
         screenshot_dir: str = './data/screenshots',
         retry_count: int = 3,
         step_interval: int = 500,
+        fail_fast: bool = False,
         viewport_width: int = 1280,
         viewport_height: int = 720,
         trace_enabled: bool = False,
@@ -148,6 +149,9 @@ class PlaywrightExecutor:
         self.screenshot_dir = screenshot_dir
         self.retry_count = retry_count
         self.step_interval = step_interval
+        # 失败中断：元素定位失败（主/备用表达式+操作超时均结束仍失败）时
+        # 立即中断用例并上报，跳过步骤级重试与后续步骤
+        self.fail_fast = fail_fast
         # 节点默认视口（任务级 runtime 未指定视口时使用，由执行器配置维护）
         self.default_viewport: dict = {"width": viewport_width, "height": viewport_height}
         
@@ -1274,10 +1278,11 @@ class PlaywrightExecutor:
         """执行单个步骤，支持失败重试（retry_count）与步骤间间隔（step_interval）。
 
         最多执行 retry_count + 1 次，任一次成功即返回；全部失败返回最后一次结果。
+        fail_fast 开启时：步骤失败立即返回，不做步骤级重试（由调用方中断用例）。
         Returns:
             tuple: (成功与否, 消息, 截图路径(可选))
         """
-        attempts = max(int(getattr(self, 'retry_count', 0)), 0) + 1
+        attempts = 1 if getattr(self, 'fail_fast', False) else max(int(getattr(self, 'retry_count', 0)), 0) + 1
         last_result: tuple[bool, str, str | None] = (False, "步骤执行失败", None)
 
         for attempt in range(attempts):
@@ -1471,6 +1476,12 @@ class PlaywrightExecutor:
                             )
                         
                         step_results.append(step_result)
+
+                        if not success:
+                            # 失败中断模式：元素定位失败即中断整条用例，不再定位后续步骤
+                            if getattr(self, 'fail_fast', False):
+                                logger.warning(f"  ⏹ 失败中断已开启，用例在步骤 {step.step_id} 处中断")
+                                raise Exception(f"失败中断: {step.description or step.operation_type} 执行失败: {message}")
 
                     # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
                     try:
@@ -1732,6 +1743,12 @@ class PlaywrightExecutor:
                         )
 
                     step_results.append(step_result)
+
+                    if not success:
+                        # 失败中断模式：元素定位失败即中断整条用例，不再定位后续步骤
+                        if getattr(self, 'fail_fast', False):
+                            logger.warning(f"  ⏹ 失败中断已开启，用例在步骤 {step.step_id} 处中断")
+                            raise Exception(f"失败中断: {step.description or step.operation_type} 执行失败: {message}")
 
                 # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
                 try:

@@ -132,6 +132,29 @@
           </a-col>
         </a-row>
 
+        <a-divider>备用定位 2（可选）</a-divider>
+        <a-row :gutter="16">
+          <a-col :span="8">
+            <a-form-item field="locator_type_3" label="定位类型">
+              <a-select v-model="formData.locator_type_3" allow-clear>
+                <a-option v-for="opt in locatorTypes" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </a-option>
+              </a-select>
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="locator_value_3" label="定位表达式">
+              <a-textarea v-model="formData.locator_value_3" placeholder="可选" :auto-size="{ minRows: 1, maxRows: 3 }" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="4">
+            <a-form-item field="locator_index_3" label="下标">
+              <a-input-number v-model="formData.locator_index_3" :min="0" placeholder="可选" />
+            </a-form-item>
+          </a-col>
+        </a-row>
+
         <a-divider>配置</a-divider>
         <a-row :gutter="16">
           <a-col :span="8">
