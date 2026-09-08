@@ -1620,6 +1620,15 @@ def _serialize_page_step_for_recorder(page_step: UiPageSteps) -> list[dict]:
                 'locator_value': detail.element.locator_value,
                 'locator_index': detail.element.locator_index,
             }
+            # 备用定位器：主定位 strict 冲突/失效时回退（与执行器降级链一致）
+            if detail.element.locator_type_2 and detail.element.locator_value_2:
+                selector['locator_type_2'] = detail.element.locator_type_2
+                selector['locator_value_2'] = detail.element.locator_value_2
+                selector['locator_index_2'] = detail.element.locator_index_2
+            if detail.element.locator_type_3 and detail.element.locator_value_3:
+                selector['locator_type_3'] = detail.element.locator_type_3
+                selector['locator_value_3'] = detail.element.locator_value_3
+                selector['locator_index_3'] = detail.element.locator_index_3
             # iframe 元素：录制器执行步骤时按链式 frame 定位下钻
             if detail.element.is_iframe and detail.element.iframe_locator:
                 selector['is_iframe'] = True
@@ -1761,106 +1770,15 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             'pre_failed': pre_result.get('failed', False),
         }, status=status.HTTP_201_CREATED)
 
-    @action(detail=False, methods=['post'], url_path='case')
-    def case_create(self, request):
-        """POST recorder-sessions/case/
-        用例录制会话：{case_name, page_id, env_config_id, pre_page_step_id?, module_id?}
-        """
-        from .recorder.session_manager import (
-            RecorderSessionError, RecorderSessionMeta,
-        )
-
-        env_config = UiEnvironmentConfig.objects.filter(
-            id=request.data.get('env_config_id')
-        ).first()
-        if env_config is None:
-            return Response({'detail': '请选择有效的环境配置'}, status=status.HTTP_400_BAD_REQUEST)
-
-        page = UiPage.objects.filter(id=request.data.get('page_id'), project=env_config.project).first()
-        if page is None:
-            return Response({'detail': '请选择当前项目下的页面'}, status=status.HTTP_400_BAD_REQUEST)
-
-        case_name = str(request.data.get('case_name') or '').strip()
-        if not case_name:
-            return Response({'detail': '请填写用例名称'}, status=status.HTTP_400_BAD_REQUEST)
-
-        base_url = (env_config.base_url or page.url or '').strip()
-        if not base_url:
-            return Response(
-                {
-                    'detail': (
-                        f'所选环境「{env_config.name}」未配置 base_url，且页面「{page.name}」也未配置 url，'
-                        '无法确定录制导航地址。请先在环境配置中填写 base_url（录制优先使用环境地址），'
-                        '或填写页面 url。'
-                    )
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        skill_dir = _resolve_recorder_skill_dir()
-        if not skill_dir:
-            return Response(
-                {'detail': '未找到 playwright skill 目录（可设置环境变量 RECORDER_SKILL_DIR）'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        pre_step_id = request.data.get('pre_page_step_id')
-        module_id = request.data.get('module_id')
-
-        meta = RecorderSessionMeta(
-            user_id=request.user.username,
-            project_id=env_config.project_id,
-            page_id=page.id,
-            page_step_id=None,
-            create_elements=True,
-            create_steps=True,
-            base_url=base_url,
-            viewport=_DEFAULT_RECORDER_VIEWPORT,
-            kind='case',
-            case_name=case_name,
-            pre_page_step_id=(
-                int(pre_step_id) if pre_step_id not in (None, '') else None
-            ),
-            case_module_id=(
-                int(module_id) if module_id not in (None, '') else None
-            ),
-            env_config_id=env_config.id,
-            auth_state_id=_parse_opt_int(request.data.get('auth_state_id')),
-        )
-
-        try:
-            session_id, viewport, pre_result = _start_recorder_session(
-                env_config=env_config,
-                page=page,
-                base_url=base_url,
-                skill_dir=skill_dir,
-                request=request,
-                meta=meta,
-            )
-        except RecorderSessionError as exc:
-            return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response({
-            'session_id': session_id,
-            'viewport': viewport,
-            'base_url': base_url,
-            'page_id': page.id,
-            'case_name': case_name,
-            'pre_executed': pre_result.get('executed', 0),
-            'pre_failed': pre_result.get('failed', False),
-        }, status=status.HTTP_201_CREATED)
-
     @action(detail=True, methods=['post'])
     def finish(self, request, pk=None):
         """POST recorder-sessions/{id}/finish/
-        停止录制 → 动作解析入库。
-        - record 模式：动作全部解析到所选页面步骤下；
-        - case 模式：按前端分组（步骤名+动作 seq）创建页面步骤，创建测试用例并引用步骤。
+        停止录制 → 动作解析入库（record 模式：动作全部解析到所选页面步骤下）。
         """
         from .recorder.session_manager import (
             recorder_manager, RecorderSessionError,
         )
-        from .recorder_apply import apply_recorded_actions, apply_recorded_case
+        from .recorder_apply import apply_recorded_actions
 
         session_id = pk
         session = recorder_manager.get(session_id)
@@ -1875,57 +1793,6 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             return Response({'detail': f'结束录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
 
         actions = result.get('state', {}).get('actions') or []
-
-        # ---------- case 模式：分组 → 页面步骤 + 测试用例 ----------
-        if meta.kind == 'case':
-            if not actions and not meta.pre_page_step_id:
-                recorder_manager.close(session_id)
-                return Response(
-                    {'detail': '本次录制没有任何动作，无法创建用例'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            groups = request.data.get('groups') or []
-            if not isinstance(groups, list):
-                recorder_manager.close(session_id)
-                return Response(
-                    {'detail': 'groups 参数格式错误'},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-            page = UiPage.objects.filter(id=meta.page_id).first()
-            if page is None:
-                recorder_manager.close(session_id)
-                return Response({'detail': '所选页面不存在'}, status=status.HTTP_400_BAD_REQUEST)
-
-            pre_page_step = None
-            if meta.pre_page_step_id:
-                pre_page_step = UiPageSteps.objects.filter(id=meta.pre_page_step_id).first()
-
-            case_module = None
-            if meta.case_module_id:
-                case_module = UiModule.objects.filter(id=meta.case_module_id).first()
-
-            # 中途保存登录态的归属（前端在保存成功时记录当时的活动步骤组序号）：
-            # 组顺序 >= 归属组序号的步骤（组）——含保存时刻正在录的组及其后——
-            # 改用最新保存的登录态；更早的组保持原绑定
-            auth_marks = request.data.get('auth_marks') or []
-            case_stats = apply_recorded_case(
-                page=page,
-                user=request.user,
-                actions=actions,
-                groups=groups,
-                case_name=meta.case_name,
-                project=page.project,
-                module=case_module,
-                pre_page_step=pre_page_step,
-                auth_state_id=meta.initial_auth_state_id,  # 初始：录制表单选择的登录态
-                auth_marks=auth_marks,
-            )
-            recorder_manager.close(session_id)
-            return Response({
-                'message': '用例录制完成',
-                'actions_count': len(actions),
-                **case_stats,
-            })
 
         # ---------- record 模式：动作解析到所选页面步骤下 ----------
         apply_stats = {

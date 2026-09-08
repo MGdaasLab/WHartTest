@@ -934,8 +934,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             self._recorder_exec_session = session
             session.start(timeout=120)
             logger.info('[recorder-exec] 会话已启动 %s url=%s', session.session_id, start_url or 'about:blank')
+            # start 不带 url 导航（about:blank 起步）：首个组的前置 goto 负责导航。
+            # 若 start 直接导航到 start_url，紧跟的组前置 goto 同址重复导航会与
+            # 站点自身跳转竞争，导致 net::ERR_ABORTED 中止（执行器路径无此问题）
             start_params = {
-                'url': start_url or 'about:blank',
+                'url': 'about:blank',
                 'viewport': {'width': 1400, 'height': 900},
             }
             if storage_state:

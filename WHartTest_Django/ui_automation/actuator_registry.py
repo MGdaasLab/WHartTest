@@ -417,39 +417,37 @@ def reserve_slots(
         return True, ""
 
 
-def resolve_and_select(
-    *,
-    env=None,
-    run_options: Optional[dict[str, Any]] = None,
-    preferred_actuator_id: Optional[str] = None,
-) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]], str]:
-    """Resolve effective runtime then pick a matching online actuator.
+def resolve_actuator_id_for_result(
+    args: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """按结果载荷反查持有槽位的执行器 ID。
 
-    Two-pass: first resolve without actuator defaults to build selection
-    criteria, then re-resolve with the selected actuator defaults so node
-    values (browser/headless/timeout) fill gaps not covered by run_options/env.
-    Returns (effective_runtime, capability_with_id, error_message).
+    执行器回传的 CASE_RESULT / PAGE_STEP_RESULT 载荷不携带 actuator_id
+    （CaseResultModel 无该字段）。服务端在 reserve 时已把任务的
+    case_id / batch_id / case_ids 写入 lease 的 meta，这里据此把一次结果
+    匹配回预留其槽位的执行器，避免结果路径因取不到 actuator_id 而漏释放。
     """
-    effective = resolve_from_env_and_actuator(
-        env=env,
-        run_options=run_options,
-        source_mode="backend_resolve",
-    )
-    selected, err = select_actuator(
-        list_capabilities(),
-        effective,
-        preferred_id=preferred_actuator_id,
-    )
-    if err:
-        return None, None, err
-    effective = resolve_from_env_and_actuator(
-        env=env,
-        actuator_info=selected,
-        run_options=run_options,
-        actuator_id=selected["id"],
-        source_mode="backend_resolve",
-    )
-    return effective, selected, ""
+    args = args or {}
+    case_id = args.get("case_id")
+    batch_id = args.get("batch_id")
+    if case_id is None and batch_id is None:
+        return None
+    case_id_s = str(case_id) if case_id is not None else None
+    batch_id_s = str(batch_id) if batch_id is not None else None
+    with _SLOT_LOCK:
+        for lease in _leases_view().values():
+            meta = lease.get("meta") or {}
+            if case_id_s is not None:
+                lease_case = meta.get("case_id")
+                lease_case_ids = meta.get("case_ids") or []
+                if str(lease_case) == case_id_s or (
+                    isinstance(lease_case_ids, (list, tuple))
+                    and case_id_s in {str(x) for x in lease_case_ids}
+                ):
+                    return str(lease.get("actuator_id"))
+            if batch_id_s is not None and str(meta.get("batch_id")) == batch_id_s:
+                return str(lease.get("actuator_id"))
+    return None
 
 
 def list_capabilities() -> list[dict[str, Any]]:

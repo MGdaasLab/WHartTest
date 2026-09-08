@@ -354,34 +354,6 @@ export interface RecorderFinishResult {
   steps_created: number
 }
 
-export interface RecorderCaseCreatePayload {
-  case_name: string
-  page_id: number
-  env_config_id: number
-  pre_page_step_id?: number
-  module_id?: number
-  /** 注入已保存登录态（默认 true；false 时以无痕上下文录制登录流程） */
-  inject_login_state?: boolean
-  /** 选择绑定的登录态（录制的步骤继承该绑定；留空随环境生效登录态） */
-  auth_state_id?: number | null
-}
-
-export interface RecorderCaseFinishResult {
-  message: string
-  actions_count: number
-  case_id: number | null
-  page_steps_created: number
-  case_steps_created: number
-  elements_created: number
-  elements_updated: number
-}
-
-export interface RecorderFinishBody {
-  groups?: Array<{ name: string; seqs: number[] }>
-  /** 录制过程中重新保存登录态的归属（group_index 及其后的组改用新登录态） */
-  auth_marks?: Array<{ group_index: number; auth_state_id: number }>
-}
-
 export interface RecorderSaveLoginStateResult {
   message: string
   auth_state_id: number
@@ -395,15 +367,12 @@ export const recorderApi = {
   create: (data: RecorderSessionCreatePayload) =>
     request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/`, data),
 
-  caseCreate: (data: RecorderCaseCreatePayload) =>
-    request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/case/`, data),
-
   /** 登录态录制会话：无痕导航到环境登录页，仅暴露保存登录态 */
   authCapture: (envConfigId: number) =>
     request.post<RecorderSessionInfo>(`${BASE_URL}/recorder-sessions/auth-capture/`, { env_config_id: envConfigId }),
 
-  finish: (sessionId: string, body?: RecorderFinishBody) =>
-    request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`, body ?? {}),
+  finish: (sessionId: string) =>
+    request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`),
 
   saveLoginState: (sessionId: string, body?: { name?: string }) =>
     request.post<RecorderSaveLoginStateResult>(`${BASE_URL}/recorder-sessions/${sessionId}/save-login-state/`, body ?? {}),

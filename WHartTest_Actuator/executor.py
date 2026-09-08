@@ -438,8 +438,23 @@ class PlaywrightExecutor:
                 pass
 
     async def _goto_with_login_check(self, page: Page, url: str, **kwargs) -> None:
-        """导航并执行登录失效检测（等价于 page.goto + _assert_logged_in）。"""
-        await page.goto(url, **kwargs)
+        """导航并执行登录失效检测（等价于 page.goto + _assert_logged_in）。
+
+        ERR_ABORTED/导航被中断：站点自身跳转（302/前端 location）仍在途中时
+        插入的 goto 会被 Chromium 中止，等待其稳定后重试一次。
+        """
+        try:
+            await page.goto(url, **kwargs)
+        except Exception as e:
+            msg = str(e)
+            if 'ERR_ABORTED' not in msg and 'Interrupted' not in msg:
+                raise
+            logger.warning(f'导航被页面跳转中止（{url}），等待稳定后重试')
+            try:
+                await page.wait_for_load_state('domcontentloaded', timeout=8000)
+            except Exception:
+                pass
+            await page.goto(url, **kwargs)
         await self._assert_logged_in(page)
 
     async def ensure_auth_context(self, auth: Optional[dict]) -> bool:
@@ -1540,7 +1555,11 @@ class PlaywrightExecutor:
     async def execute_page_step(self, config: PageStepConfig) -> list[StepResultModel]:
         """执行单个页面步骤（包含多个操作）- 使用同一个浏览器会话"""
         step_results = []
-        
+
+        # 新任务开始前清除上一次执行遗留的停止标志：
+        # stop_once/stop_now 置位后无人复位，会让后续每次页面步骤调试在第一步误报"手动停止"
+        self._stop_requested = False
+
         try:
             async with self.browser_session() as page:
                 logger.info(f"开始执行页面步骤: {config.page_name}")
@@ -1637,6 +1656,8 @@ class PlaywrightExecutor:
         passed_steps = 0
         failed_steps = 0
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
+        # 与 execute_test_case 一致：新用例开始前清除遗留的停止标志
+        self._stop_requested = False
         trace_path = None
         page = None
 

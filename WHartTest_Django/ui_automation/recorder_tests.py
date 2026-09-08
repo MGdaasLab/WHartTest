@@ -21,7 +21,7 @@ from ui_automation.models import (
 from ui_automation.recorder.session_manager import (
     recorder_manager, RecorderSessionError,
 )
-from ui_automation.recorder_apply import apply_recorded_actions, apply_recorded_case
+from ui_automation.recorder_apply import apply_recorded_actions
 
 STUB_NODE = r"""
 const readline = require('readline');
@@ -366,113 +366,6 @@ class RecorderApiValidationTests(TestCase):
         resp = self.client.post(f'{self.base}deadbeef/finish/', {}, format='json')
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
-class RecorderCaseApplyTests(TestCase):
-    """用例录制分组落库：分组→页面步骤 + 测试用例引用（含前置步骤）。"""
-
-    def setUp(self):
-        self.user = User.objects.create_superuser(username='case-rec', password='secret')
-        self.project = Project.objects.create(name='Case Project')
-        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
-        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
-        self.page = UiPage.objects.create(
-            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
-        )
-        # 前置步骤（已有页面步骤，如登录）
-        self.pre_step = UiPageSteps.objects.create(
-            project=self.project, page=self.page, module=self.module, name='登录', creator=self.user,
-        )
-
-    def _actions(self):
-        return [
-            {'seq': 1, 'type': 'click', 'selector': {'locator_type': 'placeholder', 'locator_value': '用户名', 'name': '用户名'}},
-            {'seq': 2, 'type': 'fill', 'selector': {'locator_type': 'placeholder', 'locator_value': '用户名', 'name': '用户名'}, 'value': 'admin'},
-            {'seq': 3, 'type': 'click', 'selector': {'locator_type': 'xpath', 'locator_value': '//button[1]', 'name': '提交'}},
-            {'seq': 4, 'type': 'assert', 'mode': 'visible', 'selector': {'locator_type': 'text', 'locator_value': '成功', 'name': '成功'}},
-        ]
-
-    def test_case_apply_creates_groups_and_case(self):
-        groups = [
-            {'name': '填写账号', 'seqs': [1, 2]},
-            {'name': '提交并断言', 'seqs': [3, 4]},
-        ]
-        stats = apply_recorded_case(
-            page=self.page,
-            user=self.user,
-            actions=self._actions(),
-            groups=groups,
-            case_name='登录下单流程',
-            project=self.project,
-            pre_page_step=self.pre_step,
-        )
-        self.assertIsNotNone(stats['case_id'])
-        self.assertEqual(stats['page_steps_created'], 2)
-        self.assertEqual(stats['case_steps_created'], 3)  # 前置 + 2 组
-        self.assertEqual(stats['elements_created'], 3)    # 用户名/提交/成功
-
-        from ui_automation.models import UiTestCase, UiCaseStepsDetailed
-        case = UiTestCase.objects.get(id=stats['case_id'])
-        self.assertEqual(case.name, '登录下单流程')
-        steps = list(UiCaseStepsDetailed.objects.filter(test_case=case).order_by('case_sort'))
-        self.assertEqual([s.case_sort for s in steps], [0, 1, 2])
-        self.assertEqual(steps[0].page_step, self.pre_step)
-        # 两个新页面步骤的名称与动作归属
-        self.assertEqual(steps[1].page_step.name, '填写账号')
-        self.assertEqual(steps[2].page_step.name, '提交并断言')
-        from ui_automation.models import UiPageStepsDetailed
-        fill = UiPageStepsDetailed.objects.get(page_step=steps[1].page_step, ope_key='fill')
-        self.assertEqual(fill.ope_value, {'value': 'admin'})
-
-    def test_case_empty_groups_returns_zero(self):
-        stats = apply_recorded_case(
-            page=self.page, user=self.user, actions=[], groups=[],
-            case_name='空', project=self.project, pre_page_step=None,
-        )
-        self.assertIsNone(stats['case_id'])
-
-
-class RecorderCaseApiTests(TestCase):
-    """用例录制接口参数校验（不触发浏览器启动）。"""
-
-    def setUp(self):
-        self.client = APIClient()
-        self.user = User.objects.create_superuser(username='recorder-case-api', password='secret')
-        self.client.force_authenticate(user=self.user)
-        self.project = Project.objects.create(name='Recorder Case API Project')
-        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
-        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
-        self.page = UiPage.objects.create(
-            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
-        )
-        self.env = UiEnvironmentConfig.objects.create(
-            project=self.project, name='Prod', base_url='https://example.com', creator=self.user,
-        )
-        self.base = '/api/ui-automation/recorder-sessions/case/'
-
-    def _payload(self, **overrides):
-        data = {
-            'case_name': '登录下单',
-            'page_id': self.page.id,
-            'env_config_id': self.env.id,
-        }
-        data.update(overrides)
-        return data
-
-    def test_missing_case_name_returns_400(self):
-        resp = self.client.post(self.base, self._payload(case_name=''), format='json')
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_missing_env_returns_400(self):
-        resp = self.client.post(self.base, self._payload(env_config_id=None), format='json')
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_page_not_in_project_returns_400(self):
-        other = Project.objects.create(name='Other')
-        other_module = UiModule.objects.create(project=other, name='X', creator=self.user)
-        other_page = UiPage.objects.create(project=other, module=other_module, name='P', url='/x', creator=self.user)
-        resp = self.client.post(self.base, self._payload(page_id=other_page.id), format='json')
-        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
-
-
 class RecorderCoalesceTests(TestCase):
     """入库兜底：连续同元素 fill 合并为一条。"""
 
@@ -766,8 +659,6 @@ class RecorderLoginInjectTests(TestCase):
     def test_invalid_bound_id_no_injection(self):
         params = self._start(bound_auth_id=999999)
         self.assertNotIn('storage_state', params)
-
-
 
 
 class RecorderUploadApplyTests(TestCase):
@@ -1118,83 +1009,6 @@ class RecorderBrowserExecTests(TestCase):
         steps = _serialize_page_step_for_recorder(self.page_step)
         upload_step = next(s for s in steps if s['ope_key'] == 'upload')
         self.assertNotIn('file_path', upload_step['ope_value'])
-
-
-class ApplyRecordedCaseAuthMarksTests(TestCase):
-    """用例录制：中途重新保存登录态后，该步骤及以下步骤绑定最新登录态。"""
-
-    def setUp(self):
-        from django.contrib.auth import get_user_model
-        self.user = get_user_model().objects.create_superuser(username='rec-auth-marks', password='secret')
-        self.project = Project.objects.create(name='Auth Marks Project')
-        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
-        self.page = UiPage.objects.create(
-            project=self.project, module=self.module, name='Page', url='/p', creator=self.user,
-        )
-        self.env = UiEnvironmentConfig.objects.create(
-            project=self.project, name='Env', base_url='http://e.local', creator=self.user,
-        )
-        self.initial_auth = UiAuthState.objects.create(
-            env_config=self.env, name='初始登录态', state_json={'cookies': []}, creator=self.user,
-        )
-        self.mid_auth = UiAuthState.objects.create(
-            env_config=self.env, name='中途登录态', state_json={'cookies': []}, creator=self.user,
-        )
-        self.late_auth = UiAuthState.objects.create(
-            env_config=self.env, name='再次登录态', state_json={'cookies': []}, creator=self.user,
-        )
-
-    def _apply(self, marks):
-        from ui_automation.recorder_apply import apply_recorded_case
-        return apply_recorded_case(
-            page=self.page, user=self.user, actions=[],
-            groups=[
-                {'name': '步骤1', 'seqs': [1, 2]},
-                {'name': '步骤2', 'seqs': [3, 4]},
-                {'name': '步骤3', 'seqs': [5, 6]},
-            ],
-            case_name='用例',
-            project=self.project,
-            auth_state_id=self.initial_auth.id,
-            auth_marks=marks,
-        )
-
-    def test_inherit_initial_without_marks(self):
-        # 未中途保存：全部继承表单初始选择的登录态
-        stats = self._apply([])
-        from ui_automation.models import UiPageSteps
-        binds = list(UiPageSteps.objects.filter(
-            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
-        self.assertEqual(binds, [self.initial_auth.id] * 3)
-
-    def test_mid_save_rebinds_current_and_below(self):
-        # 步骤2 录制中途保存登录态（分界 after_seq=3）：步骤2 及以下绑定新登录态
-        stats = self._apply([{'after_seq': 3, 'auth_state_id': self.mid_auth.id}])
-        from ui_automation.models import UiPageSteps
-        binds = list(UiPageSteps.objects.filter(
-            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
-        self.assertEqual(binds, [self.initial_auth.id, self.mid_auth.id, self.mid_auth.id])
-
-    def test_latest_mark_wins_for_below_steps(self):
-        # 步骤2 保存一次、步骤3 又保存一次：步骤3 用最新保存的登录态
-        stats = self._apply([
-            {'after_seq': 3, 'auth_state_id': self.mid_auth.id},
-            {'after_seq': 5, 'auth_state_id': self.late_auth.id},
-        ])
-        from ui_automation.models import UiPageSteps
-        binds = list(UiPageSteps.objects.filter(
-            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
-        self.assertEqual(binds, [self.initial_auth.id, self.mid_auth.id, self.late_auth.id])
-
-    def test_initial_auth_deleted_mid_recording(self):
-        # 录制中表单选择的登录态被删除：落库不报错，该组步骤不绑定
-        self.initial_auth.delete()
-        stats = self._apply([])
-        from ui_automation.models import UiPageSteps
-        binds = list(UiPageSteps.objects.filter(
-            project=self.project).order_by('-id')[:3].values_list('auth_state_id', flat=True)[::-1])
-        self.assertEqual(binds, [None, None, None])
-        self.assertEqual(stats['page_steps_created'], 3)
 
 
 class PageStepsListSerializerAuthStateTests(TestCase):

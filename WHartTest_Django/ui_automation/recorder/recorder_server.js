@@ -450,12 +450,14 @@ const INIT_SCRIPT = () => {
   }
 
   // T2：input/textarea/select 的 placeholder → getByPlaceholder
+  // 注意：getByPlaceholder 匹配所有带 placeholder 属性的元素（含组件库挂在
+  // 包装 div 上的），唯一性检查必须按属性全量统计，否则回放即 strict 冲突。
   function placeholderCandidate(el) {
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     var ph = el.getAttribute('placeholder');
     if (!ph || (tag !== 'input' && tag !== 'textarea' && tag !== 'select')) return null;
     try {
-      var n = document.querySelectorAll(tag + '[placeholder="' + ph.replace(/"/g, '\\"') + '"]').length;
+      var n = document.querySelectorAll('[placeholder="' + ph.replace(/"/g, '\\"') + '"]').length;
       return n === 1 ? { type: 'placeholder', value: ph } : null;
     } catch (_) {
       return null;
@@ -1432,21 +1434,7 @@ function _guessMimeType(name) {
 }
 
 /** 按平台执行器同款映射构建 Playwright locator（支持 iframe 链式定位） */
-function buildLocator(page, selector) {
-  if (!selector) return null;
-  // iframe 元素：按 ' >> ' 链逐层 frameLocator 下钻（与执行器一致）
-  let container = page;
-  if (selector.is_iframe && selector.iframe_locator) {
-    const parts = String(selector.iframe_locator)
-      .split(' >> ')
-      .map((s) => s.trim())
-      .filter(Boolean);
-    for (const part of parts) {
-      container = container.frameLocator(part);
-    }
-  }
-  const type = selector.locator_type || 'xpath';
-  const value = String(selector.locator_value || '');
+function _locatorFromParts(container, type, value) {
   let loc = null;
   switch (type) {
     case 'xpath':
@@ -1470,14 +1458,117 @@ function buildLocator(page, selector) {
     case 'label':
       loc = container.getByLabel(value);
       break;
+    case 'testid':
+    case 'test_id':
+      loc = container.getByTestId(value);
+      break;
     default:
       loc = container.locator(value);
   }
-  const index = Number(selector.locator_index);
-  if (Number.isInteger(index) && index > 1) {
-    loc = loc.nth(index - 1);
+  return loc;
+}
+
+function _applyLocatorIndex(loc, index) {
+  const n = Number(index);
+  // 与执行器一致：locator_index 语义为第 N 个（1 基），仅 >1 时收窄
+  if (Number.isInteger(n) && n > 1) {
+    return loc.nth(n - 1);
   }
   return loc;
+}
+
+function buildLocator(page, selector) {
+  if (!selector) return null;
+  // iframe 元素：按 ' >> ' 链逐层 frameLocator 下钻（与执行器一致）
+  let container = page;
+  if (selector.is_iframe && selector.iframe_locator) {
+    const parts = String(selector.iframe_locator)
+      .split(' >> ')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      container = container.frameLocator(part);
+    }
+  }
+  const type = selector.locator_type || 'xpath';
+  const value = String(selector.locator_value || '');
+  const loc = _locatorFromParts(container, type, value);
+  return _applyLocatorIndex(loc, selector.locator_index);
+}
+
+/**
+ * 构建主 + 备用定位器降级链（与执行器 _resolve_element 一致）：
+ * 依次 wait_for，主定位严格冲突/失效时自动切换备用，全部不可见时
+ * 返回最后一个定位器（保持与执行器相同的报错语义）。
+ * 返回 { locator, usedIndex }；无任何候选返回 null。
+ */
+async function resolveLocatorWithFallback(page, selector, log) {
+  if (!selector) return null;
+  let container = page;
+  if (selector.is_iframe && selector.iframe_locator) {
+    const parts = String(selector.iframe_locator)
+      .split(' >> ')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    for (const part of parts) {
+      container = container.frameLocator(part);
+    }
+  }
+  const candidates = [];
+  const push = (t, v, idx) => {
+    if (v && String(v).trim()) candidates.push([t, String(v), idx]);
+  };
+  push(selector.locator_type || 'xpath', selector.locator_value, selector.locator_index);
+  push(selector.locator_type_2, selector.locator_value_2, selector.locator_index_2);
+  push(selector.locator_type_3, selector.locator_value_3, selector.locator_index_3);
+  if (!candidates.length) return null;
+
+  let locator = null;
+  let usedIndex = 0;
+  for (let i = 0; i < candidates.length; i++) {
+    const [t, v, idx] = candidates[i];
+    let cand = _applyLocatorIndex(_locatorFromParts(container, t, v), idx);
+    try {
+      // 首选等待元素可见，备用定位器用更短超时快速切换（同执行器 5s/2s）
+      await cand.waitFor({ state: 'visible', timeout: i === 0 ? 5000 : 2000 });
+      locator = cand;
+      usedIndex = i;
+      if (log) log(`定位器 ${i + 1} [${t}=${v}] 命中`);
+      break;
+    } catch (e) {
+      if (log) log(`定位器 ${i + 1} [${t}=${v}] 未命中: ${String((e && e.message) || e).slice(0, 120)}`);
+      if (i === candidates.length - 1) {
+        locator = cand;
+        usedIndex = i;
+      }
+    }
+  }
+  return { locator, usedIndex };
+}
+
+/**
+ * 带容错的导航：站点自身跳转（服务端 302 / 前端 location 跳转）仍在途中时，
+ * 插入的 goto 会以 net::ERR_ABORTED 被中止。等待导航稳定后重试一次。
+ */
+async function gotoWithRetry(page, url, attempts = 2) {
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      return;
+    } catch (e) {
+      lastErr = e;
+      const msg = String((e && e.message) || e);
+      const aborted = msg.includes('ERR_ABORTED');
+      const navigated = msg.includes('page.goto: Interrupted') || msg.includes('Navigation interrupted');
+      // 导航已被其他跳转取代：页面实际上在跳转，等待其稳定后重试
+      if (!aborted && !navigated) throw e;
+      try { await page.waitForLoadState('domcontentloaded', { timeout: 8000 }); } catch (_) {}
+    }
+  }
+  // 末次重试若目标已在当前页（前一次中止其实已把页面带到目标），视为成功
+  if (page.url() === url) return;
+  throw lastErr;
 }
 
 /** 执行一步平台步骤（ope_key 词汇表与执行器对齐），返回错误信息或 null */
@@ -1487,10 +1578,14 @@ async function runOneStep(page, step) {
   const inputValue = String(
     opeValue.text || opeValue.value || opeValue.timeout || opeValue.url || opeValue.key || opeValue.expected || ''
   );
-  const locator = buildLocator(page, step.element || step.selector);
 
   if (opeKey === 'goto') {
-    await page.goto(inputValue, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // 与上一跳同址时跳过：站点自身跳转（如登录页重定向）在途中时重复导航
+    // 会以 net::ERR_ABORTED 中止当前跳转
+    const target = inputValue;
+    const cur = page.url();
+    if (target && cur === target) return null;
+    await gotoWithRetry(page, target);
     return null;
   }
   if (opeKey === 'wait') {
@@ -1498,6 +1593,14 @@ async function runOneStep(page, step) {
     await page.waitForTimeout(Number.isFinite(ms) ? ms : 1000);
     return null;
   }
+
+  // 定位器降级链（与执行器一致）：主定位严格冲突/失效自动切备用
+  const sel = step.element || step.selector;
+  const resolved = await resolveLocatorWithFallback(page, sel, (m) => {
+    console.log('[run_steps] ' + m);
+  });
+  const locator = resolved ? resolved.locator : null;
+
   if (opeKey.startsWith('assert_')) {
     const assertType = opeKey.replace('assert_', '');
     const options = { timeout: 10000 };

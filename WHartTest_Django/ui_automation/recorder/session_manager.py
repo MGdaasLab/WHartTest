@@ -62,10 +62,8 @@ class RecorderSessionMeta:
         create_steps: bool,
         base_url: str,
         viewport: dict,
-        kind: str = 'record',          # record=步骤录制 / case=用例录制
-        case_name: str = '',           # case 模式：用例名称
-        pre_page_step_id: Optional[int] = None,  # case 模式：前置页面步骤（结束后加入用例）
-        case_module_id: Optional[int] = None,    # case 模式：用例所属模块
+        kind: str = 'record',          # record=步骤录制 / auth=登录态录制
+        pre_page_step_id: Optional[int] = None,  # 前置页面步骤（录制启动前自动执行）
         env_config_id: Optional[int] = None,     # 所属环境配置（保存登录态时绑定到该环境）
         auth_state_id: Optional[int] = None,  # 录制表单选择的登录态（绑定录制步骤，启动时按此注入）
     ):
@@ -78,13 +76,9 @@ class RecorderSessionMeta:
         self.base_url = base_url
         self.viewport = dict(viewport)
         self.kind = kind
-        self.case_name = case_name
         self.pre_page_step_id = pre_page_step_id
-        self.case_module_id = case_module_id
         self.env_config_id = env_config_id
         self.auth_state_id = auth_state_id
-        # 会话创建时表单选择的登录态（中途"保存登录态"只推进 auth_state_id）
-        self.initial_auth_state_id = auth_state_id
 
 
 class RecorderSession:

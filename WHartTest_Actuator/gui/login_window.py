@@ -41,6 +41,21 @@ SUCCESS = "#16a34a"
 INFO = "#2563eb"
 FONT_FAMILY = "Microsoft YaHei UI"
 
+
+def _patched_ctk_button_on_release(self, event=None) -> None:
+    # WSLg/Wayland（Tk 9.0）下 <Enter> 跨越事件可能丢失或乱序，原生实现
+    # 依赖 _mouse_inside 标志会静默吞掉真实点击，这里放宽为只要按钮可用即触发。
+    if self._state != tk.DISABLED:
+        self._on_leave()
+        self._click_animation_running = True
+        self.after(100, self._click_animation)
+        if self._command is not None:
+            self._command()
+
+
+# 必须在实例化任何 CTkButton 之前替换：Tk bind 保存的是绑定时刻的绑定方法。
+ctk.CTkButton._on_release = _patched_ctk_button_on_release
+
 I18N: dict[str, dict[str, str]] = {
     "zh": {
         "window_title": "WHartTest 执行器",
