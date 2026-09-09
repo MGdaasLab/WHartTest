@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('api_interfaces', '0007_remove_apiinterface_unique_name'),
+        ('api_interfaces', '0009_remove_apiinterface_unique_name'),
     ]
 
     operations = [
