@@ -30,6 +30,7 @@ class UiSocketEnum:
     STOP_EXECUTION = 'u_stop_execution'
     STEP_RESULT = 'u_step_result'
     CASE_RESULT = 'u_case_result'
+    EXEC_FRAME = 'u_exec_frame'  # 执行过程画面帧（直播，仅单用例/单页面步骤执行）
     SET_ACTUATOR_INFO = 't_set_actuator_info'  # 设置执行器信息
     SET_ACTUATOR_CONFIG = 't_set_actuator_config'  # 平台下发执行器配置
 

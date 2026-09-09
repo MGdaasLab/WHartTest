@@ -10,7 +10,7 @@ from file_management.models import FileReference
 from .models import (
     UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed,
     UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig,
-    UiBatchExecutionRecord
+    UiBatchExecutionRecord, UiAuthState,
 )
 
 
@@ -174,13 +174,17 @@ class UiPageStepsListSerializer(serializers.ModelSerializer):
     module_name = serializers.CharField(source='module.name', read_only=True)
     creator_name = serializers.CharField(source='creator.username', read_only=True)
     step_count = serializers.SerializerMethodField()
+    # 绑定登录态：前端步骤详情/执行按列表行数据直接回显（详情抽屉不重新拉详情）
+    auth_state_id = serializers.PrimaryKeyRelatedField(
+        source='auth_state', read_only=True, allow_null=True,
+    )
 
     class Meta:
         model = UiPageSteps
         fields = [
             'id', 'project', 'page', 'page_name', 'module', 'module_name',
             'name', 'status', 'file_ids', 'step_count', 'creator', 'creator_name',
-            'created_at', 'updated_at'
+            'auth_state_id', 'created_at', 'updated_at'
         ]
         read_only_fields = ['status', 'creator', 'created_at', 'updated_at']
 
@@ -194,6 +198,11 @@ class UiPageStepsSerializer(serializers.ModelSerializer):
     module_name = serializers.CharField(source='module.name', read_only=True)
     creator_name = serializers.CharField(source='creator.username', read_only=True)
     step_count = serializers.SerializerMethodField()
+    # 输入键兼容：前端以 auth_state_id 绑定/清空登录态（DRF 对 FK 默认只认 auth_state 键，'xxx_id' 会被静默忽略）
+    auth_state_id = serializers.PrimaryKeyRelatedField(
+        source='auth_state', queryset=UiAuthState.objects.all(),
+        required=False, allow_null=True,
+    )
 
     class Meta:
         model = UiPageSteps
@@ -213,7 +222,13 @@ class UiPageStepsDetailSerializer(UiPageStepsSerializer):
 
 
 class UiPageStepsExecuteSerializer(UiPageStepsSerializer):
-    """页面步骤执行序列化器（含步骤详情列表和元素定位信息）"""
+    """页面步骤执行序列化器（含步骤详情列表和元素定位信息）
+
+    auth_state_id：步骤绑定的登录态，执行器按组优先注入/切换。
+    """
+    auth_state_id = serializers.PrimaryKeyRelatedField(
+        source='auth_state', read_only=True, required=False, allow_null=True,
+    )
     step_details = UiPageStepsDetailedExecuteSerializer(many=True, read_only=True)
     page_url = serializers.CharField(source='page.url', read_only=True)
     managed_files = serializers.SerializerMethodField()
@@ -371,9 +386,26 @@ class UiPublicDataSerializer(serializers.ModelSerializer):
 class UiEnvironmentConfigSerializer(serializers.ModelSerializer):
     """环境配置序列化器"""
     creator_name = serializers.CharField(source='creator.username', read_only=True)
+    auth_state_active = serializers.SerializerMethodField()
 
     class Meta:
         model = UiEnvironmentConfig
+        fields = '__all__'
+        read_only_fields = ['creator', 'created_at', 'updated_at']
+
+    def get_auth_state_active(self, obj) -> bool:
+        """该环境当前是否有启用的登录态（前端列表徽标展示）。"""
+        return UiAuthState.objects.filter(env_config_id=obj.id, is_active=True).exists()
+
+
+class UiAuthStateSerializer(serializers.ModelSerializer):
+    """环境登录态序列化器（state_json 为执行器使用的 storageState 快照）"""
+    creator_name = serializers.CharField(source='creator.username', read_only=True)
+    env_name = serializers.CharField(source='env_config.name', read_only=True)
+    project_id = serializers.IntegerField(source='env_config.project_id', read_only=True)
+
+    class Meta:
+        model = UiAuthState
         fields = '__all__'
         read_only_fields = ['creator', 'created_at', 'updated_at']
 

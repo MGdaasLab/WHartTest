@@ -200,6 +200,11 @@ class UiPageSteps(models.Model):
         related_name='created_ui_page_steps', verbose_name=_('创建人')
     )
     created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    # 步骤绑定的登录态（执行时优先注入；用例内多步骤绑定不同登录态时逐步切换并清理）
+    auth_state = models.ForeignKey(
+        'UiAuthState', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='page_steps', verbose_name=_('绑定登录态'),
+    )
     updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
 
     class Meta:
@@ -490,3 +495,37 @@ class UiEnvironmentConfig(models.Model):
         if self.is_default:
             UiEnvironmentConfig.objects.filter(project=self.project, is_default=True).exclude(pk=self.pk).update(is_default=False)
         super().save(*args, **kwargs)
+
+
+class UiAuthState(models.Model):
+    """环境登录态快照（Playwright storageState：cookies + localStorage）。
+
+    绑定到环境配置：平台 UI 自动化执行均以环境为运行单元，执行时按
+    env_config 自动查找启用中的登录态注入浏览器上下文。一套快照同时
+    覆盖两类认证系统 —— Cookie/Session 会话（cookies）与 JWT/token
+    现代系统（localStorage），无需关心目标系统认证类型。
+    """
+
+    name = models.CharField(_('名称'), max_length=128)
+    env_config = models.ForeignKey(
+        UiEnvironmentConfig, on_delete=models.CASCADE,
+        related_name='auth_states', verbose_name=_('所属环境')
+    )
+    state_json = models.JSONField(_('登录态快照'), null=True, blank=True)
+    is_active = models.BooleanField(_('启用'), default=True)
+    description = models.CharField(_('描述'), max_length=256, blank=True, default='')
+    creator = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True,
+        related_name='created_ui_auth_states', verbose_name=_('创建人')
+    )
+    created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
+    updated_at = models.DateTimeField(_('更新时间'), auto_now=True)
+
+    class Meta:
+        verbose_name = _('环境登录态')
+        verbose_name_plural = _('环境登录态')
+        ordering = ['-updated_at']
+        db_table = 'ui_auth_state'
+
+    def __str__(self):
+        return f"{self.env_config} - {self.name}"

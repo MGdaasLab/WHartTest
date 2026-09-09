@@ -141,7 +141,7 @@
           </a-col>
           <a-col :span="12">
             <a-form-item field="headless" :label="pageText.headlessMode">
-              <a-switch v-model="formData.headless" @change="handleHeadlessChange" />
+              <a-switch v-model="formData.headless" />
             </a-form-item>
           </a-col>
           <a-col :span="12">
@@ -161,6 +161,16 @@
           <a-col :span="12">
             <a-form-item field="max_concurrent" :label="pageText.maxConcurrent">
               <a-input-number v-model="formData.max_concurrent" :style="{ width: '100%' }" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="fail_fast" :label="pageText.failFast">
+              <a-space>
+                <a-switch v-model="formData.fail_fast" />
+                <a-tooltip :content="pageText.failFastHint" position="top">
+                  <span class="fail-fast-hint">?</span>
+                </a-tooltip>
+              </a-space>
             </a-form-item>
           </a-col>
           <a-col :span="12">
@@ -240,6 +250,8 @@ const pageText = computed(() => (
         retryCount: 'Retry Count',
         stepInterval: 'Step Interval (ms)',
         maxConcurrent: 'Max Concurrent',
+        failFast: 'Fail Fast',
+        failFastHint: 'When an element cannot be located (all locators and action timeout exhausted), abort the case immediately and report the execution record instead of continuing with later steps',
         persistent: 'Persistent',
         trace: 'Trace',
         traceScreenshots: 'Screenshots',
@@ -257,7 +269,6 @@ const pageText = computed(() => (
         viewportHeight: 'Viewport Height',
         viewportWidthRange: 'Viewport width must be between 320 and 3840',
         viewportHeightRange: 'Viewport height must be between 240 and 2160',
-        dockerHeadlessWarn: 'The current actuator is deployed in a Docker environment and cannot enable headed mode',
       }
     : {
         title: '在线执行器',
@@ -288,6 +299,9 @@ const pageText = computed(() => (
         actionTimeout: '操作超时（秒）',
         retryCount: '失败重试次数',
         stepInterval: '步骤间隔（毫秒）',
+        maxConcurrent: '最大并发数',
+        failFast: '失败中断执行',
+        failFastHint: '元素定位失败（主/备用表达式与操作超时均等待结束仍未成功）时立即中断用例并上报执行记录，不再尝试定位后续步骤',
         maxConcurrent: '批量并发',
         persistent: '持久化',
         trace: 'Trace',
@@ -306,7 +320,6 @@ const pageText = computed(() => (
         viewportHeight: '视口高度',
         viewportWidthRange: '视口宽度必须为 320-3840 之间的数',
         viewportHeightRange: '视口高度必须为 240-2160 之间的数',
-        dockerHeadlessWarn: '当前执行器使用docker环境部署无法启用有头模式',
       }
 ))
 
@@ -384,6 +397,7 @@ const formData = reactive<ActuatorConfigPayload>({
   retry_count: 3,
   step_interval: 500,
   max_concurrent: 3,
+  fail_fast: false,
   persistent: true,
   trace_enabled: true,
   trace_screenshots: true,
@@ -432,6 +446,7 @@ const openEdit = (record: ActuatorInfo) => {
     retry_count: record.retry_count ?? 3,
     step_interval: record.step_interval ?? 500,
     max_concurrent: record.max_slots ?? 3,
+    fail_fast: record.fail_fast ?? false,
     persistent: record.persistent ?? true,
     trace_enabled: record.trace_enabled ?? true,
     trace_screenshots: record.trace_screenshots ?? true,
@@ -447,14 +462,6 @@ const openEdit = (record: ActuatorInfo) => {
 
 const handleCancel = () => {
   editVisible.value = false
-}
-
-/** 无头模式开关：docker 部署的执行器禁止关闭无头模式（无法启用有头） */
-const handleHeadlessChange = (value: boolean | string | number) => {
-  if (value === false && editingRecord.value?.in_container) {
-    Message.warning(pageText.value.dockerHeadlessWarn)
-    formData.headless = true // 回弹为开启
-  }
 }
 
 const handleSubmit = async (done: (closed: boolean) => void) => {
@@ -528,6 +535,20 @@ onUnmounted(() => {
 
 .mb-4 {
   margin-bottom: 16px;
+}
+
+/* 失败中断提示问号：圆形边框，悬停展示说明气泡 */
+.fail-fast-hint {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--color-border-2);
+  color: var(--color-text-3);
+  font-size: 10px;
+  cursor: help;
 }
 
 .online-dot {

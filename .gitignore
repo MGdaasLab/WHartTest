@@ -42,6 +42,7 @@ docker-images
 # Build artifacts
 build/
 dist/
+*.egg-info/
 out/
 PandaWiki-skill/
 WHartTest_Client/
@@ -60,6 +61,8 @@ __pycache__/
 *.sqlite3
 *.db
 
+
+
 # Documentation build
 docs/_build/
 docs/.vitepress/cache/
@@ -76,6 +79,14 @@ architecture/
 .roo/mcp.json
 docs/superpowers/
 docs/competitive-analysis/
+.freebuff
+
+# Actuator
+WHartTest_Actuator/config.toml
 
 # zcode
 .zcode
+~/.dsh
+# 独立仓库（各自有 .git 和远程），不随父仓库提交
+WHartTest_Desktop/
+WHartTest_Website/

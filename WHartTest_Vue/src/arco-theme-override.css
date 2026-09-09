@@ -1071,3 +1071,19 @@ body[arco-theme='dark'] .arco-table-th {
   color: var(--color-text-1) !important;
   border-color: var(--color-border-2) !important;
 }
+
+/* 录制窗口确认弹窗：去掉提示语下方 header/footer 分隔线 */
+.arco-modal.recorder-confirm-modal .arco-modal-header {
+  border-bottom: none !important;
+}
+.arco-modal.recorder-confirm-modal .arco-modal-footer {
+  border-top: none !important;
+}
+
+/* 元素管理抽屉：body 撑满高度，让内部表格自适应填充 */
+.arco-drawer.element-drawer .arco-drawer-body {
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}

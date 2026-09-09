@@ -9,8 +9,18 @@
             <a-tag v-if="env.is_default" size="small" color="arcoblue" style="margin-left: 4px">{{ stepText.default }}</a-tag>
           </a-option>
         </a-select>
+        <a-select
+          v-model="selectedAuthState"
+          :placeholder="stepText.authStatePlaceholder"
+          size="small"
+          style="width: 160px"
+          allow-clear
+          @change="onAuthStateChange"
+        >
+          <a-option v-for="a in envAuthStates" :key="a.id" :value="a.id">{{ a.name }}</a-option>
+        </a-select>
         <a-select v-model="selectedActuator" :placeholder="stepText.selectActuator" size="small" style="width: 150px" allow-clear>
-          <a-option v-for="act in actuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
+          <a-option v-for="act in allActuators" :key="act.id" :value="act.id" :disabled="!act.is_open">
             {{ act.name || act.id }}
             <a-tag v-if="!act.is_open" size="small" color="gray" style="margin-left: 4px">{{ stepText.offline }}</a-tag>
           </a-option>
@@ -19,6 +29,25 @@
           <template #icon><icon-play-arrow /></template>
           {{ stepText.debugRun }}
         </a-button>
+        <a-checkbox
+          :model-value="allStepSelected"
+          :indeterminate="partialStepSelected"
+          :disabled="!stepData.length"
+          class="step-select-all"
+          @change="toggleSelectAllSteps"
+        >
+          {{ stepText.selectAll }}
+        </a-checkbox>
+        <a-popconfirm
+          :content="stepText.batchDeleteConfirm"
+          :disabled="!selectedStepIds.length"
+          @ok="handleBatchDeleteSteps"
+        >
+          <a-button status="danger" size="small" :disabled="!selectedStepIds.length">
+            <template #icon><icon-delete /></template>
+            {{ stepText.batchDelete }}{{ selectedStepIds.length ? `（${selectedStepIds.length}）` : '' }}
+          </a-button>
+        </a-popconfirm>
         <a-button type="primary" size="small" @click="showAddModal">
           <template #icon><icon-plus /></template>
           {{ stepText.addAction }}
@@ -38,8 +67,13 @@
         @end="onDragEnd"
       >
         <template #item="{ element, index }">
-          <div class="step-card">
+          <div class="step-card" :class="{ 'step-card--selected': selectedStepIds.includes(element.id) }">
             <div class="step-left">
+              <a-checkbox
+                v-model="selectedStepIds"
+                :value="element.id"
+                class="step-batch-checkbox"
+              />
               <div class="drag-handle">
                 <icon-drag-dot-vertical />
               </div>
@@ -380,6 +414,13 @@
       </a-table>
     </a-modal>
 
+    <!-- 页面步骤执行画面（直播帧） -->
+    <ExecutionScreenModal
+      v-model:visible="execScreenVisible"
+      mode="page-steps"
+      :task-id="execScreenTaskId"
+    />
+
   </div>
 </template>
 
@@ -389,10 +430,12 @@ import { Message } from '@arco-design/web-vue'
 import { IconPlus, IconEdit, IconDelete, IconDragDotVertical, IconPlayArrow, IconUpload } from '@arco-design/web-vue/es/icon'
 import draggable from 'vuedraggable'
 import { useAppI18n } from '@/composables/useAppI18n'
-import { pageStepsDetailedApi, elementApi, actuatorApi, envConfigApi, moduleApi, pageApi, type ActuatorInfo } from '../api'
+import { pageStepsApi, pageStepsDetailedApi, elementApi, actuatorApi, envConfigApi, moduleApi, pageApi, authStateApi, type ActuatorInfo } from '../api'
 import type { UiPageStepsDetailed, UiPageSteps, UiElement, UiModule, UiPage, StepType, UiEnvironmentConfig } from '../types'
+import type { UiAuthState } from '../types'
 import { STEP_TYPE_LABELS, extractListData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum } from '../services/websocket'
+import ExecutionScreenModal from '../components/ExecutionScreenModal.vue'
 import { fileService } from '@/features/file-management/services/fileService'
 
 /** 操作参数定义 */
@@ -480,6 +523,8 @@ const stepText = computed(() => isEnglish.value
       executionEnv: 'Environment',
       default: 'Default',
       selectActuator: 'Select actuator',
+      authStatePlaceholder: 'Select login state',
+      authStateSaved: 'Step login-state binding updated',
       offline: 'Offline',
       debugRun: 'Debug Run',
       addAction: 'Add action',
@@ -578,7 +623,6 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `Execution succeeded: ${passed}/${total} steps passed`,
       executionFailed: (message: string) => `Execution failed: ${message}`,
       unknownError: 'Unknown error',
-      insufficientSlots: (name: string, need: number, free: number) => `Actuator ${name} has insufficient free slots (need ${need}, only ${free} left)`,
       fetchElementsFailed: 'Failed to fetch element list',
       fillRequired: 'Fill in the required fields',
       enterContent: 'Enter content',
@@ -588,7 +632,11 @@ const stepText = computed(() => isEnglish.value
       addFailed: 'Add failed',
       deleteSuccess: 'Deleted successfully',
       deleteFailed: 'Delete failed',
+      batchDelete: 'Batch delete',
+      batchDeleteConfirm: 'Delete the selected steps?',
+      selectAll: 'Select all',
       sortSaved: 'Order saved',
+      saveFailed: 'Save failed',
       saveSortFailed: 'Failed to save order',
     }
   : {
@@ -596,6 +644,8 @@ const stepText = computed(() => isEnglish.value
       executionEnv: '执行环境',
       default: '默认',
       selectActuator: '选择执行器',
+      authStatePlaceholder: '请选择登录态',
+      authStateSaved: '步骤登录态绑定已更新',
       offline: '离线',
       debugRun: '调试执行',
       addAction: '添加操作',
@@ -694,7 +744,6 @@ const stepText = computed(() => isEnglish.value
       executionSuccess: (passed: number, total: number) => `执行成功: ${passed}/${total} 步骤通过`,
       executionFailed: (message: string) => `执行失败: ${message}`,
       unknownError: '未知错误',
-      insufficientSlots: (name: string, need: number, free: number) => `执行器 ${name} 空闲 slot 不足（需要 ${need}，剩余 ${free}）`,
       fetchElementsFailed: '获取元素列表失败',
       fillRequired: '请填写必填项',
       enterContent: '请输入内容',
@@ -704,7 +753,11 @@ const stepText = computed(() => isEnglish.value
       addFailed: '添加失败',
       deleteSuccess: '删除成功',
       deleteFailed: '删除失败',
+      batchDelete: '批量删除',
+      batchDeleteConfirm: '确定删除选中的步骤？',
+      selectAll: '全选',
       sortSaved: '排序已保存',
+      saveFailed: '保存失败',
       saveSortFailed: '保存排序失败',
     }
 )
@@ -806,6 +859,18 @@ const translateServerMessage = (message: unknown) => (
 const loading = ref(false)
 const submitting = ref(false)
 const stepData = ref<UiPageStepsDetailed[]>([])
+const selectedStepIds = ref<number[]>([])
+
+// 一键全选（含半选态）
+const allStepSelected = computed(
+  () => stepData.value.length > 0 && selectedStepIds.value.length === stepData.value.length,
+)
+const partialStepSelected = computed(
+  () => selectedStepIds.value.length > 0 && selectedStepIds.value.length < stepData.value.length,
+)
+const toggleSelectAllSteps = (checked: boolean) => {
+  selectedStepIds.value = checked ? stepData.value.map((s) => s.id) : []
+}
 const moduleOptions = ref<UiModule[]>([])
 const modulesLoading = ref(false)
 const flatModuleOptions = computed(() => flattenModules(moduleOptions.value))
@@ -821,7 +886,19 @@ const formRef = ref()
 // 执行器相关
 const actuators = ref<ActuatorInfo[]>([])
 const selectedActuator = ref<string>('')
+// 录制器浏览器（本地）：无执行器时的步骤调试兜底
+const RECORDER_BROWSER_ID = 'recorder-browser'
+const recorderBrowserName = computed(() => (isEnglish.value ? 'Recorder Browser (Local)' : '录制器浏览器（本地）'))
+const allActuators = computed(() => [
+  { id: RECORDER_BROWSER_ID, name: recorderBrowserName.value, is_open: true, max_slots: 1, busy_slots: 0 } as ActuatorInfo,
+  ...actuators.value,
+])
 const executing = ref(false)
+// 页面步骤执行画面（直播帧弹窗）：是否弹出由执行器无头开关决定——
+// 后端回执 effective_runtime.headless === false（观看模式）时才弹
+const execScreenVisible = ref(false)
+const execScreenTaskId = ref<number | null>(null)
+const pendingScreenPageStepId = ref<number | null>(null)
 
 // 执行环境相关
 const envConfigs = ref<UiEnvironmentConfig[]>([])
@@ -986,13 +1063,73 @@ const fetchSteps = async () => {
   }
 }
 
+// 步骤绑定的登录态（执行时优先注入该登录态；留空随环境生效登录态）
+const envAuthStates = ref<Array<{ id: number; name: string }>>([])
+const selectedAuthState = ref<number | undefined>(undefined)
+
+const fetchEnvAuthStates = async () => {
+  envAuthStates.value = []
+  if (!props.pageStep?.id) return
+  const boundId = props.pageStep.auth_state_id ?? undefined
+  if (!selectedEnvConfig.value) {
+    selectedAuthState.value = boundId
+    return
+  }
+  try {
+    const res = await authStateApi.list({ env_config: selectedEnvConfig.value })
+    const items = extractListData<UiAuthState>(res)
+    // 与执行环境下拉同源：按当前所选环境展示其登录态（名称+绑定回显）
+    envAuthStates.value = items.map((i) => ({ id: i.id, name: i.name }))
+    selectedAuthState.value = boundId
+    // 绑定的登录态不属于当前所选环境（如录制时绑定了其他环境的登录态）：
+    // 兜底拉取其名称补进下拉，避免选择框显示为空/裸 id
+    if (boundId && !envAuthStates.value.some((i) => i.id === boundId)) {
+      try {
+        const boundRes = await authStateApi.get(boundId)
+        const bound = extractResponseData<UiAuthState>(boundRes)
+        if (bound?.id) {
+          envAuthStates.value = [...envAuthStates.value, { id: bound.id, name: bound.name }]
+        }
+      } catch {
+        // 登录态可能已被删除：清空回显，避免残留失效绑定
+        selectedAuthState.value = undefined
+      }
+    }
+  } catch {
+    // 加载失败时回显当前绑定，避免误清空
+    selectedAuthState.value = boundId
+  }
+}
+
+// 环境选择变化即刷新（含默认环境自动选中后触发）
+watch(selectedEnvConfig, () => { fetchEnvAuthStates() }, { immediate: true })
+
+const onAuthStateChange = async (val: unknown) => {
+  try {
+    await pageStepsApi.update(props.pageStep.id, { auth_state_id: val ? Number(val) : null })
+    Message.success(stepText.value.authStateSaved)
+  } catch {
+    Message.error(stepText.value.saveFailed || '保存失败')
+    fetchEnvAuthStates()
+  }
+}
+
 const fetchActuators = async () => {
   try {
     const res = await actuatorApi.list()
     const data = extractResponseData<{ count: number; items: ActuatorInfo[] }>(res)
     actuators.value = data?.items ?? []
+    // 未选择时默认录制器浏览器（本地）（自动打开执行画布）；需真实执行器时下拉选
+    if (!selectedActuator.value) {
+      selectedActuator.value = RECORDER_BROWSER_ID
+      return
+    }
+    // 录制器浏览器不在执行器列表中，始终有效
+    if (selectedActuator.value === RECORDER_BROWSER_ID) {
+      return
+    }
     // 自动选择第一个在线的执行器
-    if (!selectedActuator.value && actuators.value.length > 0) {
+    if (actuators.value.length > 0) {
       const available = actuators.value.find((a: ActuatorInfo) => a.is_open)
       if (available) selectedActuator.value = available.id
     }
@@ -1036,19 +1173,7 @@ const executePageStep = async () => {
     Message.warning(stepText.value.noActionSteps)
     return
   }
-
-  // 发送前预检查：空闲 slot 不足时直接提示，不进入加载态
-  const act = actuators.value.find((a: ActuatorInfo) => a.id === selectedActuator.value)
-  if (!act || !act.is_open) {
-    Message.warning(stepText.value.selectActuatorFirst)
-    return
-  }
-  const freeSlots = (act.max_slots ?? 1) - (act.busy_slots ?? 0)
-  if (freeSlots < 1) {
-    Message.error(stepText.value.insufficientSlots(act.name || act.id, 1, Math.max(freeSlots, 0)))
-    return
-  }
-
+  
   executing.value = true
   
   // 确保 WebSocket 已连接
@@ -1062,15 +1187,24 @@ const executePageStep = async () => {
     }
   }
   
+    // 后端下发任务后会回 effective_runtime（含 headless）：
+  // 无头开关关闭（观看模式）时才弹执行画面画布
+  pendingScreenPageStepId.value = props.pageStep.id
   const sent = uiWebSocket.send(UiSocketEnum.PAGE_STEPS, {
     page_step_id: props.pageStep.id,
     env_config_id: selectedEnvConfig.value,
     actuator_id: selectedActuator.value,
+    auth_state_id: selectedAuthState.value,
   })
-  
+
   if (!sent) {
     Message.error(stepText.value.sendExecutionFailed)
     executing.value = false
+    pendingScreenPageStepId.value = null
+  } else if (selectedActuator.value === RECORDER_BROWSER_ID) {
+    // 录制器浏览器执行：发送即打开执行画布（不依赖回执），失败也有无帧提示可见
+    execScreenTaskId.value = props.pageStep.id
+    execScreenVisible.value = true
   }
 }
 
@@ -1088,15 +1222,6 @@ const handleStepResult = (data: any) => {
       || stepText.value.executionFailed(stepText.value.unknownError)
     )
   }
-}
-
-/** 执行被拒绝（如执行器空闲 slot 不足）：提示并复位加载态，避免按钮卡住 */
-const handleStepRejected = (data: any) => {
-  const error = data.data?.func_args?.error || (data.code !== 200 ? data.msg : '')
-  if (!error) return
-  executing.value = false
-  Message.error(error)
-  fetchActuators()
 }
 
 const fetchElements = async () => {
@@ -1415,6 +1540,19 @@ const handleCancel = () => {
   modalVisible.value = false
 }
 
+const handleBatchDeleteSteps = async () => {
+  if (!selectedStepIds.value.length) return
+  try {
+    await pageStepsDetailedApi.batchDelete(selectedStepIds.value)
+    Message.success(stepText.value.deleteSuccess)
+    selectedStepIds.value = []
+    await fetchSteps()
+  } catch (error: unknown) {
+    const err = error as { error?: string }
+    Message.error(translateServerMessage(err?.error) || stepText.value.deleteFailed)
+  }
+}
+
 const deleteStep = async (step: UiPageStepsDetailed) => {
   if (!step.id) return
   try {
@@ -1453,11 +1591,25 @@ const onDragEnd = async () => {
 
 // WebSocket 事件监听
 let offStepResult: (() => void) | null = null
-let offStepRejected: (() => void) | null = null
+let offEffectiveRuntime: (() => void) | null = null
+
+/** 后端回执生效运行时：无头开关关闭（观看模式）时弹出执行画面画布 */
+const handleEffectiveRuntime = (data: any) => {
+  const args = data?.data?.func_args || {}
+  if (args.headless === false && pendingScreenPageStepId.value != null) {
+    execScreenTaskId.value = pendingScreenPageStepId.value
+    execScreenVisible.value = true
+  }
+  pendingScreenPageStepId.value = null
+}
 
 watch(() => props.pageStep, async () => {
   fetchSteps()
   moduleOptions.value = []
+  // 组件被抽屉复用（v-if 只看 currentPageStep 非空，切换步骤不重建），
+  // 先清掉上一个步骤的登录态回显，防止串显（前一步绑 B、本步绑 A 时误显 B）
+  selectedAuthState.value = undefined
+  envAuthStates.value = []
   // 页面和元素按当前页面步骤默认值初始化；同时加载模块树确保初次渲染不会回显ID，支持跨模块/页面
   await Promise.all([
     fetchModules(true),
@@ -1465,20 +1617,23 @@ watch(() => props.pageStep, async () => {
     fetchActuators(),
     fetchEnvConfigs()
   ])
+  // 按当前步骤的绑定重拉登录态回显（fetchEnvAuthStates 读取最新的 props.pageStep.auth_state_id）
+  await fetchEnvAuthStates()
 }, { immediate: true })
 
 onMounted(() => {
   fetchActuators()
   fetchEnvConfigs()
+  fetchEnvAuthStates()
   // 监听页面步骤执行结果
   offStepResult = uiWebSocket.on(UiSocketEnum.PAGE_STEP_RESULT, handleStepResult)
-  // 监听执行被拒绝（空闲 slot 不足等），复位加载态避免按钮卡住
-  offStepRejected = uiWebSocket.on(UiSocketEnum.PAGE_STEPS, handleStepRejected)
+  // 监听生效运行时回执（决定是否弹执行画面）
+  offEffectiveRuntime = uiWebSocket.on(UiSocketEnum.EFFECTIVE_RUNTIME, handleEffectiveRuntime)
 })
 
 onUnmounted(() => {
   offStepResult?.()
-  offStepRejected?.()
+  offEffectiveRuntime?.()
 })
 </script>
 
@@ -1502,6 +1657,14 @@ onUnmounted(() => {
 .empty-tips {
   padding: 40px 0;
 }
+.step-card--selected {
+  border-color: var(--color-primary-4) !important;
+}
+
+.step-batch-checkbox {
+  margin-right: 6px;
+}
+
 .step-card {
   display: flex;
   align-items: center;

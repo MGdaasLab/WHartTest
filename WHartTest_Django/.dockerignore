@@ -87,6 +87,13 @@ deploy-scripts/
 *.swp
 *~.nib
 
+# Node 相关（录制器本地安装的 playwright：node_modules 含符号链接
+# .bin/playwright -> ../playwright/cli.js，COPY 符号链接会导致
+# "invalid file request" 构建失败；运行时依赖在容器内按 package.json 安装）
+node_modules/
+**/node_modules/
+package-lock.json.bak
+
 # 本地数据和缓存
 nltk_data/
 *.sqlite
