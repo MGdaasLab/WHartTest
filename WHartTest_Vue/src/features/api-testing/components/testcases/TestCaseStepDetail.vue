@@ -11,6 +11,7 @@ import TestCaseRequestHeader from './TestCaseRequestHeader.vue'
 import { Message } from '@arco-design/web-vue'
 import TestCaseStepResponse from './TestCaseStepResponse.vue'
 import TestCaseParamsConfig from './TestCaseParamsConfig.vue'
+import TestCasePathParamsConfig from './TestCasePathParamsConfig.vue'
 import TestCaseHeadersConfig from './TestCaseHeadersConfig.vue'
 import TestCaseBodyConfig from './TestCaseBodyConfig.vue'
 import TestCaseSetupHooksConfig from './TestCaseSetupHooksConfig.vue'
@@ -101,6 +102,7 @@ type RequestHeaderData = {
 
 type CurrentStepData = {
   params: any
+  pathParams: any
   headers: any
   body: any
   setupHooks: any[]
@@ -117,6 +119,7 @@ const projectStore = useProjectStore()
 
 // 组件引用
 const paramsRef = ref()
+const pathParamsRef = ref()
 const headersRef = ref()
 const bodyRef = ref()
 const setupHooksRef = ref()
@@ -216,6 +219,7 @@ const getExtractPayload = (): ApiExtractPayload => {
 
 const collectCurrentStepData = (): CurrentStepData => ({
   params: paramsRef.value?.getParams() ?? props.modelValue.interface_data.params ?? [],
+  pathParams: pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.() ?? props.modelValue.interface_data.path_params ?? [],
   headers: headersRef.value?.getHeaders() ?? props.modelValue.interface_data.headers ?? [],
   body: bodyRef.value?.getBody() ?? props.modelValue.interface_data.body ?? { type: 'none', content: null },
   setupHooks: setupHooksRef.value?.getHooks() ?? props.modelValue.interface_data.setup_hooks ?? [],
@@ -264,6 +268,7 @@ const buildCurrentStepSnapshot = (
       module: normalizedModuleId,
       headers: currentData.headers ?? [],
       params: currentData.params ?? [],
+      path_params: currentData.pathParams ?? [],
       body: currentData.body ?? { type: 'none', content: null },
       setup_hooks: currentData.setupHooks ?? [],
       teardown_hooks: currentData.teardownHooks ?? [],
@@ -343,6 +348,7 @@ const stepInterface = computed({
         module: normalizedModuleId,
         headers,
         params,
+        path_params: props.modelValue.interface_data.path_params || [],
         body: body as any,
         setup_hooks: props.modelValue.interface_data.setup_hooks || [],
         teardown_hooks: props.modelValue.interface_data.teardown_hooks || [],
@@ -606,6 +612,7 @@ const handleSend = async (requestData: RequestHeaderData) => {
     const currentData = collectCurrentStepData()
     const {
       params,
+      pathParams,
       headers,
       body,
       setupHooks,
@@ -646,6 +653,7 @@ const handleSend = async (requestData: RequestHeaderData) => {
       url: requestData.url,
       headers,
       params,
+      path_params: pathParams,
       body,
       setup_hooks: setupHooks,
       teardown_hooks: teardownHooks,
@@ -712,6 +720,7 @@ const handleSave = async (requestData: RequestHeaderData) => {
   try {
     savingLoading.value = true
     const params = paramsRef.value?.getParams() ?? props.modelValue.interface_data.params ?? []
+    const pathParams = pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.() ?? props.modelValue.interface_data.path_params ?? []
     const headers = headersRef.value?.getHeaders() ?? props.modelValue.interface_data.headers ?? []
     const body = bodyRef.value?.getBody() ?? props.modelValue.interface_data.body ?? { type: 'none', content: null }
     const setupHooks = setupHooksRef.value?.getHooks() ?? props.modelValue.interface_data.setup_hooks ?? []
@@ -727,6 +736,7 @@ const handleSave = async (requestData: RequestHeaderData) => {
       project: Number(projectStore.currentProjectId),
       headers,
       params,
+      path_params: pathParams,
       body,
       setup_hooks: setupHooks,
       teardown_hooks: teardownHooks,
@@ -933,6 +943,7 @@ const handleStepSave = async (requestData: RequestHeaderData) => {
 
     // 获取最新的接口配置
     const params = paramsRef.value?.getParams() ?? props.modelValue.interface_data.params ?? [];
+    const pathParams = pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.() ?? props.modelValue.interface_data.path_params ?? [];
     const headers = headersRef.value?.getHeaders() ?? props.modelValue.interface_data.headers ?? [];
 
     // 获取body
@@ -1006,6 +1017,7 @@ const handleStepSave = async (requestData: RequestHeaderData) => {
             url: requestData.url,
             headers,
             params,
+            path_params: pathParams,
             body,
             validators: assertRules,
             extract: extractPayload.extract,
@@ -1080,6 +1092,7 @@ const handleStepSave = async (requestData: RequestHeaderData) => {
           url: requestData.url,
           headers,
           params,
+          path_params: pathParams,
           body,
           validators: assertRules,
           extract: extractPayload.extract,
@@ -1380,6 +1393,14 @@ defineExpose({
           <test-case-params-config
             ref="paramsRef"
             :params="modelValue.interface_data.params"
+          />
+        </a-tab-pane>
+        <a-tab-pane key="path_params" title="Path Params">
+          <test-case-path-params-config
+            ref="pathParamsRef"
+            :path-params="modelValue.interface_data.path_params"
+            :url="stepInterface.url || modelValue.interface_data.url || ''"
+            @update:path-params="val => updateInterfaceData('path_params', val)"
           />
         </a-tab-pane>
         <a-tab-pane key="body" title="Body">

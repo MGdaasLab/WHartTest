@@ -42,6 +42,10 @@ class ApiInterfaceSerializer(serializers.ModelSerializer):
         except ValueError:
             data['params'] = []
         try:
+            data['path_params'] = normalize_key_value_pairs(data.get('path_params'), 'path_params')
+        except ValueError:
+            data['path_params'] = []
+        try:
             data['body'] = normalize_request_body(data.get('body'))
         except ValueError:
             data['body'] = {'type': 'raw', 'content': data.get('body')}
@@ -90,6 +94,14 @@ class ApiInterfaceSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"params": str(exc)}) from exc
         elif instance is None:
             attrs['params'] = []
+
+        if 'path_params' in attrs:
+            try:
+                attrs['path_params'] = normalize_key_value_pairs(attrs.get('path_params'), 'path_params')
+            except ValueError as exc:
+                raise serializers.ValidationError({"path_params": str(exc)}) from exc
+        elif instance is None:
+            attrs['path_params'] = []
 
         if 'body' in attrs:
             try:

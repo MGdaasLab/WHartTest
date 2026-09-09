@@ -519,6 +519,7 @@ class ApiInterfaceViewSet(BaseModelViewSet):
                 'url': request.data.get('url', ''),
                 'headers': request.data.get('headers', {}),
                 'params': request.data.get('params', {}),
+                'path_params': request.data.get('path_params', []),
                 'body': request.data.get('body', {}),
             })
         elif interface_type == 'sql':

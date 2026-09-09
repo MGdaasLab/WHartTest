@@ -1,3 +1,4 @@
+import re
 import json
 from typing import Any
 
@@ -165,3 +166,35 @@ def prepare_request_body_for_runner(value: Any) -> Any:
         return flatten_key_value_pairs(content)
 
     return content
+
+
+def apply_path_params_to_url(url: str, path_params: Any, variables: dict[str, Any] | None = None) -> str:
+    """Replace path parameter placeholders in URL with values from path_params.
+
+    Supports both '{param}' / '{ param }' and ':param' formats.
+    Also resolves variable references (e.g. '$var_name') if variables dict is provided.
+    """
+    if not url:
+        return ''
+    if not path_params:
+        return url
+
+    flattened = flatten_key_value_pairs(path_params)
+    if not flattened:
+        return url
+
+    result = url
+    variables = variables or {}
+
+    for key, val in flattened.items():
+        if not key:
+            continue
+        if isinstance(val, str) and val.startswith('$'):
+            var_name = val[1:]
+            val = variables.get(var_name, val)
+        val_str = str(val) if val is not None else ''
+
+        result = re.sub(r'\{\s*' + re.escape(str(key)) + r'\s*\}', lambda _: val_str, result)
+        result = re.sub(r':' + re.escape(str(key)) + r'(?=(/|\?|#|$))', lambda _: val_str, result)
+
+    return result

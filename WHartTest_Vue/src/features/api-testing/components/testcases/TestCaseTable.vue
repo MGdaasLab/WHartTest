@@ -1,15 +1,19 @@
 <script setup lang="ts">
+import { computed, ref, watch } from 'vue'
 import type { TableColumnData } from '@arco-design/web-vue'
 import type { ApiTestCase } from '../../types/testcase'
 import { IconEdit, IconDelete, IconMore, IconCopy } from '@arco-design/web-vue/es/icon'
+
+import { useAppI18n } from '@/composables/useAppI18n'
 
 interface Props {
   data: ApiTestCase[]
   loading?: boolean
 }
 
-defineProps<Props>()
-const emit = defineEmits(['sort', 'run', 'link', 'report', 'edit', 'copy', 'delete'])
+const props = defineProps<Props>()
+const emit = defineEmits(['sort', 'run', 'link', 'report', 'edit', 'copy', 'delete', 'batch-delete'])
+const { isEnglish, tl } = useAppI18n()
 
 const priorityColors = {
   'P0': 'red',
@@ -132,10 +136,66 @@ const handleCopy = (record: ApiTestCase) => {
 const handleDelete = (record: ApiTestCase) => {
   emit('delete', record)
 }
+
+// 批量选择
+const selectedRowKeys = ref<(string | number)[]>([])
+
+const selectedRecords = computed(() => {
+  const keySet = new Set(selectedRowKeys.value.map(String))
+  return props.data.filter(item => item.id !== null && item.id !== undefined && keySet.has(String(item.id)))
+})
+
+const selectedCount = computed(() => selectedRecords.value.length)
+
+const rowSelection = {
+  type: 'checkbox' as const,
+  showCheckedAll: true,
+  onlyCurrent: true,
+  width: 42,
+}
+
+const clearSelection = () => {
+  selectedRowKeys.value = []
+}
+
+const handleBatchDeleteClick = () => {
+  if (selectedRecords.value.length === 0) return
+  emit('batch-delete', [...selectedRecords.value])
+}
+
+// 列表数据变化时清理已不存在的勾选项
+watch(
+  () => props.data.map(item => item.id),
+  (ids) => {
+    const valid = new Set((ids || []).filter(id => id !== null && id !== undefined).map(String))
+    selectedRowKeys.value = selectedRowKeys.value.filter(key => valid.has(String(key)))
+  },
+)
+
+defineExpose({ clearSelection, selectedRowKeys })
 </script>
 
 <template>
-  <div class="h-full">
+  <div class="h-full flex flex-col">
+    <!-- 批量操作条 -->
+    <div v-if="selectedCount > 0" class="batch-bar">
+      <div class="batch-bar__info">
+        <a-tag color="arcoblue" size="small">{{ tl('已选') }} {{ selectedCount }}</a-tag>
+        <span class="batch-bar__hint">
+          {{ isEnglish ? `Selected ${selectedCount} ${selectedCount === 1 ? 'test case' : 'test cases'}, ready for batch delete` : `已勾选 ${selectedCount} 个用例，可批量删除` }}
+        </span>
+      </div>
+      <div class="batch-bar__actions">
+        <a-button type="text" size="small" class="batch-bar__clear" @click="clearSelection">
+          {{ tl('取消选择') }}
+        </a-button>
+        <a-button type="primary" status="danger" size="small" @click="handleBatchDeleteClick">
+          <template #icon><icon-delete /></template>
+          {{ tl('批量删除') }}
+        </a-button>
+      </div>
+    </div>
+
     <a-table
       :data="data"
       :columns="columns"
@@ -143,6 +203,9 @@ const handleDelete = (record: ApiTestCase) => {
       :loading="loading"
       :scroll="{ y: 'calc(100vh - 340px)' }"
       :sticky-header="true"
+      row-key="id"
+      v-model:selected-keys="selectedRowKeys"
+      :row-selection="rowSelection"
       class="custom-table"
       @sorter-change="handleSortChange"
     >
@@ -238,6 +301,41 @@ const handleDelete = (record: ApiTestCase) => {
 
 <style scoped>
 @reference "tailwindcss";
+
+/* 批量操作条 */
+.batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border: 1px solid rgba(var(--theme-accent-rgb), 0.24);
+  border-radius: 6px;
+  background: rgba(var(--theme-accent-rgb), 0.06);
+}
+
+.batch-bar__info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch-bar__hint {
+  color: var(--tc-text-muted);
+  font-size: 12px;
+}
+
+.batch-bar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.batch-bar__clear {
+  color: var(--tc-text-muted) !important;
+}
+
 .custom-table :deep(.arco-table) {
   background-color: transparent !important;
 }

@@ -26,6 +26,13 @@ export const interfaceCaseService = {
   delete: (projectId: number, id: number) =>
     request<void>({ url: `${base(projectId)}/${id}/`, method: 'DELETE' }),
 
+  batchDelete: (projectId: number, ids: number[]) =>
+    request<{ message?: string; deleted_count?: number; deleted_ids?: number[] }>({
+      url: `${base(projectId)}/batch-delete/`,
+      method: 'POST',
+      data: { ids }
+    }),
+
   copy: (projectId: number, id: number, data?: { name?: string }) =>
     request<ApiInterfaceCase>({ url: `${base(projectId)}/${id}/copy/`, method: 'POST', data }),
 

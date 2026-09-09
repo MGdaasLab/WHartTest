@@ -61,6 +61,7 @@ class ApiInterface(models.Model):
     url = models.TextField(blank=True, null=True, verbose_name='URL')
     headers = models.JSONField(default=dict, blank=True, verbose_name='Headers')
     params = models.JSONField(default=dict, blank=True, verbose_name='Query Params')
+    path_params = models.JSONField(default=list, blank=True, verbose_name='Path Params')
     body = models.JSONField(default=dict, blank=True, verbose_name='Request Body')
 
     # SQL-specific fields
@@ -180,6 +181,7 @@ class ApiInterface(models.Model):
             self.url = None
             self.headers = {}
             self.params = {}
+            self.path_params = []
             self.body = {}
 
         super().save(*args, **kwargs)
@@ -204,6 +206,7 @@ class ApiInterface(models.Model):
                 'url': self.url,
                 'headers': self.headers,
                 'params': self.params,
+                'path_params': self.path_params,
                 'body': self.body,
             })
         elif self.type == self.TYPE_SQL:

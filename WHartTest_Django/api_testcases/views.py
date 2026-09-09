@@ -12,7 +12,7 @@ from django.shortcuts import get_object_or_404
 from wharttest_django.pagination import StandardPagination
 
 from wharttest_django.viewsets import BaseModelViewSet
-from wharttest_django.permissions import HasModelPermission
+from wharttest_django.permissions import HasModelPermission, permission_required
 from wharttest_django.api_permissions import IsProjectMemberForResource
 
 from .models import (
@@ -414,6 +414,63 @@ class ApiTestCaseViewSet(BaseModelViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    @permission_required('api_testcases.delete_apitestcase')
+    def batch_delete(self, request, *args, **kwargs):
+        """批量删除测试用例。POST: {"ids": [1, 2, 3]}"""
+        ids_data = request.data.get('ids', [])
+        if not isinstance(ids_data, (list, tuple)) or not ids_data:
+            return Response(
+                {'error': '请提供要删除的用例ID列表'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        testcase_ids = []
+        for item in ids_data:
+            if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+                return Response(
+                    {'error': 'ids参数格式错误，应为正整数列表'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            testcase_ids.append(item)
+
+        queryset = self.get_queryset()
+        testcases_to_delete = queryset.filter(id__in=testcase_ids)
+        found_ids = list(testcases_to_delete.values_list('id', flat=True))
+        not_found_ids = [item_id for item_id in testcase_ids if item_id not in found_ids]
+
+        if not_found_ids:
+            return Response(
+                {
+                    'error': f'以下用例ID不存在或不属于当前项目: {not_found_ids}',
+                    'not_found_ids': not_found_ids,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted_info = [
+            {'id': item.id, 'name': item.name}
+            for item in testcases_to_delete
+        ]
+
+        try:
+            with transaction.atomic():
+                testcases_to_delete.delete()
+            return Response(
+                {
+                    'message': f'成功删除 {len(deleted_info)} 个用例',
+                    'deleted_count': len(deleted_info),
+                    'deleted_ids': found_ids,
+                    'deleted_testcases': deleted_info,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as exc:
+            return Response(
+                {'error': f'批量删除失败: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     @action(detail=True, methods=['delete'])
     def delete_step(self, request, pk=None, **kwargs):
         testcase = self.get_object()
@@ -758,6 +815,63 @@ class ApiInterfaceCaseViewSet(BaseModelViewSet):
 
         serializer = ApiInterfaceCaseReportListSerializer(reports, many=True)
         return Response(serializer.data)
+
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    @permission_required('api_testcases.delete_apiinterfacecase')
+    def batch_delete(self, request, *args, **kwargs):
+        """批量删除接口用例。POST: {"ids": [1, 2, 3]}"""
+        ids_data = request.data.get('ids', [])
+        if not isinstance(ids_data, (list, tuple)) or not ids_data:
+            return Response(
+                {'error': '请提供要删除的接口用例ID列表'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        case_ids = []
+        for item in ids_data:
+            if isinstance(item, bool) or not isinstance(item, int) or item <= 0:
+                return Response(
+                    {'error': 'ids参数格式错误，应为正整数列表'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            case_ids.append(item)
+
+        queryset = self.get_queryset()
+        cases_to_delete = queryset.filter(id__in=case_ids)
+        found_ids = list(cases_to_delete.values_list('id', flat=True))
+        not_found_ids = [item_id for item_id in case_ids if item_id not in found_ids]
+
+        if not_found_ids:
+            return Response(
+                {
+                    'error': f'以下接口用例ID不存在或不属于当前项目: {not_found_ids}',
+                    'not_found_ids': not_found_ids,
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deleted_info = [
+            {'id': item.id, 'name': item.name}
+            for item in cases_to_delete
+        ]
+
+        try:
+            with transaction.atomic():
+                cases_to_delete.delete()
+            return Response(
+                {
+                    'message': f'成功删除 {len(deleted_info)} 个接口用例',
+                    'deleted_count': len(deleted_info),
+                    'deleted_ids': found_ids,
+                    'deleted_interface_cases': deleted_info,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as exc:
+            return Response(
+                {'error': f'批量删除失败: {exc}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
 
 class ApiTestReportViewSet(viewsets.ReadOnlyModelViewSet):

@@ -5,7 +5,7 @@ import type { FormInstance } from '@arco-design/web-vue'
 import { useProjectStore } from '@/store/projectStore'
 import { IconPlus, IconSearch, IconFolder, IconEdit, IconDelete, IconList, IconSend, IconCopy, IconUpload, IconDownload, IconClose } from '@arco-design/web-vue/es/icon'
 import type { ApiModule, PaginatedData, ApiInterface } from '../../services/interfaceService'
-import type { InterfaceStatus } from '../../types/interface'
+import { DEFAULT_INTERFACE_STATUS, type InterfaceStatus, type HttpMethod } from '../../types/interface'
 import { getInterfaces, getInterfaceById, deleteInterface, batchDeleteInterfaces, duplicateInterface, importApiDocument, importApiDocumentText, exportApiDocument } from '../../services/interfaceService'
 import type { ApiDocumentExportFormat, ApiDocumentImportType } from '../../services/interfaceService'
 import { getModules, createModule, updateModule, deleteModule, moveModule } from '../../services/moduleService'
@@ -30,6 +30,7 @@ const interfaces = ref<ApiInterface[]>([])
 const searchKeyword = ref('')
 const selectedApi = ref<ApiModule | undefined>()
 const selectedInterface = ref<ApiInterface | undefined>(undefined)
+const interfaceDetailsCache = new Map<number, ApiInterface>()
 const expandedIds = ref<number[]>([])
 const detailKey = ref(0)
 const openApiFileInput = ref<HTMLInputElement | null>(null)
@@ -780,12 +781,15 @@ const handleDelete = async (module: ApiModule) => {
 // 选择接口
 const handleSelectInterface = (api: ApiInterface) => {
   console.log('父组件收到接口选择事件:', api)
-  selectedInterface.value = api
+  if (api?.id) {
+    interfaceDetailsCache.set(api.id, api)
+  }
   viewMode.value = 'detail' // 切换到详情模式
-  
-  // 创建或激活页签
+
+  // 先创建或激活页签，保证 activeTabId 与选中的接口一致
   const tabId = tabsStore.openOrActivateInterface(api)
-  
+  selectedInterface.value = api
+
   // 如果是已存在的页签，强制触发状态恢复
   const existingTab = tabsStore.tabs.find(t => t.id === tabId)
   if (existingTab && existingTab.activeTab) {
@@ -795,7 +799,7 @@ const handleSelectInterface = (api: ApiInterface) => {
       detailKey.value++
     })
   }
-  
+
   console.log('已更新选中的接口:', selectedInterface.value)
 }
 
@@ -832,9 +836,12 @@ const handleUpdateInterface = (api: ApiInterface) => {
   // 不要严格检查接口完整性，使用存在的数据
   if (api) {
     console.log('接收到接口数据，设置为当前选中接口:', api)
+    if (api.id) {
+      interfaceDetailsCache.set(api.id, api)
+    }
     // 设置当前选中的接口
     selectedInterface.value = api
-    
+
     // 如果接口有ID且在接口列表中存在，则更新列表中的数据
     if (api.id) {
       const index = interfaces.value.findIndex(item => item.id === api.id)
@@ -846,7 +853,7 @@ const handleUpdateInterface = (api: ApiInterface) => {
         interfaces.value.push(api)
       }
     }
-    
+
     // 确保在下一个tick渲染完成后，detailKey不会导致selectedInterface被清空
     nextTick(() => {
       console.log('确认选中接口状态:', selectedInterface.value)
@@ -1379,7 +1386,11 @@ const handleCreateInterface = () => {
 watch(() => selectedInterface.value, (newInterface) => {
   if (newInterface && tabsStore.activeTabId) {
     const activeTab = tabsStore.tabs.find(t => t.id === tabsStore.activeTabId)
-    if (activeTab) {
+    // 仅在页签无 interfaceId（新建）或 ID 与当前接口一致时才更新，防止串写
+    if (activeTab && (!activeTab.interfaceId || activeTab.interfaceId === newInterface.id)) {
+      if (newInterface.id) {
+        interfaceDetailsCache.set(newInterface.id, newInterface)
+      }
       // 更新页签的接口信息
       tabsStore.updateTabRequest(tabsStore.activeTabId, {
         method: newInterface.method,
@@ -1388,52 +1399,138 @@ watch(() => selectedInterface.value, (newInterface) => {
         module: newInterface.module,
         params: newInterface.params,
         headers: newInterface.headers,
+        pathParams: newInterface.path_params,
         body: newInterface.body,
         setupHooks: newInterface.setup_hooks,
         teardownHooks: newInterface.teardown_hooks,
         extractRules: newInterface.extract,
         extractMeta: newInterface.extract_meta,
-        assertRules: newInterface.validators
+        assertRules: newInterface.validators,
+        rawInterface: newInterface
       })
     }
   }
 }, { deep: true })
 
-// 处理页签切换
-const handleTabChange = (tabId: string) => {
-  const tab = tabsStore.tabs.find(t => t.id === tabId)
-  if (tab) {
-    // 恢复页签的接口数据（不重新加载）
-    if (tab.interfaceId) {
-      // 尝试从各个列表中找到接口数据
-      const foundInterface = [...interfaces.value, ...noModuleInterfaces.value, ...allInterfaces.value]
-        .find(api => api.id === tab.interfaceId)
-      
-      if (foundInterface) {
-        // 创建一个包含页签保存数据的接口对象
-        selectedInterface.value = {
-          ...foundInterface,
-          // 恢复页签中保存的请求数据
-          params: tab.params || foundInterface.params,
-          headers: tab.headers || foundInterface.headers,
-          body: tab.body || foundInterface.body,
-          setup_hooks: tab.setupHooks || foundInterface.setup_hooks,
-          teardown_hooks: tab.teardownHooks || foundInterface.teardown_hooks,
-          extract: tab.extractRules || foundInterface.extract,
-          extract_meta: tab.extractMeta || foundInterface.extract_meta,
-          validators: tab.assertRules || foundInterface.validators
-        }
-      } else {
-        selectedInterface.value = undefined
-      }
-    } else {
-      // 新建接口页签
-      selectedInterface.value = undefined
+// 辅助函数：判断请求体是否包含实质内容
+const hasValidRequestBody = (body: any): boolean => {
+  if (!body) return false
+  if (body.type && body.type !== 'none') {
+    if (body.type === 'raw') {
+      return body.content !== null && body.content !== undefined && body.content !== ''
     }
-    
-    viewMode.value = 'detail'
-    // 不再强制刷新，让 ApiDetail 组件自己处理状态恢复
-    // detailKey.value++
+    if (body.type === 'form-data' || body.type === 'x-www-form-urlencoded') {
+      if (Array.isArray(body.content)) {
+        return body.content.some((item: any) => Boolean(item?.key?.trim() || item?.value?.trim() || item?.file_id))
+      }
+      if (typeof body.content === 'object' && body.content !== null) return Object.keys(body.content).length > 0
+      return Boolean(body.content)
+    }
+    if (body.type === 'binary') return Boolean(body.content)
+    return true
+  }
+  // 兼容直接是对象或非空字符串的情况
+  if (typeof body === 'object' && body !== null && !('type' in body) && Object.keys(body).length > 0) {
+    return true
+  }
+  if (typeof body === 'string' && body.trim() !== '') {
+    return true
+  }
+  return false
+}
+
+// 辅助函数：合并请求体，确保已有的有效请求体不被空占位覆盖
+const resolveTabRequestBody = (tabBody: any, baseBody: any) => {
+  if (hasValidRequestBody(tabBody)) return tabBody
+  if (hasValidRequestBody(baseBody)) return baseBody
+  return tabBody ?? baseBody ?? { type: 'none', content: null }
+}
+
+// 处理页签切换
+const handleTabChange = async (tabId: string) => {
+  const tab = tabsStore.tabs.find(t => t.id === tabId)
+  if (!tab) return
+
+  viewMode.value = 'detail'
+
+  if (!tab.interfaceId) {
+    // 新建接口空白页签
+    selectedInterface.value = undefined
+    return
+  }
+
+  // 1. 优先从内存缓存、页签自身存储的完整数据或各列表中寻找
+  let foundInterface: ApiInterface | undefined =
+    interfaceDetailsCache.get(tab.interfaceId) ||
+    tab.rawInterface ||
+    [...interfaces.value, ...noModuleInterfaces.value, ...allInterfaces.value].find(api => api.id === tab.interfaceId)
+
+  if (foundInterface) {
+    interfaceDetailsCache.set(tab.interfaceId, foundInterface)
+    selectedInterface.value = {
+      ...foundInterface,
+      name: tab.name || foundInterface.name,
+      method: (tab.method as HttpMethod) || foundInterface.method,
+      url: tab.url ?? foundInterface.url,
+      params: tab.params ?? foundInterface.params,
+      headers: tab.headers ?? foundInterface.headers,
+      path_params: tab.pathParams ?? foundInterface.path_params,
+      body: resolveTabRequestBody(tab.body, foundInterface.body),
+      setup_hooks: tab.setupHooks ?? foundInterface.setup_hooks,
+      teardown_hooks: tab.teardownHooks ?? foundInterface.teardown_hooks,
+      extract: tab.extractRules ?? foundInterface.extract,
+      extract_meta: tab.extractMeta ?? foundInterface.extract_meta,
+      validators: tab.assertRules ?? foundInterface.validators
+    }
+  } else {
+    // 2. 本地尚未缓存该接口详情，先基于页签已有数据直接呈现，避免白屏或数据瞬时清空
+    selectedInterface.value = {
+      id: tab.interfaceId,
+      name: tab.name || '接口详情',
+      type: 'http',
+      method: (tab.method as HttpMethod) || 'GET',
+      url: tab.url || '',
+      module: tab.module,
+      project: Number(projectStore.currentProjectId || 0),
+      params: tab.params || [],
+      headers: tab.headers || [],
+      path_params: tab.pathParams || [],
+      body: tab.body || { type: 'none', content: null },
+      setup_hooks: tab.setupHooks || [],
+      teardown_hooks: tab.teardownHooks || [],
+      extract: tab.extractRules || {},
+      extract_meta: tab.extractMeta || {},
+      validators: tab.assertRules || [],
+      status: DEFAULT_INTERFACE_STATUS
+    } as unknown as ApiInterface
+
+    // 3. 异步拉取后端完整接口详情并缓存，更新界面
+    try {
+      const { data } = await getInterfaceById(tab.interfaceId)
+      if (data) {
+        interfaceDetailsCache.set(tab.interfaceId, data)
+        // 确保当前活跃页签仍是本页签时再回填更新
+        if (tabsStore.activeTabId === tabId) {
+          selectedInterface.value = {
+            ...data,
+            name: tab.name || data.name,
+            method: (tab.method as HttpMethod) || data.method,
+            url: tab.url ?? data.url,
+            params: tab.params ?? data.params,
+            headers: tab.headers ?? data.headers,
+            path_params: tab.pathParams ?? data.path_params,
+            body: resolveTabRequestBody(tab.body, data.body),
+            setup_hooks: tab.setupHooks ?? data.setup_hooks,
+            teardown_hooks: tab.teardownHooks ?? data.teardown_hooks,
+            extract: tab.extractRules ?? data.extract,
+            extract_meta: tab.extractMeta ?? data.extract_meta,
+            validators: tab.assertRules ?? data.validators
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('获取接口详情失败:', error)
+    }
   }
 }
 
@@ -1460,6 +1557,7 @@ onMounted(async () => {
           const restoredInterface = (data?.results || [])
             .find(api => api.id === activeTab.interfaceId)
           if (restoredInterface) {
+            interfaceDetailsCache.set(restoredInterface.id, restoredInterface)
             selectedInterface.value = {
               ...restoredInterface,
               params: activeTab.params || restoredInterface.params,

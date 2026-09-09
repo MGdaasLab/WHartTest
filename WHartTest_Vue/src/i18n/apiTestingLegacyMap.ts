@@ -2,6 +2,8 @@ type LegacyRegexResolver = (...groups: string[]) => string;
 
 export const API_TESTING_LEGACY_EXACT_EN_MAP: Record<string, string> = {
   '展开': 'Expand',
+  '全屏': 'Fullscreen',
+  '退出全屏': 'Exit Fullscreen',
   '键': 'Key',
   '值': 'Value',
   '环境': 'Environment',

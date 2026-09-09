@@ -90,6 +90,7 @@ export interface ApiInterface {
   url: string | null;
   headers: ApiKeyValuePair[];
   params: ApiKeyValuePair[];
+  path_params?: ApiKeyValuePair[];
   body: ApiRequestBody;
   file_ids: number[];
 

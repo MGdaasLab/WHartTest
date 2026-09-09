@@ -347,6 +347,7 @@ def _operation_to_interface_payload(
 
     headers = _parameters_to_pairs(document, parameters, "header")
     query_params = _parameters_to_pairs(document, parameters, "query")
+    path_params = _parameters_to_pairs(document, parameters, "path")
 
     body = (
         _swagger_request_body(document, operation, parameters)
@@ -370,6 +371,7 @@ def _operation_to_interface_payload(
         "url": path,
         "headers": headers,
         "params": query_params,
+        "path_params": path_params,
         "body": body,
         "setup_hooks": [],
         "teardown_hooks": [],
@@ -1090,6 +1092,16 @@ def _enabled_pairs(value: Any) -> list[dict[str, Any]]:
 
 def _build_parameters(interface: ApiInterface) -> list[dict[str, Any]]:
     parameters = []
+    for item in _enabled_pairs(interface.path_params or []):
+        parameters.append({
+            "name": str(item.get("key")),
+            "in": "path",
+            "required": True,
+            "description": item.get("description", ""),
+            "schema": _schema_from_value(item.get("value", "")),
+            "example": item.get("value", ""),
+        })
+
     for item in _enabled_pairs(interface.params):
         parameters.append({
             "name": str(item.get("key")),

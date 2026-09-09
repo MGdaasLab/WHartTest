@@ -60,6 +60,7 @@ const expandedModuleIds = ref<number[]>([])
 const selectedInterface = ref<ApiInterface | null>(null)
 const selectedModule = ref<ApiModule | null>(null)
 const selectedNoModuleScope = ref(false)
+const interfaceCaseTableRef = ref<InstanceType<typeof InterfaceCaseTable>>()
 const searchKeyword = ref('')
 const formVisible = ref(false)
 const formType = ref<'create' | 'edit'>('create')
@@ -91,6 +92,118 @@ const pagination = reactive({
   page_size: 10,
   total: 0
 })
+
+// 模块树展开等面板状态按项目持久化到 sessionStorage：
+// 查看报告/编辑页是独立路由，跳转会卸载本面板，返回时重新挂载，
+// 若不做恢复会导致已展开的模块树被自动收起
+const PANEL_STATE_STORAGE_KEY = 'api-interface-cases-panel-state-v1'
+
+interface PanelStateSnapshot {
+  expandedModuleIds?: number[]
+  selectedModuleId?: number
+  selectedInterfaceId?: number
+  noModuleScope?: boolean
+  page?: number
+  pageSize?: number
+}
+
+const loadPanelStateMap = (): Record<string, PanelStateSnapshot> => {
+  try {
+    const raw = sessionStorage.getItem(PANEL_STATE_STORAGE_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch (error) {
+    console.warn('读取接口用例面板状态失败:', error)
+    return {}
+  }
+}
+
+const savePanelState = () => {
+  const projectId = projectStore.currentProjectId
+  if (!projectId) return
+  try {
+    const map = loadPanelStateMap()
+    map[String(projectId)] = {
+      expandedModuleIds: [...expandedModuleIds.value],
+      selectedModuleId: selectedModule.value?.id,
+      selectedInterfaceId: selectedInterface.value?.id,
+      noModuleScope: selectedNoModuleScope.value,
+      page: pagination.current,
+      pageSize: pagination.page_size
+    }
+    sessionStorage.setItem(PANEL_STATE_STORAGE_KEY, JSON.stringify(map))
+  } catch (error) {
+    console.warn('保存接口用例面板状态失败:', error)
+  }
+}
+
+// 恢复展开状态与分页，返回初始加载页码
+const restoreExpansionAndPaging = (snapshot?: PanelStateSnapshot): number => {
+  if (!snapshot) return 1
+  expandedModuleIds.value = Array.isArray(snapshot.expandedModuleIds)
+    ? snapshot.expandedModuleIds.filter(id => typeof id === 'number')
+    : []
+  const pageSize = Number(snapshot.pageSize)
+  if (Number.isInteger(pageSize) && pageSize > 0) {
+    pagination.page_size = pageSize
+  }
+  const page = Number(snapshot.page)
+  return Number.isInteger(page) && page > 1 ? page : 1
+}
+
+const findModuleById = (items: ApiModule[], moduleId: number): ApiModule | null => {
+  for (const item of items) {
+    if (item.id === moduleId) return item
+    if (item.children?.length) {
+      const found = findModuleById(item.children, moduleId)
+      if (found) return found
+    }
+  }
+  return null
+}
+
+// 在树数据加载完成后恢复选中节点；节点已被删除时自动回退到全部用例
+const restoreSelection = (snapshot?: PanelStateSnapshot) => {
+  if (!snapshot) return
+  const interfaceId = Number(snapshot.selectedInterfaceId)
+  if (Number.isInteger(interfaceId) && interfaceId > 0) {
+    const api = interfaces.value.find(item => item.id === interfaceId)
+    if (api) {
+      selectedInterface.value = api
+      selectedModule.value = null
+      selectedNoModuleScope.value = !api.module
+      return
+    }
+  }
+  const moduleId = Number(snapshot.selectedModuleId)
+  if (Number.isInteger(moduleId) && moduleId > 0) {
+    const module = findModuleById(modules.value, moduleId)
+    if (module) {
+      selectedModule.value = module
+      selectedInterface.value = null
+      selectedNoModuleScope.value = false
+      if (!expandedModuleIds.value.includes(module.id)) {
+        expandedModuleIds.value.push(module.id)
+      }
+      return
+    }
+  }
+  selectedNoModuleScope.value = snapshot.noModuleScope === true && hasNoModuleInterfaces.value
+}
+
+// 展开/选中/分页任一变化即持久化，供路由跳转返回后恢复
+watch(
+  () => JSON.stringify({
+    e: expandedModuleIds.value,
+    m: selectedModule.value?.id,
+    i: selectedInterface.value?.id,
+    n: selectedNoModuleScope.value,
+    p: pagination.current,
+    s: pagination.page_size
+  }),
+  savePanelState
+)
 
 const noModuleInterfaces = computed(() =>
   interfaces.value
@@ -349,6 +462,57 @@ const handleDelete = async (record: ApiInterfaceCase) => {
   })
 }
 
+const handleBatchDelete = (records: ApiInterfaceCase[]) => {
+  if (!projectStore.currentProjectId) return
+  const targets = (records || []).filter(item => item?.id !== null && item?.id !== undefined)
+  if (targets.length === 0) {
+    Message.warning(tl('请先选择要删除的接口用例'))
+    return
+  }
+
+  const namesPreview = targets
+    .slice(0, 3)
+    .map(item => item.name)
+    .join('、')
+  const moreText = targets.length > 3
+    ? (isEnglish.value ? ` etc. (${targets.length} in total)` : ` 等 ${targets.length} 个`)
+    : ''
+  const caseLabel = targets.length === 1 ? 'interface case' : 'interface cases'
+
+  Modal.confirm({
+    title: tl('确认批量删除'),
+    content: isEnglish.value
+      ? `Delete ${targets.length} ${caseLabel} "${namesPreview}"${moreText}? Preconditions and execution records will also be deleted. This cannot be undone.`
+      : `确定要删除「${namesPreview}」${moreText}吗？删除后将同时删除前置条件和执行记录，且无法恢复。`,
+    okText: tl('确认删除'),
+    cancelText: tl('取消'),
+    okButtonProps: { status: 'danger' },
+    async onOk() {
+      if (!projectStore.currentProjectId) return
+      try {
+        const ids = targets.map(item => item.id!)
+        const res = await interfaceCaseService.batchDelete(projectStore.currentProjectId, ids)
+        if (res.success) {
+          const deletedCount = res.data?.deleted_count ?? ids.length
+          Message.success(isEnglish.value
+            ? `Successfully deleted ${deletedCount} ${deletedCount === 1 ? 'interface case' : 'interface cases'}`
+            : `成功删除 ${deletedCount} 个接口用例`)
+        } else {
+          throw new Error(res.error || tl('批量删除接口用例失败'))
+        }
+        interfaceCaseTableRef.value?.clearSelection()
+        const remainingInPage = interfaceCases.value.length - ids.length
+        const nextPage = remainingInPage <= 0 && pagination.current > 1
+          ? pagination.current - 1
+          : pagination.current
+        await fetchInterfaceCases(nextPage)
+      } catch (error) {
+        Message.error(error instanceof Error ? error.message : tl('批量删除接口用例失败'))
+      }
+    }
+  })
+}
+
 const handleOpenCreateModuleForm = (parentId?: number) => {
   formType.value = 'create'
   formParentId.value = parentId
@@ -503,20 +667,57 @@ const handlePageSizeChange = (size: number) => {
   fetchInterfaceCases(1)
 }
 
-watch(() => projectStore.currentProjectId, async (projectId) => {
+// 记录本实例已完成水合的项目：避免 watch(immediate) 与 onMounted 重复加载，
+// 同时保证实例存活期间切换项目仍能重新加载
+let hydratedProjectId: number | null = null
+
+const hydratePanel = async () => {
+  const projectId = projectStore.currentProjectId
   if (!projectId) return
+  hydratedProjectId = projectId
+  const snapshot = loadPanelStateMap()[String(projectId)]
+  const hasSnapshot = !!snapshot
+  // 每次水合先清理当前实例的选中状态，避免切换项目时沿用旧项目节点；
+  // 同一项目重新挂载（如查看报告返回）时再根据快照恢复
   selectedModule.value = null
   selectedInterface.value = null
   selectedNoModuleScope.value = false
-  // 切换项目时清空展开状态，保证新项目默认收起，由用户手动点击展开
-  expandedModuleIds.value = []
+  if (!hasSnapshot) {
+    // 无快照时默认收起，由用户手动点击展开
+    expandedModuleIds.value = []
+    pagination.current = 1
+  }
+  const initialPage = restoreExpansionAndPaging(snapshot)
   await loadTreeData()
-  await fetchInterfaceCases(1)
+  if (hasSnapshot) {
+    restoreSelection(snapshot)
+  }
+  await fetchInterfaceCases(initialPage)
+  // 恢复的页码因数据变化越界时回退到第一页
+  if (pagination.current > 1 && interfaceCases.value.length === 0 && pagination.total > 0) {
+    await fetchInterfaceCases(1)
+  }
+}
+
+watch(() => projectStore.currentProjectId, async (projectId, prevProjectId) => {
+  if (!projectId || hydratedProjectId === projectId) return
+  // 实例存活期间切换项目：先清空旧项目状态再水合；
+  // 查看报告返回导致面板重挂载时，保留快照走恢复分支
+  if (prevProjectId !== undefined && prevProjectId !== projectId) {
+    try {
+      const map = loadPanelStateMap()
+      delete map[String(prevProjectId)]
+      sessionStorage.setItem(PANEL_STATE_STORAGE_KEY, JSON.stringify(map))
+    } catch (error) {
+      console.warn('清理旧项目面板状态失败:', error)
+    }
+  }
+  await hydratePanel()
 }, { immediate: true })
 
 onMounted(() => {
-  if (projectStore.currentProjectId) {
-    loadTreeData()
+  if (projectStore.currentProjectId && hydratedProjectId !== projectStore.currentProjectId) {
+    hydratePanel()
   }
 })
 </script>
@@ -684,6 +885,7 @@ onMounted(() => {
       <div class="panel-shell flex-1 min-w-0 overflow-hidden">
         <div class="p-6 min-w-0 h-full">
           <InterfaceCaseTable
+            ref="interfaceCaseTableRef"
             :data="interfaceCases"
             :loading="loading"
             @sort="handleSortChange"
@@ -692,6 +894,7 @@ onMounted(() => {
             @edit="handleEdit"
             @copy="handleCopy"
             @delete="handleDelete"
+            @batch-delete="handleBatchDelete"
           />
         </div>
       </div>
