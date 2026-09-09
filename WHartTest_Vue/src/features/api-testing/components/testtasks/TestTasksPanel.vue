@@ -318,9 +318,14 @@ onMounted(async () => {
   }
 })
 
-// 监听项目变化时重新加载环境列表
-watch(() => projectStore.currentProjectId, async (newProjectId) => {
+// 监听项目变化时重新加载环境列表与任务集列表
+watch(() => projectStore.currentProjectId, async (newProjectId, oldProjectId) => {
+  if (newProjectId === oldProjectId) return
+  pagination.value.current = 1
+  testTaskSuites.value = []
+  pagination.value.total = 0
   if (newProjectId) {
+    fetchTestTaskSuites()
     try {
       await environmentStore.fetchEnvironments(newProjectId)
     } catch (error) {

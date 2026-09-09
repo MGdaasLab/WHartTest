@@ -8,7 +8,6 @@
       v-model="activeTab"
       :tabs="tabItems"
       :key="`api-testing-${locale}`"
-      destroy-on-hide
     >
       <template #interfaces>
         <InterfacesPanel />

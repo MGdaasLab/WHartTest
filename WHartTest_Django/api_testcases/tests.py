@@ -1372,6 +1372,46 @@ class ApiTestCaseAPITest(TestCase):
         else:
             self.assertGreaterEqual(len(response.data), 3)
 
+    def test_batch_delete_testcases(self):
+        """batch-delete removes multiple test cases at once."""
+        tc1 = ApiTestCase.objects.create(
+            name='Batch TC 1', project=self.project, created_by=self.user,
+        )
+        tc2 = ApiTestCase.objects.create(
+            name='Batch TC 2', project=self.project, created_by=self.user,
+        )
+        response = self.client.post(
+            f'{self.base_url}batch-delete/',
+            {'ids': [tc1.pk, tc2.pk]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data.get('data', response.data)
+        self.assertEqual(data.get('deleted_count'), 2)
+        self.assertEqual(ApiTestCase.objects.filter(id__in=[tc1.pk, tc2.pk]).count(), 0)
+
+    def test_batch_delete_testcases_rejects_missing_ids(self):
+        """batch-delete returns 400 when no ids are provided."""
+        response = self.client.post(
+            f'{self.base_url}batch-delete/',
+            {'ids': []},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_batch_delete_testcases_rejects_non_project_ids(self):
+        """batch-delete rejects ids that belong to another project."""
+        other_project = Project.objects.create(name='Other Project', creator=self.user)
+        foreign_tc = ApiTestCase.objects.create(
+            name='Foreign TC', project=other_project, created_by=self.user,
+        )
+        response = self.client.post(
+            f'{self.base_url}batch-delete/',
+            {'ids': [foreign_tc.pk]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
     def test_unauthenticated_access(self):
         self.client.force_authenticate(user=None)
         response = self.client.get(self.base_url)
@@ -2349,3 +2389,51 @@ class ApiInterfaceCaseAPITest(TestCase):
         self.assertEqual(details[0].step, precondition)
         self.assertEqual(details[0].extracted_variables['token'], 'abc123')
         self.assertEqual(details[1].step, main_step)
+
+    def test_batch_delete_interface_cases(self):
+        """batch-delete removes multiple interface cases at once."""
+        ic1 = ApiInterfaceCase.objects.create(
+            name='Batch IC 1', project=self.project, created_by=self.user,
+            interface=self.target_interface,
+        )
+        ic2 = ApiInterfaceCase.objects.create(
+            name='Batch IC 2', project=self.project, created_by=self.user,
+            interface=self.target_interface,
+        )
+        response = self.client.post(
+            f'{self.base_url}batch-delete/',
+            {'ids': [ic1.pk, ic2.pk]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        data = response.data.get('data', response.data)
+        self.assertEqual(data.get('deleted_count'), 2)
+        self.assertEqual(ApiInterfaceCase.objects.filter(id__in=[ic1.pk, ic2.pk]).count(), 0)
+
+    def test_batch_delete_interface_cases_rejects_missing_ids(self):
+        """batch-delete returns 400 when no ids are provided."""
+        response = self.client.post(
+            f'{self.base_url}batch-delete/',
+            {'ids': []},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_batch_delete_interface_cases_rejects_non_project_ids(self):
+        """batch-delete rejects ids that belong to another project."""
+        other_project = Project.objects.create(name='Other Project', creator=self.user)
+        foreign_interface = ApiInterface.objects.create(
+            name='Foreign API', type='http', method='GET', url='/foreign',
+            project=other_project, created_by=self.user,
+        )
+        foreign_ic = ApiInterfaceCase.objects.create(
+            name='Foreign IC', project=other_project, created_by=self.user,
+            interface=foreign_interface,
+        )
+        response = self.client.post(
+            f'{self.base_url}batch-delete/',
+            {'ids': [foreign_ic.pk]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+

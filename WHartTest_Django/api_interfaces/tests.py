@@ -3685,3 +3685,116 @@ class ApiInterfaceFilterTest(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn('count', response.data)
         self.assertIn('results', response.data)
+
+
+class ApiInterfacePathParamsTestCase(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='testuser_pathparams', password='password123')
+        self.project = Project.objects.create(name='Test Project PathParams', creator=self.user)
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        _grant_interface_perms(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+        self.base_url = f'/api/projects/{self.project.pk}/api-interfaces/'
+
+    def test_apply_path_params_to_url(self):
+        from api_interfaces.payloads import apply_path_params_to_url
+
+        url = '/api/v1/users/{user_id}/orders/{order_id}'
+        path_params = [
+            {'key': 'user_id', 'value': '1001', 'enabled': True},
+            {'key': 'order_id', 'value': 'ORD-999', 'enabled': True},
+        ]
+        result = apply_path_params_to_url(url, path_params)
+        self.assertEqual(result, '/api/v1/users/1001/orders/ORD-999')
+
+        url2 = '/api/v1/users/:user_id/posts/:post_id'
+        result2 = apply_path_params_to_url(url2, path_params)
+        self.assertEqual(result2, '/api/v1/users/1001/posts/:post_id')
+
+        variables = {'dynamic_id': '8888'}
+        url3 = '/api/v1/items/{item_id}'
+        path_params3 = [{'key': 'item_id', 'value': '$dynamic_id', 'enabled': True}]
+        result3 = apply_path_params_to_url(url3, path_params3, variables)
+        self.assertEqual(result3, '/api/v1/items/8888')
+
+        url4 = '/api/v1/files/{file_path}'
+        path_params4 = [{'key': 'file_path', 'value': r'C:\test\1', 'enabled': True}]
+        result4 = apply_path_params_to_url(url4, path_params4)
+        self.assertEqual(result4, r'/api/v1/files/C:\test\1')
+
+    def test_create_and_retrieve_interface_with_path_params(self):
+        data = {
+            'name': 'Path Param Interface',
+            'type': 'http',
+            'method': 'GET',
+            'url': '/api/users/{id}',
+            'path_params': [
+                {'key': 'id', 'value': '42', 'description': '用户ID', 'enabled': True}
+            ],
+            'headers': [],
+            'params': [],
+            'body': {'type': 'none', 'content': None},
+            'project': self.project.pk,
+        }
+        response = self.client.post(self.base_url, data, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        interface_id = response.data['id']
+        self.assertEqual(len(response.data['path_params']), 1)
+        self.assertEqual(response.data['path_params'][0]['key'], 'id')
+        self.assertEqual(response.data['path_params'][0]['value'], '42')
+
+        detail_response = self.client.get(f'{self.base_url}{interface_id}/')
+        self.assertEqual(detail_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(detail_response.data['path_params']), 1)
+        self.assertEqual(detail_response.data['path_params'][0]['value'], '42')
+
+    @patch('api_interfaces.views.InterfaceRunner')
+    def test_quick_debug_with_path_params(self, mock_runner_cls):
+        mock_runner = MagicMock()
+        mock_summary = MagicMock()
+        mock_summary.success = True
+        mock_summary.stat = MagicMock(
+            testcases_stat=MagicMock(total=1, success=1, fail=0),
+            teststeps_stat=MagicMock(total=1, successes=1, failures=0, errors=0),
+            elapsed_time=0.05
+        )
+        mock_summary.step_datas = []
+        mock_runner.run_interface.return_value = mock_summary
+        mock_runner.get_summary.return_value = {
+            'success': True,
+            'stat': {'testcases': {'total': 1, 'success': 1, 'fail': 0}, 'teststeps': {'total': 1, 'successes': 1, 'failures': 0, 'errors': 0}, 'elapsed_time': 0.05},
+            'time': {'start_at': 0, 'duration': 0.05},
+            'details': []
+        }
+        mock_runner.get_reports.return_value = None
+        mock_runner.get_records.return_value = []
+        mock_runner.get_response.return_value = {
+            'success': True,
+            'status_code': 200,
+            'elapsed': 0.05,
+            'request': {'body': None},
+            'response': {'body': {}},
+            'extracted_variables': {},
+            'validation_results': []
+        }
+        mock_runner_cls.return_value = mock_runner
+
+        debug_url = f'{self.base_url}quick_debug/'
+        payload = {
+            'type': 'http',
+            'method': 'GET',
+            'url': 'http://example.com/api/users/{user_id}',
+            'path_params': [
+                {'key': 'user_id', 'value': '12345', 'enabled': True}
+            ],
+            'headers': [],
+            'params': [],
+            'body': {'type': 'none', 'content': None},
+        }
+        response = self.client.post(debug_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_runner_cls.assert_called()
+        call_args = mock_runner_cls.call_args[0]
+        interface_data = call_args[0]
+        self.assertEqual(interface_data.get('path_params'), [{'key': 'user_id', 'value': '12345', 'enabled': True}])

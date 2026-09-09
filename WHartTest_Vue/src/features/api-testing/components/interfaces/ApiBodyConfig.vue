@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { ref, watch, nextTick } from 'vue'
 import type { FileItem } from '@arco-design/web-vue'
 import { IconDelete, IconPlus, IconUpload } from '@arco-design/web-vue/es/icon'
 import type { KeyValuePair } from '../../services/interfaceService'
@@ -9,11 +9,14 @@ import { Message } from '@arco-design/web-vue'
 import { useProjectStore } from '@/store/projectStore'
 import { fileService } from '@/features/file-management/services/fileService'
 
+export interface RequestBodyConfig {
+  type?: 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary' | string
+  content?: KeyValuePair[] | string | Record<string, any> | File | null
+  [key: string]: any
+}
+
 interface Props {
-  body?: {
-    type: 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary'
-    content: KeyValuePair[] | string | null
-  }
+  body?: RequestBodyConfig
 }
 
 const props = defineProps<Props>()
@@ -74,22 +77,61 @@ const initFormData = () => {
   }
 }
 
-// 监听body数据变化
-watch(() => props.body, (newBody) => {
-  // 重置所有状态
-  bodyType.value = 'none'
-  formDataList.value = [{ key: '', value: '', description: '', enabled: true }]
-  urlEncodedList.value = [{ key: '', value: '', description: '', enabled: true }]
-  rawContent.value = ''
-  rawLanguage.value = 'json'
-  binaryFile.value = null
+// 标记是否处于 props.body 外部同步中，避免触发 watch(bodyType) 产生副作用覆盖
+let syncPropsCounter = 0
 
-  if (newBody) {
-    bodyType.value = newBody.type || 'none'
-    
-    if (newBody.type === 'form-data' || newBody.type === 'x-www-form-urlencoded') {
+// 监听body数据变化
+watch(() => props.body, (newBody: any) => {
+  syncPropsCounter++
+  const currentSyncId = syncPropsCounter
+
+  try {
+    if (!newBody) {
+      bodyType.value = 'none'
+      formDataList.value = [{ key: '', value: '', description: '', enabled: true }]
+      urlEncodedList.value = [{ key: '', value: '', description: '', enabled: true }]
+      rawContent.value = ''
+      rawLanguage.value = 'json'
+      binaryFile.value = null
+      return
+    }
+
+    // 1. 如果是纯字符串形式
+    if (typeof newBody === 'string') {
+      const trimmed = newBody.trim()
+      if (!trimmed) {
+        bodyType.value = 'none'
+        rawContent.value = ''
+      } else {
+        bodyType.value = 'raw'
+        rawContent.value = newBody
+        try {
+          JSON.parse(newBody)
+          rawLanguage.value = 'json'
+        } catch {
+          rawLanguage.value = 'text'
+        }
+      }
+      return
+    }
+
+    // 2. 如果是对象，但没有 type 属性（例如直接传递了 JSON 数据对象）
+    if (typeof newBody === 'object' && !('type' in newBody)) {
+      bodyType.value = 'raw'
+      rawContent.value = JSON.stringify(newBody, null, 2)
+      rawLanguage.value = 'json'
+      return
+    }
+
+    // 3. 标准带有 type 属性的对象
+    const targetType = (newBody.type as BodyType) || 'none'
+    bodyType.value = targetType
+
+    if (targetType === 'form-data' || targetType === 'x-www-form-urlencoded') {
+      rawContent.value = ''
+      binaryFile.value = null
       if (Array.isArray(newBody.content)) {
-        if (newBody.type === 'form-data') {
+        if (targetType === 'form-data') {
           formDataList.value = newBody.content.length > 0 ? JSON.parse(JSON.stringify(newBody.content)) : [{ key: '', value: '', description: '', enabled: true }]
         } else {
           urlEncodedList.value = newBody.content.length > 0 ? JSON.parse(JSON.stringify(newBody.content)) : [{ key: '', value: '', description: '', enabled: true }]
@@ -101,14 +143,23 @@ watch(() => props.body, (newBody) => {
           description: '',
           enabled: true
         }))
-        
-        if (newBody.type === 'form-data') {
+
+        if (targetType === 'form-data') {
           formDataList.value = list.length > 0 ? list : [{ key: '', value: '', description: '', enabled: true }]
         } else {
           urlEncodedList.value = list.length > 0 ? list : [{ key: '', value: '', description: '', enabled: true }]
         }
+      } else {
+        if (targetType === 'form-data') {
+          formDataList.value = [{ key: '', value: '', description: '', enabled: true }]
+        } else {
+          urlEncodedList.value = [{ key: '', value: '', description: '', enabled: true }]
+        }
       }
-    } else if (newBody.type === 'raw') {
+    } else if (targetType === 'raw') {
+      formDataList.value = [{ key: '', value: '', description: '', enabled: true }]
+      urlEncodedList.value = [{ key: '', value: '', description: '', enabled: true }]
+      binaryFile.value = null
       if (typeof newBody.content === 'object' && newBody.content !== null) {
         rawContent.value = JSON.stringify(newBody.content, null, 2)
         rawLanguage.value = 'json'
@@ -120,17 +171,34 @@ watch(() => props.body, (newBody) => {
         } catch {
           rawLanguage.value = 'text'
         }
+      } else {
+        rawContent.value = ''
       }
-    } else if (newBody.type === 'binary') {
-      if (newBody.content) {
-        binaryFile.value = newBody.content as any
-      }
+    } else if (targetType === 'binary') {
+      formDataList.value = [{ key: '', value: '', description: '', enabled: true }]
+      urlEncodedList.value = [{ key: '', value: '', description: '', enabled: true }]
+      rawContent.value = ''
+      binaryFile.value = (typeof File !== 'undefined' && newBody.content instanceof File) ? (newBody.content as File) : null
+    } else {
+      // none
+      formDataList.value = [{ key: '', value: '', description: '', enabled: true }]
+      urlEncodedList.value = [{ key: '', value: '', description: '', enabled: true }]
+      rawContent.value = ''
+      binaryFile.value = null
     }
+  } finally {
+    nextTick(() => {
+      if (syncPropsCounter === currentSyncId) {
+        syncPropsCounter = 0
+      }
+    })
   }
 }, { immediate: true, deep: true })
 
 // 监听请求体类型变化
 watch(bodyType, (newType) => {
+  if (syncPropsCounter > 0) return
+
   // 根据新类型初始化数据
   if (newType === 'none') {
     rawContent.value = ''
@@ -143,17 +211,19 @@ watch(bodyType, (newType) => {
       initFormData()
     }
   } else if (newType === 'raw') {
-    // 如果之前是 raw 类型，保留数据
-    if (props.body?.type === 'raw') {
-      if (typeof props.body.content === 'object' && props.body.content !== null) {
-        rawContent.value = JSON.stringify(props.body.content, null, 2)
-      } else if (typeof props.body.content === 'string') {
-        rawContent.value = props.body.content
+    // 如果没有 raw 内容才初始化
+    if (!rawContent.value) {
+      if (props.body?.type === 'raw') {
+        if (typeof props.body.content === 'object' && props.body.content !== null) {
+          rawContent.value = JSON.stringify(props.body.content, null, 2)
+        } else if (typeof props.body.content === 'string') {
+          rawContent.value = props.body.content
+        } else {
+          rawContent.value = rawLanguage.value === 'json' ? '{}' : ''
+        }
       } else {
         rawContent.value = rawLanguage.value === 'json' ? '{}' : ''
       }
-    } else {
-      rawContent.value = rawLanguage.value === 'json' ? '{}' : ''
     }
   } else if (newType === 'binary') {
     rawContent.value = ''

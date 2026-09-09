@@ -13,6 +13,7 @@ from api_functions.models import ApiCustomFunction
 from .logging_utils import new_trace_id, summarize_for_log
 from file_management.services import validate_file_ids, serialize_file_for_runtime
 from .payloads import (
+    apply_path_params_to_url,
     flatten_key_value_pairs,
     normalize_request_body,
     prepare_request_body_for_runner,
@@ -185,6 +186,9 @@ class InterfaceRunner(HttpRunner):
 
         method = self.interface_data.get('method', 'GET').lower()
         url = self.interface_data.get('url', '')
+        path_params = self.interface_data.get('path_params')
+        if path_params:
+            url = apply_path_params_to_url(url, path_params, self.variables)
 
         if not url.startswith(('http://', 'https://')):
             url = f"{self.base_url.rstrip('/')}/{url.lstrip('/')}"
