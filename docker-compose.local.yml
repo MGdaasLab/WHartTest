@@ -83,23 +83,16 @@ services:
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - POSTGRES_PORT=${POSTGRES_PORT:-5432}
       - POSTGRES_DB=${POSTGRES_DB:-wharttest}
-      - POSTGRES_DB_VARIANT=${POSTGRES_DB_VARIANT:-}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
       # 其他配置
       - MEDIA_ROOT=${MEDIA_ROOT:-/app/data/media}
       - LANGGRAPH_CHECKPOINT_SQLITE_PATH=${LANGGRAPH_CHECKPOINT_SQLITE_PATH:-/app/data/chat_history.sqlite}
       - DJANGO_DEBUG=True
-      # 本地调试默认关闭 License 校验，方便测试登录/单设备等功能；
-      # 如需验证授权拦截，可改为 LICENSE_MODE=client 并配置有效 License。
-      - LICENSE_MODE=${LICENSE_MODE:-off}
-      # 授权中心基地址（激活/心跳目标，代码自动拼接 /api/license/activate/ 等路径）。
-      # WHartTest_Django/.env 被 .dockerignore 排除不进镜像，须经 compose 注入（值在根 .env）。
-      - LICENSE_SERVER_URL=${LICENSE_SERVER_URL:-}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80,http://*:8913
-      - USER_AGENT=${USER_AGENT:-WHartTest/1.2.0-pe}
+      - USER_AGENT=${USER_AGENT:-WHartTest/2.7.2-ce}
       - DJANGO_ADMIN_USERNAME=${DJANGO_ADMIN_USERNAME:-admin}
       - DJANGO_ADMIN_EMAIL=${DJANGO_ADMIN_EMAIL:-admin@example.com}
       - DJANGO_ADMIN_PASSWORD=${DJANGO_ADMIN_PASSWORD:-admin123456}
@@ -149,7 +142,12 @@ services:
     environment:
       - PORT=3001
       - HOST=0.0.0.0
-      - WHARTTEST_BACKEND_URL=http://backend:8000
+      # weixin-plugin-host 回调后端的地址
+      # - Docker 全量部署（后端也在容器内）：http://backend:8000（使用 Docker 内部网络）
+      # - 本地开发（后端在宿主机上）：http://host.docker.internal:8000
+      #   注意：后端必须监听 0.0.0.0（不能是 127.0.0.1），否则容器无法访问
+      #   启动命令示例：uvicorn wharttest_django.asgi:application --host 0.0.0.0 --port 8000
+      - WHARTTEST_BACKEND_URL=${WHARTTEST_BACKEND_URL:-http://backend:8000}
       - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}
       - WHARTTEST_SHARED_DATA_DIR=/app/data
       - OPENCLAW_STATE_DIR=/app/data/openclaw-state
@@ -188,35 +186,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # UI 自动化执行器（默认无头浏览器容器）
-  actuator:
-    build:
-      context: ./WHartTest_Actuator
-      dockerfile: Dockerfile
-      args:
-        PLAYWRIGHT_PYTHON_IMAGE: ${DOCKER_PLAYWRIGHT_PYTHON_IMAGE:-mcr.microsoft.com/playwright/python:v1.60.0-jammy}
-        PIP_INDEX_URL: ${DOCKER_PIP_INDEX_URL:-https://pypi.org/simple}
-    container_name: wharttest-actuator
-    shm_size: "1gb"
-    volumes:
-      - ./data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - WHARTTEST_ACTUATOR_DOCKER=1
-      - WHARTTEST_ACTUATOR_WS_URL=${WHARTTEST_ACTUATOR_WS_URL:-ws://host.docker.internal:8000/ws/ui/actuator/}
-      - WHARTTEST_ACTUATOR_API_URL=${WHARTTEST_ACTUATOR_API_URL:-http://host.docker.internal:8000}
-      - WHARTTEST_ACTUATOR_USE_GUI=false
-      - WHARTTEST_ACTUATOR_HEADLESS=false
-      - WHARTTEST_ACTUATOR_PERSISTENT=false
-      # API Key 认证（推荐）：配置后执行器不再调用 /api/token/ 登录，
-      # 避免触发后端「单设备登录」导致浏览器会话被挤掉
-      - WHARTTEST_ACTUATOR_API_KEY=${WHARTTEST_ACTUATOR_API_KEY:- wharttest-default-mcp-key-2025}
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-    networks:
-      - wharttest-network
-    restart: unless-stopped
 
   # MCP 服务（独立容器）
   mcp:
@@ -273,13 +242,7 @@ services:
       - wharttest-network
     restart: unless-stopped
     healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "require('http').get('http://127.0.0.1:8931/mcp', (res) => process.exit(res.statusCode < 500 ? 0 : 1)).on('error', () => process.exit(1))",
-        ]
+      test: [ "CMD", "node", "-e", "require('http').get('http://localhost:8931/mcp', res => process.exit(res.statusCode ? 0 : 1)).on('error', () => process.exit(1))" ]
       interval: 30s
       timeout: 10s
       retries: 3
