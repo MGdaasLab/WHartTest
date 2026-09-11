@@ -18,6 +18,9 @@
  *   - finish  停止帧推流，返回动作列表 + 生成的可读 playwright JS 脚本
  *   - close   关闭浏览器并退出
  *
+ * 动画冻结（RECORDER_FREEZE_ANIMATION，默认开启）：暂停页面上的无限循环动画，
+ * 消除动画页持续高频推帧导致的录制画布操作迟缓；有限入场动画不受影响。
+ *
  * 录制动作来源：页面注入脚本上报（click/fill/press/check/uncheck）+ 主 frame 导航（goto）+
  * 前端断言命令（assert）。动作点击目标自动生成 UiElement 兼容的选择器
  * （id/name/placeholder/test_id→css/text/role/xpath），主定位 + 两个备用定位
@@ -853,6 +856,119 @@ const INIT_SCRIPT = () => {
 };
 
 // ---------------------------------------------------------------------------
+// 动画冻结（RECORDER_FREEZE_ANIMATION，默认开启）
+//
+// 动画页使录制画布操作全面迟缓，两类来源分别处理：
+// 1. CSS/WAAPI 无限循环动画（轮播等）：Web Animations API 逐个暂停。
+// 2. requestAnimationFrame 自持续动画循环（canvas 渐变/粒子背景、GSAP ticker
+//    等）：不走 CSS 动画体系，getAnimations() 拿不到；实测登录页渐变 canvas
+//    循环使 mouse.move 延迟从 17ms 恶化到 130ms+。以"同一回调引用持续被调度
+//    超过 1.5s"判定为动画循环，命中后降频为每秒 1 帧——主线程立即释放，
+//    screencast 趋于停推，低频重绘保持画面内容。5s 空闲解除仅覆盖误判的
+//    外部事件回调（如滚动节流）；真动画循环被代重注册维持活跃，保持降频。
+//
+// 有限入场动画（淡入/JS 补间等）在判据窗口内已播完、回调停止被调度，不受
+// 影响，不会停在中间帧；元素定位不受冻结影响。
+// 脚本随 addInitScript 注入每个文档（含 iframe），无外部依赖。
+// ---------------------------------------------------------------------------
+
+const FREEZE_ANIMATION_SCRIPT = () => {
+  if (window.__whartFreeze) return;
+  window.__whartFreeze = true;
+
+  // ---- 1. CSS/WAAPI 无限循环动画暂停 ----
+  function pauseInfiniteAnimations() {
+    if (!document.getAnimations) return;
+    var anims;
+    try {
+      anims = document.getAnimations();
+    } catch (_) {
+      return;
+    }
+    anims.forEach(function (anim) {
+      try {
+        // effect.getComputedTiming().iterations：CSS/WAAPI 动画为数字；
+        // 无 effect 或读数失败时保守跳过（如 CSS transition，本身有限时长）
+        var effect = anim.effect;
+        var timing = effect && effect.getComputedTiming && effect.getComputedTiming();
+        if (timing && timing.iterations === Infinity && anim.playState === 'running') {
+          anim.pause();
+        }
+      } catch (_) {}
+    });
+  }
+
+  // ---- 2. rAF 自持续循环降频 ----
+  // 判据：同一回调引用持续被调度超过 FREEZE_CONFIRM_MS（1.5s）仍活跃——
+  // 覆盖 CSS/WAAPI 拿不到的 JS 驱动动画（canvas 渐变/粒子背景、GSAP ticker 等）。
+  // 不用"1 秒内命中 N 次"的速率判据：有限入场动画（0.3~1s 的 JS 弹簧/补间）
+  // 同样高速调度但应完整播完，速率判据会把它们拦腰暂停、元素停在中间态。
+  // 持续时长判据下有限动画早已播完（回调不再被调度），只有真正的循环会命中。
+  // 长时间（FREEZE_IDLE_MS）不再被调度则自动解除并清理，滚动监听等复用
+  // 同一引用的节流回调即便偶发误判也会在下轮空闲后恢复正常。
+  var origRaf = window.requestAnimationFrame ? window.requestAnimationFrame.bind(window) : null;
+  if (origRaf) {
+    var FREEZE_CONFIRM_MS = 1500;   // 持续调度多久判定为动画循环
+    var FREEZE_THROTTLE_MS = 1000;  // 命中后回调执行间隔（1fps）
+    var FREEZE_IDLE_MS = 5000;      // 持续多久不被调度后解除降频并清理
+    var cbStats = new Map();
+    window.requestAnimationFrame = function (cb) {
+      return origRaf(function (t) {
+        var now = Date.now();
+        var st = cbStats.get(cb);
+        if (!st) {
+          st = { firstAt: now, lastAt: now, throttled: false, lastRun: 0 };
+          cbStats.set(cb, st);
+        }
+        // 调度断裂（距上次超过确认窗口）视为新一轮：外部事件驱动的 rAF
+        // （滚动监听等）间歇触发不会因累计跨窗口被误判为持续动画循环
+        if (!st.throttled && now - st.lastAt >= FREEZE_CONFIRM_MS) {
+          st.firstAt = now;
+        }
+        st.lastAt = now;
+        if (st.throttled) {
+          // 降频窗口外放行一帧；窗口内跳过。自循环动画靠"回调内再次注册 rAF"
+          // 存活，跳过帧不执行回调会导致循环饿死，因此由 wrapper 代为重注册，
+          // 保证到点后仍有帧可放行。
+          if (now - st.lastRun >= FREEZE_THROTTLE_MS) {
+            st.lastRun = now;
+            cb(t);
+          } else {
+            origRaf(function (t2) { window.requestAnimationFrame(cb); });
+          }
+          return;
+        }
+        if (now - st.firstAt >= FREEZE_CONFIRM_MS) {
+          st.throttled = true;
+          st.lastRun = now;
+        }
+        cb(t);
+      });
+    };
+    setInterval(function () {
+      var now = Date.now();
+      cbStats.forEach(function (st, cb) {
+        if (now - st.lastAt >= FREEZE_IDLE_MS) cbStats.delete(cb);
+      });
+    }, FREEZE_IDLE_MS);
+  }
+
+  pauseInfiniteAnimations();
+  setInterval(pauseInfiniteAnimations, 1000);
+};
+
+/** 每文档冻结注入：addInitScript 在文档脚本执行前注入，随导航/iframe 自动生效。 */
+async function attachFreezeAnimation(context, page) {
+  if (!state.freezeAnimation) return;
+  try {
+    await context.addInitScript(FREEZE_ANIMATION_SCRIPT);
+  } catch (_) {}
+  try {
+    await page.addInitScript(FREEZE_ANIMATION_SCRIPT);
+  } catch (_) {}
+}
+
+// ---------------------------------------------------------------------------
 // 录制状态
 // ---------------------------------------------------------------------------
 
@@ -872,6 +988,9 @@ const state = {
     const s = parseFloat(process.env.RECORDER_FRAME_SCALE || '1');
     return Number.isFinite(s) ? Math.min(1, Math.max(0.1, s)) : 1;
   })(),
+  // 动画冻结开关：默认开启，暂停无限循环动画（帧流过载的主要来源）。
+  // 设 RECORDER_FREEZE_ANIMATION=false 可关闭（如需观察动画本身的表现）。
+  freezeAnimation: (process.env.RECORDER_FREEZE_ANIMATION || 'true').toLowerCase() !== 'false',
   running: false,
   preRunning: false,      // 前置步骤执行中（不记录动作/导航）
   frameTimer: null,
@@ -1264,6 +1383,7 @@ async function cmdStart(params) {
     try {
       await state.page.addInitScript(INIT_SCRIPT);
     } catch (_) {}
+    await attachFreezeAnimation(state.context, state.page);
     attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
@@ -1890,6 +2010,7 @@ async function cmdSwitchContext(params) {
     try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
     state.page = await state.context.newPage();
     try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
+    await attachFreezeAnimation(state.context, state.page);
     attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
@@ -1985,6 +2106,7 @@ async function cmdResetContext(params) {
     try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
     state.page = await state.context.newPage();
     try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
+    await attachFreezeAnimation(state.context, state.page);
     attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
@@ -2028,6 +2150,11 @@ async function cmdResetPage(params) {
       await state.page.close();
     }
     state.page = await state.context.newPage();
+    // 同一 context 已在启动/切换时注入过冻结脚本，此处仅补 page 级，
+    // 避免 context 级 init script 随多次重建页面无上限追加副本
+    if (state.freezeAnimation) {
+      try { await state.page.addInitScript(FREEZE_ANIMATION_SCRIPT); } catch (_) {}
+    }
     attachPageDiagnostics(state.page);
     state.page.on('framenavigated', (frame) => {
       if (frame === state.page.mainFrame()) {
