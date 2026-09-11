@@ -1016,7 +1016,9 @@ class VectorStoreManager:
                     self._embeddings_cache[cache_key] = (
                         self._create_xinference_embeddings(config)
                     )
-                elif embedding_service == "custom":
+                elif embedding_service in ("custom", "orcarouter"):
+                    # OrcaRouter exposes an OpenAI-compatible /embeddings
+                    # endpoint, so it reuses the generic HTTP adapter.
                     self._embeddings_cache[cache_key] = (
                         self._create_custom_api_embeddings(config)
                     )

@@ -8,6 +8,8 @@ from .views import (
     ChatResumeAPIView,
     KnowledgeRAGAPIView,
     ProviderChoicesAPIView,
+    OrcaRouterConnectAPIView,
+    OrcaRouterModelsAPIView,
     ChatBatchDeleteAPIView,
     UserToolApprovalViewSet,
     TokenUsageStatsAPIView,
@@ -40,4 +42,15 @@ urlpatterns = [
         "token-usage/", TokenUsageStatsAPIView.as_view(), name="token_usage_stats_api"
     ),
     path("knowledge/rag/", KnowledgeRAGAPIView.as_view(), name="knowledge_rag_api"),
+    # OrcaRouter: credential acquisition (API key + PKCE) and model catalog.
+    path(
+        "orcarouter/connect/",
+        OrcaRouterConnectAPIView.as_view(),
+        name="orcarouter_connect_api",
+    ),
+    path(
+        "orcarouter/models/",
+        OrcaRouterModelsAPIView.as_view(),
+        name="orcarouter_models_api",
+    ),
 ]

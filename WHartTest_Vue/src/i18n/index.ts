@@ -108,6 +108,30 @@ type AppMessageKey =
   | 'chat.startConversation'
   | 'chat.toolScreenshot'
   | 'chat.previewing'
+  | 'orcarouter.apiOption'
+  | 'orcarouter.oauthOption'
+  | 'orcarouter.apiKeyLabel'
+  | 'orcarouter.apiKeyPlaceholder'
+  | 'orcarouter.apiKeyHint'
+  | 'orcarouter.apiKeyConfigured'
+  | 'orcarouter.connectButton'
+  | 'orcarouter.connectHint'
+  | 'orcarouter.authorizeInstruction'
+  | 'orcarouter.openAuthorizePage'
+  | 'orcarouter.codeLabel'
+  | 'orcarouter.codePlaceholder'
+  | 'orcarouter.submitCode'
+  | 'orcarouter.cancelLogin'
+  | 'orcarouter.connected'
+  | 'orcarouter.loginFailed'
+  | 'orcarouter.loginCancelled'
+  | 'orcarouter.needReauth'
+  | 'orcarouter.modelsLoading'
+  | 'orcarouter.modelsEmpty'
+  | 'orcarouter.modelsDegraded'
+  | 'orcarouter.modelsRefresh'
+  | 'orcarouter.modelRequired'
+  | 'orcarouter.clearSelection'
   | 'layout.projectPlaceholder';
 
 type MessageCatalog = Record<AppMessageKey, Record<AppLocale, string>>;
@@ -140,6 +164,102 @@ const APP_MESSAGES: MessageCatalog = {
   'layout.admin': {
     'zh-CN': '管理员',
     'en-US': 'Administrator',
+  },
+  'orcarouter.apiOption': {
+    'zh-CN': 'OrcaRouter - API Key',
+    'en-US': 'OrcaRouter - API Key',
+  },
+  'orcarouter.oauthOption': {
+    'zh-CN': 'OrcaRouter - 账号授权',
+    'en-US': 'OrcaRouter - Auth',
+  },
+  'orcarouter.apiKeyLabel': {
+    'zh-CN': 'API Key',
+    'en-US': 'API Key',
+  },
+  'orcarouter.apiKeyPlaceholder': {
+    'zh-CN': '粘贴 sk-orca-… 开头的密钥',
+    'en-US': 'Paste an sk-orca-… key',
+  },
+  'orcarouter.apiKeyHint': {
+    'zh-CN': '在 OrcaRouter 控制台创建或管理密钥，密钥仅保存在服务端。',
+    'en-US': 'Create or manage keys in the OrcaRouter console; the key is stored server-side only.',
+  },
+  'orcarouter.apiKeyConfigured': {
+    'zh-CN': '已配置密钥（留空则不修改）',
+    'en-US': 'Key configured (leave blank to keep it)',
+  },
+  'orcarouter.connectButton': {
+    'zh-CN': '连接 OrcaRouter',
+    'en-US': 'Connect with OrcaRouter',
+  },
+  'orcarouter.connectHint': {
+    'zh-CN': '通过浏览器授权，无需手动复制密钥。',
+    'en-US': 'Authorize in your browser — no key copying needed.',
+  },
+  'orcarouter.authorizeInstruction': {
+    'zh-CN': '在浏览器中打开以下链接完成授权，然后把页面显示的授权码粘贴到下方。',
+    'en-US': 'Open the link below in your browser, then paste the authorization code it shows.',
+  },
+  'orcarouter.openAuthorizePage': {
+    'zh-CN': '打开授权页面',
+    'en-US': 'Open authorization page',
+  },
+  'orcarouter.codeLabel': {
+    'zh-CN': '授权码',
+    'en-US': 'Authorization code',
+  },
+  'orcarouter.codePlaceholder': {
+    'zh-CN': '粘贴授权码',
+    'en-US': 'Paste the authorization code',
+  },
+  'orcarouter.submitCode': {
+    'zh-CN': '完成连接',
+    'en-US': 'Complete connection',
+  },
+  'orcarouter.cancelLogin': {
+    'zh-CN': '取消登录',
+    'en-US': 'Cancel login',
+  },
+  'orcarouter.connected': {
+    'zh-CN': '已连接 OrcaRouter',
+    'en-US': 'Connected to OrcaRouter',
+  },
+  'orcarouter.loginFailed': {
+    'zh-CN': 'OrcaRouter 登录失败',
+    'en-US': 'OrcaRouter login failed',
+  },
+  'orcarouter.loginCancelled': {
+    'zh-CN': '已取消 OrcaRouter 登录',
+    'en-US': 'OrcaRouter login cancelled',
+  },
+  'orcarouter.needReauth': {
+    'zh-CN': 'OrcaRouter 凭据已失效，请重新登录。',
+    'en-US': 'The OrcaRouter credential is no longer valid. Please sign in again.',
+  },
+  'orcarouter.modelsLoading': {
+    'zh-CN': '正在加载模型目录…',
+    'en-US': 'Loading model catalog…',
+  },
+  'orcarouter.modelsEmpty': {
+    'zh-CN': '没有匹配当前能力的模型',
+    'en-US': 'No models match the current capability',
+  },
+  'orcarouter.modelsDegraded': {
+    'zh-CN': '实时目录不可用，当前显示已验证的回退模型。',
+    'en-US': 'Live catalog unavailable — showing verified fallback models.',
+  },
+  'orcarouter.modelsRefresh': {
+    'zh-CN': '刷新模型目录',
+    'en-US': 'Refresh model catalog',
+  },
+  'orcarouter.modelRequired': {
+    'zh-CN': '请选择一个模型',
+    'en-US': 'Please select a model',
+  },
+  'orcarouter.clearSelection': {
+    'zh-CN': '当前模型不再兼容，已清空，请重新选择。',
+    'en-US': 'The selected model is no longer compatible and was cleared. Please choose again.',
   },
   'layout.projectPlaceholder': {
     'zh-CN': '请选择项目',

@@ -40,7 +40,21 @@
           </a-col>
           <a-col :xs="24" :sm="12">
             <a-form-item :label="text.modelName" field="model_name">
+              <!-- OrcaRouter embedding models come from the live catalog
+                   filtered to the embedding capability, not free text. -->
+              <OrcaRouterModelSelect
+                v-if="formData.embedding_service === 'orcarouter'"
+                v-model="formData.model_name"
+                :options="orcaEmbeddingModelOptions"
+                :loading="loadingOrcaEmbeddingModels"
+                :placeholder="text.modelName"
+                search-placeholder="Search models"
+                loading-text="Loading…"
+                empty-text="No embedding models"
+                @open-change="handleOrcaEmbeddingDropdown"
+              />
               <a-input
+                v-else
                 v-model="formData.model_name"
                 placeholder="text-embedding-ada-002 / bge-m3"
               />
@@ -217,6 +231,8 @@ import type {
   RerankerServiceOption
 } from '../types/knowledge';
 import { getRequiredFieldsForEmbeddingService } from '../types/knowledge';
+import OrcaRouterModelSelect from '@/features/langgraph/components/OrcaRouterModelSelect.vue';
+import { fetchOrcaRouterModels } from '@/features/langgraph/services/llmConfigService';
 import { useAppI18n } from '@/composables/useAppI18n';
 import { translateLegacyText, type AppLocale } from '@/i18n';
 
@@ -382,6 +398,59 @@ const formData = reactive<KnowledgeGlobalConfig>({
 // 嵌入服务选项
 const embeddingServices = ref<EmbeddingServiceOption[]>([]);
 
+// --- OrcaRouter embedding catalog ----------------------------------------
+const orcaEmbeddingModels = ref<Array<{ id: string; name: string }>>([]);
+const loadingOrcaEmbeddingModels = ref(false);
+const orcaEmbeddingRequestId = ref(0);
+
+const orcaEmbeddingModelOptions = computed(() =>
+  orcaEmbeddingModels.value.map((model) => ({
+    label: model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id,
+    value: model.id,
+  }))
+);
+
+/**
+ * Load the embedding-capability catalog from the backend. The API key stays
+ * server-side or in this admin form; it is never read back by the browser.
+ */
+const loadOrcaEmbeddingModels = async () => {
+  const requestId = orcaEmbeddingRequestId.value + 1;
+  orcaEmbeddingRequestId.value = requestId;
+  loadingOrcaEmbeddingModels.value = true;
+  try {
+    const response = await fetchOrcaRouterModels({
+      capability: 'embedding',
+      apiBase: formData.api_base_url || undefined,
+      apiKey: formData.api_key || undefined,
+    });
+    if (requestId !== orcaEmbeddingRequestId.value) {
+      return;
+    }
+    orcaEmbeddingModels.value = response.status === 'success' && response.data
+      ? (response.data.models || [])
+      : [];
+    const ids = orcaEmbeddingModels.value.map((model) => model.id);
+    if (formData.model_name && !ids.includes(formData.model_name)) {
+      formData.model_name = '';
+    }
+  } catch (error) {
+    if (requestId === orcaEmbeddingRequestId.value) {
+      orcaEmbeddingModels.value = [];
+    }
+  } finally {
+    if (requestId === orcaEmbeddingRequestId.value) {
+      loadingOrcaEmbeddingModels.value = false;
+    }
+  }
+};
+
+const handleOrcaEmbeddingDropdown = (visible: boolean) => {
+  if (visible && orcaEmbeddingModels.value.length === 0 && !loadingOrcaEmbeddingModels.value) {
+    void loadOrcaEmbeddingModels();
+  }
+};
+
 // Reranker 服务选项
 const rerankerServices = ref<RerankerServiceOption[]>([
   { value: 'none', label: text.value.rerankerNone },
@@ -500,6 +569,13 @@ const handleEmbeddingServiceChange = (value: EmbeddingServiceType) => {
     case 'custom':
       formData.api_base_url = 'http://your-embedding-service:8080/v1/embeddings';
       formData.model_name = 'bge-m3';
+      break;
+    case 'orcarouter':
+      // CustomAPIEmbeddings posts to the stored URL, so the full endpoint is
+      // kept here; the model list is then loaded from the live catalog.
+      formData.api_base_url = 'https://api.orcarouter.ai/v1/embeddings';
+      formData.model_name = '';
+      void loadOrcaEmbeddingModels();
       break;
   }
 };

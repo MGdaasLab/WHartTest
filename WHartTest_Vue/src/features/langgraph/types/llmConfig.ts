@@ -21,6 +21,57 @@ export interface LlmConfig {
 }
 
 /**
+ * OrcaRouter 模型目录中的单个模型（最小元数据）
+ */
+export interface OrcaRouterModel {
+  id: string; // vendor/model 命名空间原样保留
+  name: string;
+  context_length?: number | null;
+  input_modalities?: string[];
+  endpoint_types?: string[];
+  reasoning_efforts?: string[];
+}
+
+/**
+ * 能力过滤后的 OrcaRouter 模型目录结果
+ */
+export interface OrcaRouterCatalog {
+  models: OrcaRouterModel[];
+  total?: number;
+  filtered?: number;
+  source: 'live' | 'fallback' | string; // live=实时目录，fallback=已验证回退目录
+  degraded: boolean; // true 时 UI 必须显示降级提示
+  capability?: string;
+  error_code?: string;
+}
+
+/**
+ * OrcaRouter 凭据来源：粘贴 API Key 或 OAuth 2.0 + PKCE 登录
+ */
+export type OrcaRouterCredentialSource = 'api_key' | 'pkce';
+
+/**
+ * 开始一次 PKCE 登录的返回结果
+ */
+export interface OrcaRouterConnectBegin {
+  attempt_id: string;
+  authorize_url: string;
+  state: string;
+  auth_base: string;
+  callback_mode: string;
+}
+
+/**
+ * PKCE 登录完成后的结果（密钥本身永不返回前端）
+ */
+export interface OrcaRouterConnectResult {
+  credential_source: OrcaRouterCredentialSource;
+  scope: string;
+  account_ref?: string | null;
+  config_id?: number | null;
+}
+
+/**
  * 创建 LLM 配置的请求体
  */
 export interface CreateLlmConfigRequest {
