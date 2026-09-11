@@ -17,7 +17,13 @@ class KnowledgeGlobalConfig(models.Model):
         ('ollama', 'Ollama'),
         ('xinference', 'Xinference'),
         ('custom', '自定义API'),
+        ('orcarouter', 'OrcaRouter'),
     ]
+
+    # OrcaRouter serves an OpenAI-compatible /embeddings endpoint. The stored
+    # value is the full endpoint because CustomAPIEmbeddings posts to it
+    # directly, matching how the "custom" service is configured.
+    ORCAROUTER_EMBEDDING_ENDPOINT = 'https://api.orcarouter.ai/v1/embeddings'
 
     RERANKER_SERVICE_CHOICES = [
         ('none', '不启用'),

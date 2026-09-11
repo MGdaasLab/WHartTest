@@ -13,7 +13,14 @@ class LLMConfig(models.Model):
         ('openai_compatible', 'OpenAI 兼容'),
         ('deepseek', 'DeepSeek'),
         ('qwen', 'Qwen/通义千问'),
+        ('orcarouter', 'OrcaRouter - API'),
+        ('orcarouter_oauth', 'OrcaRouter - Auth'),
     ]
+
+    # OrcaRouter providers. Both entries share the same inference base URL and
+    # model namespace; they differ only in how the credential is obtained.
+    ORCAROUTER_PROVIDER_IDS = ('orcarouter', 'orcarouter_oauth')
+    ORCAROUTER_API_URL = 'https://api.orcarouter.ai/v1'
     
     # 配置标识字段（新增）
     config_name = models.CharField(max_length=255, unique=True, verbose_name="配置名称",

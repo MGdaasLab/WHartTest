@@ -13,6 +13,7 @@ from rest_framework.exceptions import AuthenticationFailed
 from .models import LLMConfig, ChatSession, ChatMessage, TokenUsageRecord
 from .serializers import LLMConfigSerializer
 import logging
+import threading
 from asgiref.sync import async_to_sync, sync_to_async
 
 logger = logging.getLogger(__name__)
@@ -278,6 +279,9 @@ from mcp_tools.persistent_client import mcp_session_manager  # 持久化MCP会�
 from requirements.models import RequirementDocument
 from file_management.services import validate_file_ids, build_llm_attachment_context, sync_file_references
 from file_management.models import FileReference
+
+# OrcaRouter provider integration (credential seam + model catalog)
+from langgraph_integration import orcarouter
 # --- 新增导入结束 ---
 
 logger = logging.getLogger(__name__)  # Initialize logger
@@ -307,6 +311,10 @@ def create_llm_instance(active_config, temperature=0.7):
     base_url = (active_config.api_url or "").strip() or None
     if provider == "deepseek" and base_url and base_url.rstrip("/") == "https://api.deepseek.com":
         base_url = "https://api.deepseek.com/v1"
+    if provider in LLMConfig.ORCAROUTER_PROVIDER_IDS and not base_url:
+        # OrcaRouter is an OpenAI-compatible gateway; both auth entries share
+        # this single inference origin.
+        base_url = orcarouter.ORCA_PUBLIC_API_BASE
     api_key = (active_config.api_key or "").strip()
 
     try:
@@ -351,7 +359,7 @@ def create_llm_instance(active_config, temperature=0.7):
 
             llm = ChatQwen(**llm_kwargs)
         else:
-            if provider != "openai_compatible":
+            if provider not in LLMConfig.ORCAROUTER_PROVIDER_IDS and provider != "openai_compatible":
                 logger.warning(
                     "Unknown provider '%s', fallback to openai_compatible", provider
                 )
@@ -3585,6 +3593,210 @@ class ProviderChoicesAPIView(APIView):
                 "code": status.HTTP_200_OK,
                 "message": "Provider choices retrieved successfully.",
                 "data": {"choices": choices},
+            }
+        )
+
+
+class OrcaRouterConnectAPIView(APIView):
+    """OrcaRouter credential acquisition for the two supported entries.
+
+    Both "paste an API key" and "Connect with OrcaRouter" (OAuth 2.0 + PKCE)
+    are adapters on the same credential interface and both end up storing the
+    same kind of OrcaRouter API key, so nothing downstream needs to know which
+    one was used.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    # PKCE attempts are held in the server process only for the duration of a
+    # login; the verifier never travels to the browser.
+    _attempts = {}
+    _attempts_lock = threading.Lock()
+
+    @staticmethod
+    def _ok(data):
+        return Response(
+            {
+                "status": "success",
+                "code": status.HTTP_200_OK,
+                "message": "success",
+                "data": data,
+            }
+        )
+
+    @staticmethod
+    def _error(message, error_code, http_status=status.HTTP_400_BAD_REQUEST):
+        return Response(
+            {"detail": message, "code": error_code},
+            status=http_status,
+        )
+
+    @staticmethod
+    def _persist(credential, config_id):
+        """Store the credential in the project's existing secret storage."""
+        config = None
+        if config_id:
+            config = LLMConfig.objects.filter(pk=config_id).first()
+        if config is None:
+            config = LLMConfig.objects.filter(is_active=True).first()
+        if config is None:
+            # No config to attach to: the caller stores it explicitly.
+            return None
+        config.api_key = credential.api_key
+        config.provider = (
+            "orcarouter_oauth" if credential.source == "pkce" else "orcarouter"
+        )
+        if not (config.api_url or "").strip():
+            config.api_url = orcarouter.ORCA_PUBLIC_API_BASE
+        config.save(update_fields=["api_key", "provider", "api_url", "updated_at"])
+        return config
+
+    def post(self, request, *args, **kwargs):
+        action = (request.data.get("action") or "begin").strip()
+        try:
+            if action == "begin":
+                return self._begin(request)
+            if action == "complete":
+                return self._complete(request)
+            if action == "cancel":
+                return self._cancel(request)
+        except orcarouter.OrcaRouterError as exc:
+            # Never echo credential material back to the client.
+            return self._error(str(exc), exc.code)
+        return self._error(f"Unknown action '{action}'", "unknown_action")
+
+    def _begin(self, request):
+        provider = orcarouter.PkceCredentialProvider(orcarouter.resolve_auth_base())
+        pkce, authorize_url = provider.begin()
+        attempt_id = orcarouter.generate_state()
+        with self._attempts_lock:
+            self._attempts[attempt_id] = {
+                "verifier": pkce.verifier,
+                "state": pkce.state,
+                "user_id": request.user.id,
+            }
+            # Keep the in-process attempt table small.
+            if len(self._attempts) > 64:
+                for stale in list(self._attempts)[:-64]:
+                    self._attempts.pop(stale, None)
+        return self._ok(
+            {
+                "attempt_id": attempt_id,
+                "authorize_url": authorize_url,
+                "state": pkce.state,
+                "auth_base": orcarouter.resolve_auth_base(),
+                "callback_mode": "oob",
+            }
+        )
+
+    def _cancel(self, request):
+        attempt_id = request.data.get("attempt_id")
+        with self._attempts_lock:
+            self._attempts.pop(attempt_id, None)
+        return self._ok({"cancelled": True})
+
+    def _complete(self, request):
+        attempt_id = request.data.get("attempt_id")
+        code = request.data.get("code")
+        with self._attempts_lock:
+            attempt = self._attempts.get(attempt_id)
+        if not attempt or attempt["user_id"] != request.user.id:
+            return self._error(
+                "This OrcaRouter login is no longer active. Start it again.",
+                "unknown_attempt",
+            )
+
+        if not orcarouter.verify_state(attempt.get("state"), request.data.get("state")):
+            return self._error(
+                "This authorization did not match the login that started it.",
+                "state_mismatch",
+            )
+
+        credential = orcarouter.PkceCredentialProvider(
+            orcarouter.resolve_auth_base()
+        ).resolve(code=code, code_verifier=attempt["verifier"])
+
+        with self._attempts_lock:
+            self._attempts.pop(attempt_id, None)
+
+        config = self._persist(credential, request.data.get("config_id"))
+        return self._ok(
+            {
+                "credential_source": credential.source,
+                "scope": credential.scope,
+                "account_ref": credential.account_ref,
+                "config_id": config.id if config else None,
+            }
+        )
+
+
+class OrcaRouterModelsAPIView(APIView):
+    """Capability-filtered OrcaRouter model catalog.
+
+    The API key stays on the server: the browser only ever receives the minimal
+    model metadata it needs to render a picker.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, *args, **kwargs):
+        capability = (request.data.get("capability") or orcarouter.CAPABILITY_CHAT).strip()
+        if capability not in {
+            orcarouter.CAPABILITY_CHAT,
+            orcarouter.CAPABILITY_EMBEDDING,
+            orcarouter.CAPABILITY_IMAGE,
+            orcarouter.CAPABILITY_VIDEO,
+            orcarouter.CAPABILITY_RERANK,
+        }:
+            return Response(
+                {
+                    "detail": f"Unsupported capability '{capability}'",
+                    "code": "unsupported_capability",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        raw_modalities = request.data.get("input_modalities") or []
+        if isinstance(raw_modalities, str):
+            raw_modalities = [raw_modalities]
+        modalities = [str(m) for m in raw_modalities if m]
+
+        # Reuse the project's existing secret storage; the key never leaves the
+        # server and is never returned to the caller.
+        api_key = (request.data.get("api_key") or "").strip()
+        config_id = request.data.get("config_id")
+        if not api_key:
+            config = None
+            if config_id:
+                config = LLMConfig.objects.filter(pk=config_id).first()
+            if config is None:
+                config = LLMConfig.objects.filter(is_active=True).first()
+            if config is not None:
+                api_key = (config.api_key or "").strip()
+
+        api_base = (request.data.get("api_base") or "").strip() or orcarouter.resolve_api_base()
+        try:
+            api_base = orcarouter.validate_origin(api_base, what="api_base")
+        except orcarouter.OrcaRouterError as exc:
+            return Response(
+                {"detail": str(exc), "code": exc.code},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = orcarouter.catalog.get(
+            api_base,
+            api_key or None,
+            capability=capability,
+            input_modalities=modalities,
+            force_refresh=bool(request.data.get("refresh")),
+        )
+        result.pop("base_url", None)
+        return Response(
+            {
+                "status": "success",
+                "code": status.HTTP_200_OK,
+                "message": "success",
+                "data": result,
             }
         )
 

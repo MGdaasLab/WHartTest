@@ -38,7 +38,31 @@
         </a-col>
         <a-col :span="16">
           <a-form-item field="name" :label="text.modelName" required>
-            <div class="model-input-wrapper">
+            <!-- OrcaRouter: the model list is a capability-filtered catalog
+                 served by the backend, never free text. -->
+            <div v-if="isOrcaRouter" class="model-input-wrapper">
+              <OrcaRouterModelSelect
+                v-model="formData.name"
+                :options="orcaRouterModelOptions"
+                :loading="loadingOrcaModels"
+                :placeholder="text.modelNamePlaceholder"
+                :search-placeholder="text.searchModels"
+                :loading-text="text.modelsLoading"
+                :empty-text="text.modelsEmpty"
+                @open-change="handleOrcaDropdownVisible"
+              />
+              <a-tooltip :content="text.refreshModelsTooltip">
+                <a-button
+                  type="secondary"
+                  :loading="loadingOrcaModels"
+                  data-testid="orca-model-refresh"
+                  @click="loadOrcaRouterModels({ refresh: true })"
+                >
+                  <template #icon><icon-refresh /></template>
+                </a-button>
+              </a-tooltip>
+            </div>
+            <div v-else class="model-input-wrapper">
               <a-auto-complete
                 v-model="formData.name"
                 :data="modelOptions"
@@ -59,6 +83,27 @@
                 </a-button>
               </a-tooltip>
             </div>
+            <p v-if="isOrcaRouter && orcaCatalogDegraded" class="orca-degraded" data-testid="orca-catalog-degraded">
+              {{ text.modelsDegraded }}
+            </p>
+            <p v-if="isOrcaRouter && orcaSelectionCleared" class="orca-degraded" data-testid="orca-selection-cleared">
+              {{ text.clearSelection }}
+            </p>
+          </a-form-item>
+        </a-col>
+
+        <a-col v-if="isOrcaRouter" :span="24">
+          <a-form-item :label="text.credentials">
+            <OrcaRouterAuthMethods
+              ref="orcaAuthRef"
+              :has-stored-key="orcaHasStoredKey"
+              :authorize-url="orcaAuthorizeUrl"
+              :busy="orcaBusy"
+              @update:api-key="handleOrcaApiKeyInput"
+              @connect="startOrcaRouterConnect"
+              @complete="completeOrcaRouterConnect"
+              @cancel="cancelOrcaRouterConnect"
+            />
           </a-form-item>
         </a-col>
 
@@ -160,7 +205,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, computed, nextTick } from 'vue';
+import { ref, watch, computed, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { useAuthStore } from '@/store/authStore';
 import {
   Modal as AModal,
   Form as AForm,
@@ -189,12 +235,19 @@ import {
   testLlmConnection,
   fetchModels,
   getProviders,
+  fetchOrcaRouterModels,
+  beginOrcaRouterConnect,
+  completeOrcaRouterConnect as completeOrcaRouterConnectApi,
+  cancelOrcaRouterConnect as cancelOrcaRouterConnectApi,
 } from '@/features/langgraph/services/llmConfigService';
 import type {
   LlmConfig,
   CreateLlmConfigRequest,
   PartialUpdateLlmConfigRequest,
+  OrcaRouterModel,
 } from '@/features/langgraph/types/llmConfig';
+import OrcaRouterAuthMethods from '@/features/langgraph/components/OrcaRouterAuthMethods.vue';
+import OrcaRouterModelSelect from '@/features/langgraph/components/OrcaRouterModelSelect.vue';
 
 interface Props {
   visible: boolean;
@@ -265,6 +318,17 @@ const text = computed(() => (
         providerOpenAICompatible: 'OpenAI Compatible',
         providerDeepSeek: 'DeepSeek',
         providerQwen: 'Qwen',
+        providerOrcaRouterApi: 'OrcaRouter - API',
+        providerOrcaRouterAuth: 'OrcaRouter - Auth',
+        credentials: 'Credentials',
+        searchModels: 'Search models',
+        modelsLoading: 'Loading model catalog…',
+        modelsEmpty: 'No models match the current capability',
+        modelsDegraded: 'Live catalog unavailable — showing verified fallback models.',
+        clearSelection: 'The selected model is no longer compatible and was cleared. Please choose again.',
+        connectedMessage: 'Connected to OrcaRouter',
+        loginFailedMessage: 'OrcaRouter login failed',
+        loginCancelledMessage: 'OrcaRouter login cancelled',
         deepseekApiHint: 'DeepSeek is recommended with the official /v1 endpoint and the dedicated DeepSeek provider',
       }
     : {
@@ -315,6 +379,17 @@ const text = computed(() => (
         providerOpenAICompatible: 'OpenAI 兼容',
         providerDeepSeek: 'DeepSeek',
         providerQwen: 'Qwen/通义千问',
+        providerOrcaRouterApi: 'OrcaRouter - API',
+        providerOrcaRouterAuth: 'OrcaRouter - 账号授权',
+        credentials: '凭据',
+        searchModels: '搜索模型',
+        modelsLoading: '正在加载模型目录…',
+        modelsEmpty: '没有匹配当前能力的模型',
+        modelsDegraded: '实时目录不可用，当前显示已验证的回退模型。',
+        clearSelection: '当前模型不再兼容，已清空，请重新选择。',
+        connectedMessage: '已连接 OrcaRouter',
+        loginFailedMessage: 'OrcaRouter 登录失败',
+        loginCancelledMessage: '已取消 OrcaRouter 登录',
         deepseekApiHint: 'DeepSeek 建议使用官方 /v1 地址，并选择专用 DeepSeek 供应商',
       }
 ));
@@ -329,6 +404,12 @@ const localizeProviderLabel = (value: string, fallback?: string) => {
   if (value === 'qwen') {
     return text.value.providerQwen;
   }
+  if (value === 'orcarouter') {
+    return text.value.providerOrcaRouterApi;
+  }
+  if (value === 'orcarouter_oauth') {
+    return text.value.providerOrcaRouterAuth;
+  }
   return fallback || value;
 };
 
@@ -338,6 +419,8 @@ const providerChoices = ref<Array<{ label: string; value: string }>>([
   { label: 'openai_compatible', value: 'openai_compatible' },
   { label: 'deepseek', value: 'deepseek' },
   { label: 'qwen', value: 'qwen' },
+  { label: 'orcarouter', value: 'orcarouter' },
+  { label: 'orcarouter_oauth', value: 'orcarouter_oauth' },
 ]);
 const providerOptions = computed(() => providerChoices.value.map((item) => ({
   label: localizeProviderLabel(item.value, item.label),
@@ -367,6 +450,248 @@ const modalSessionId = ref(0);
 const modelRequestId = ref(0);
 const testRequestId = ref(0);
 
+// --- OrcaRouter -----------------------------------------------------------
+const ORCA_PROVIDER_IDS = ['orcarouter', 'orcarouter_oauth'];
+const ORCA_API_URL = 'https://api.orcarouter.ai/v1';
+
+const isOrcaRouter = computed(
+  () => ORCA_PROVIDER_IDS.includes(formData.value.provider)
+);
+const orcaAuthRef = ref<InstanceType<typeof OrcaRouterAuthMethods> | null>(null);
+const orcaModels = ref<OrcaRouterModel[]>([]);
+const orcaCatalogDegraded = ref(false);
+const orcaSelectionCleared = ref(false);
+const loadingOrcaModels = ref(false);
+const orcaCatalogRequestId = ref(0);
+const orcaHasStoredKey = ref(false);
+
+// Every async PKCE response confirms it still belongs to the current login.
+const orcaAttemptId = ref<string | null>(null);
+const orcaAuthorizeUrl = ref('');
+const orcaAuthorizeState = ref('');
+const orcaLoginGeneration = ref(0);
+const orcaBusy = ref(false);
+
+const orcaLoginActive = computed(() => orcaBusy.value || !!orcaAuthorizeUrl.value);
+
+const orcaRouterModelOptions = computed(() => orcaModels.value.map((model) => ({
+  label: model.name && model.name !== model.id ? `${model.name} (${model.id})` : model.id,
+  value: model.id,
+})));
+
+/**
+ * Recompute the model options whenever the provider, the multimodal switch or
+ * the attachment modality changes. An existing selection that is no longer in
+ * the filtered list is cleared rather than silently kept.
+ */
+const loadOrcaRouterModels = async (options: { refresh?: boolean } = {}) => {
+  const requestId = orcaCatalogRequestId.value + 1;
+  orcaCatalogRequestId.value = requestId;
+  const sessionId = modalSessionId.value;
+  loadingOrcaModels.value = true;
+
+  // Ability filtering happens server-side; the browser never sees the key.
+  const modalities = formData.value.supports_vision ? ['image'] : [];
+
+  try {
+    const response = await fetchOrcaRouterModels({
+      capability: 'chat',
+      inputModalities: modalities,
+      configId: effectiveConfigId.value,
+      apiBase: formData.value.api_url || ORCA_API_URL,
+      apiKey: formData.value.api_key || undefined,
+      refresh: options.refresh,
+    });
+
+    if (!props.visible || sessionId !== modalSessionId.value || requestId !== orcaCatalogRequestId.value) {
+      return;
+    }
+
+    if (response.status === 'success' && response.data) {
+      orcaModels.value = response.data.models || [];
+      orcaCatalogDegraded.value = !!response.data.degraded;
+    } else {
+      orcaModels.value = [];
+      orcaCatalogDegraded.value = true;
+    }
+
+    const ids = orcaModels.value.map((model) => model.id);
+    if (formData.value.name && !ids.includes(formData.value.name)) {
+      formData.value.name = '';
+      orcaSelectionCleared.value = true;
+    }
+  } catch (error) {
+    if (sessionId === modalSessionId.value && requestId === orcaCatalogRequestId.value) {
+      orcaModels.value = [];
+      orcaCatalogDegraded.value = true;
+    }
+  } finally {
+    if (sessionId === modalSessionId.value && requestId === orcaCatalogRequestId.value) {
+      loadingOrcaModels.value = false;
+    }
+  }
+};
+
+const resetOrcaState = () => {
+  orcaLoginGeneration.value += 1;
+  orcaAttemptId.value = null;
+  orcaAuthorizeUrl.value = '';
+  orcaAuthorizeState.value = '';
+  orcaBusy.value = false;
+  orcaModels.value = [];
+  orcaCatalogDegraded.value = false;
+  orcaSelectionCleared.value = false;
+};
+
+const startOrcaRouterConnect = async () => {
+  const generation = orcaLoginGeneration.value + 1;
+  orcaLoginGeneration.value = generation;
+  orcaBusy.value = true;
+  try {
+    const response = await beginOrcaRouterConnect();
+    if (generation !== orcaLoginGeneration.value) {
+      return;
+    }
+    if (response.status === 'success' && response.data) {
+      orcaAttemptId.value = response.data.attempt_id;
+      orcaAuthorizeUrl.value = response.data.authorize_url;
+      orcaAuthorizeState.value = response.data.state || '';
+    } else {
+      Message.error(response.message || text.value.modelsDegraded);
+      orcaBusy.value = false;
+    }
+  } catch (error) {
+    if (generation === orcaLoginGeneration.value) {
+      orcaBusy.value = false;
+    }
+  }
+};
+
+const completeOrcaRouterConnect = async (code: string) => {
+  const generation = orcaLoginGeneration.value;
+  const attemptId = orcaAttemptId.value;
+  if (!attemptId || !code.trim()) {
+    return;
+  }
+  orcaBusy.value = true;
+  try {
+    const response = await completeOrcaRouterConnectApi({
+      attemptId,
+      code: code.trim(),
+      state: orcaAuthorizeState.value,
+      configId: effectiveConfigId.value,
+    });
+    // A late response from an older generation must not touch newer state.
+    if (generation !== orcaLoginGeneration.value) {
+      return;
+    }
+    if (response.status === 'success') {
+      orcaHasStoredKey.value = true;
+      formData.value.provider = 'orcarouter_oauth';
+      formData.value.api_key = '';
+      orcaAuthRef.value?.reset();
+      Message.success(text.value.connectedMessage);
+    } else {
+      Message.error(response.message || text.value.loginFailedMessage);
+    }
+  } catch (error) {
+    if (generation === orcaLoginGeneration.value) {
+      Message.error(text.value.loginFailedMessage);
+    }
+  } finally {
+    if (generation === orcaLoginGeneration.value) {
+      orcaBusy.value = false;
+      orcaAttemptId.value = null;
+      orcaAuthorizeUrl.value = '';
+      orcaAuthorizeState.value = '';
+    }
+  }
+};
+
+const cancelOrcaRouterConnect = async () => {
+  const attemptId = orcaAttemptId.value;
+  orcaLoginGeneration.value += 1;
+  orcaBusy.value = false;
+  orcaAttemptId.value = null;
+  orcaAuthorizeUrl.value = '';
+  orcaAuthorizeState.value = '';
+  orcaAuthRef.value?.reset();
+  if (attemptId) {
+    // Release the server-side login lock; failures here are not user-visible.
+    void cancelOrcaRouterConnectRequest(attemptId);
+  }
+  Message.info(text.value.loginCancelledMessage);
+};
+
+const handleOrcaApiKeyInput = (value: string) => {
+  formData.value.api_key = value;
+};
+
+/**
+ * Cancel a pending PKCE login on the server without keeping the modal open.
+ */
+const cancelOrcaRouterConnectRequest = async (attemptId: string) => {
+  try {
+    await cancelOrcaRouterConnectApi(attemptId);
+  } catch (error) {
+    // Cancelling is best-effort; a stale server attempt simply expires.
+  }
+};
+
+/**
+ * pagehide fires when the browser may freeze the page into the back-forward
+ * cache. The project's axios instance cannot set `keepalive`, so the
+ * cancellation is sent with fetch directly, reusing the same JWT the request
+ * interceptor would attach.
+ */
+const sendOrcaCancelKeepalive = (attemptId: string) => {
+  try {
+    const authStore = useAuthStore();
+    const token = authStore.getAccessToken;
+    const baseUrl = import.meta.env.VITE_USE_PROXY === 'true' || import.meta.env.VITE_USE_PROXY === true
+      ? '/api'
+      : (import.meta.env.VITE_API_BASE_URL || '/api');
+    void fetch(`${baseUrl}/lg/orcarouter/connect/`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ action: 'cancel', attempt_id: attemptId }),
+      keepalive: true,
+    });
+  } catch (error) {
+    // Nothing further can be done during page teardown.
+  }
+};
+
+const handleOrcaDropdownVisible = (visible: boolean) => {
+  // Opening the picker with nothing loaded yet fetches the current catalog.
+  if (visible && isOrcaRouter.value && orcaModels.value.length === 0 && !loadingOrcaModels.value) {
+    void loadOrcaRouterModels();
+  }
+};
+
+/**
+ * pagehide-safe teardown.
+ *
+ * The generation guard correctly refuses to mutate state for a stale request,
+ * which would otherwise leave the restored page permanently busy. So the busy
+ * flag and hint are cleared synchronously here, and the server cancellation is
+ * sent with keepalive rather than relying on a guarded finally block.
+ */
+const teardownOrcaOnPageHide = () => {
+  const attemptId = orcaAttemptId.value;
+  orcaLoginGeneration.value += 1;
+  orcaBusy.value = false;
+  orcaAttemptId.value = null;
+  orcaAuthorizeUrl.value = '';
+  orcaAuthorizeState.value = '';
+  if (attemptId) {
+    sendOrcaCancelKeepalive(attemptId);
+  }
+};
+
 const isEditing = computed(() => !!(props.configData?.id || currentConfigId.value));
 const effectiveConfigId = computed(() => props.configData?.id || currentConfigId.value);
 const formRules = computed<Record<string, FieldRule[]>>(() => ({
@@ -384,7 +709,9 @@ const apiUrlPlaceholder = computed(() => (
     ? DEEPSEEK_DEFAULT_API_URL
     : formData.value.provider === 'qwen'
       ? QWEN_DEFAULT_API_URL
-      : 'https://api.openai.com/v1'
+      : isOrcaRouter.value
+        ? ORCA_API_URL
+        : 'https://api.openai.com/v1'
 ));
 
 const apiKeyPlaceholder = computed(() => (
@@ -440,12 +767,39 @@ const handleProviderChange = (provider?: string) => {
   if (provider === 'qwen' && !formData.value.api_url) {
     formData.value.api_url = QWEN_DEFAULT_API_URL;
   }
+  // Leaving OrcaRouter must release any in-flight login and drop its catalog.
+  if (!ORCA_PROVIDER_IDS.includes(provider || '')) {
+    if (orcaLoginActive.value || orcaAttemptId.value) {
+      void cancelOrcaRouterConnect();
+    } else {
+      resetOrcaState();
+    }
+    return;
+  }
+  if (!formData.value.api_url) {
+    formData.value.api_url = ORCA_API_URL;
+  }
+  void loadOrcaRouterModels();
 };
+
+// The model picker is recomputed whenever the multimodal switch changes,
+// because a text-only selection is not valid once images can be attached.
+watch(
+  () => formData.value.supports_vision,
+  (next, previous) => {
+    if (next === previous || !isOrcaRouter.value) {
+      return;
+    }
+    void loadOrcaRouterModels();
+  }
+);
 
 watch(
   () => props.visible,
   (newVal) => {
     invalidateAsyncState();
+    // Any login from a previous opening of this modal is abandoned.
+    resetOrcaState();
     modelOptions.value = [];
 
     if (newVal) {
@@ -469,6 +823,7 @@ watch(
       } else {
         formData.value = { ...defaultFormData };
       }
+      orcaHasStoredKey.value = !!props.configData?.id;
       handleProviderChange(formData.value.provider);
       nextTick(() => {
         formRef.value?.clearValidate();
@@ -476,6 +831,37 @@ watch(
     }
   }
 );
+
+// `pagehide` fires when the browser may put this page into the back-forward
+// cache. Clear the busy/hint state synchronously and cancel server-side work
+// with keepalive, rather than relying on an invalidated request's finally.
+onMounted(() => {
+  window.addEventListener('pagehide', teardownOrcaOnPageHide);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('pagehide', teardownOrcaOnPageHide);
+  // Real unmount: release the server lock without touching UI state.
+  const attemptId = orcaAttemptId.value;
+  orcaLoginGeneration.value += 1;
+  orcaAttemptId.value = null;
+  if (attemptId) {
+    sendOrcaCancelKeepalive(attemptId);
+  }
+});
+
+defineExpose({
+  /** Test hook: start a login and return the authorize URL. */
+  startOrcaRouterConnect,
+  /** Test hook: current login busy flag. */
+  orcaLoginActive,
+  /** Test hook: teardown driven by pagehide. */
+  teardownOrcaOnPageHide,
+  /** Test hook: reload the capability-filtered catalog. */
+  loadOrcaRouterModels,
+  /** Test hook: current filtered model option ids. */
+  currentOrcaModelIds: () => orcaModels.value.map((m) => m.id),
+});
 
 const handleSubmit = async () => {
   if (!formRef.value) return;
@@ -717,5 +1103,12 @@ const handleModelInputFocus = () => {
   font-size: 13px;
   color: var(--color-text-3);
   cursor: pointer;
+}
+
+.orca-degraded {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgb(var(--orange-6));
 }
 </style>
