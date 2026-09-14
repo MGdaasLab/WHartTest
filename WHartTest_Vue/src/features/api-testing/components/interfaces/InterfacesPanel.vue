@@ -46,10 +46,6 @@ const importFileDialogType = ref<ApiDocumentImportType>('swagger')
 const importFileSelected = ref<File | null>(null)
 const stripBaseUrl = ref(true)
 const createEnvironments = ref(false)
-// 导入位置：创建新模块 / 使用已有模块
-const importMode = ref<'create_module' | 'existing_module'>('create_module')
-const importModuleName = ref('')
-const importTargetModuleId = ref<number | undefined>(undefined)
 // 无模块接口相关状态
 const noModuleInterfaces = ref<ApiInterface[]>([])
 const hasNoModuleInterfaces = ref(false)
@@ -167,38 +163,6 @@ const showImportResult = (result: any) => {
   Message.success(message)
 }
 
-// 重置导入位置选择状态
-const resetImportModeState = () => {
-  importMode.value = 'create_module'
-  importModuleName.value = ''
-  importTargetModuleId.value = undefined
-}
-
-// 根据导入位置选择校验并生成导入参数
-const buildImportOptions = (): { import_mode: 'create_module' | 'existing_module'; module_name?: string; module_id?: number } | null => {
-  if (importMode.value === 'create_module') {
-    const name = importModuleName.value.trim()
-    if (!name) {
-      Message.warning('创建新模块时请填写模块名称')
-      return null
-    }
-    return { import_mode: 'create_module', module_name: name }
-  }
-  if (!importTargetModuleId.value) {
-    Message.warning('使用已有模块时请先选择目标模块')
-    return null
-  }
-  return { import_mode: 'existing_module', module_id: importTargetModuleId.value }
-}
-
-// 已有模块下拉选项（仅根模块：只允许在根模块下导入接口）
-const importModuleSelectOptions = computed(() => {
-  return (apis.value || []).map(item => ({
-    label: item.name,
-    value: item.id,
-  }))
-})
-
 // 导入格式下拉选项（与按钮下拉一致，用于弹窗内二次选择）
 const importFormatOptions: Array<{ label: string; value: ApiDocumentImportType }> = [
   { label: 'Swagger 文件', value: 'swagger' },
@@ -224,7 +188,6 @@ const handleImportTypeSelect = (value: unknown) => {
   if (importType === 'swagger-url' || importType === 'curl') {
     importTextDialogType.value = importType === 'swagger-url' ? 'swagger' : 'curl'
     importTextValue.value = ''
-    resetImportModeState()
     importTextDialogVisible.value = true
     return
   }
@@ -235,7 +198,6 @@ const handleImportTypeSelect = (value: unknown) => {
   importFileSelected.value = null
   stripBaseUrl.value = true
   createEnvironments.value = false
-  resetImportModeState()
   importFileDialogVisible.value = true
 }
 
@@ -254,10 +216,6 @@ const handleOpenApiFileChange = (event: Event) => {
   const file = target.files?.[0]
   if (file) {
     importFileSelected.value = file
-    // 未手动填写模块名时，用文件名作为新模块默认名称
-    if (!importModuleName.value.trim()) {
-      importModuleName.value = file.name.replace(/\.[^.]+$/, '') || ''
-    }
   }
   target.value = ''
 }
@@ -266,7 +224,6 @@ const resetImportFileDialog = () => {
   importFileSelected.value = null
   stripBaseUrl.value = true
   createEnvironments.value = false
-  resetImportModeState()
 }
 
 // 弹窗「开始导入」按钮
@@ -276,15 +233,11 @@ const handleImportFileConfirm = async () => {
     return
   }
 
-  const importOptions = buildImportOptions()
-  if (!importOptions) return
-
   try {
     importingOpenApi.value = true
     const response = await importApiDocument(importFileSelected.value, importFileDialogType.value, {
       strip_base_url: stripBaseUrl.value,
       create_environments: createEnvironments.value,
-      ...importOptions,
     })
     showImportResult(response.data)
     await refreshAfterImport()
@@ -304,12 +257,9 @@ const handleImportTextConfirm = async () => {
     return false
   }
 
-  const importOptions = buildImportOptions()
-  if (!importOptions) return false
-
   try {
     importingOpenApi.value = true
-    const response = await importApiDocumentText(importTextDialogType.value, value, importOptions)
+    const response = await importApiDocumentText(importTextDialogType.value, value)
     showImportResult(response.data)
     await refreshAfterImport()
     importTextDialogVisible.value = false
@@ -1890,33 +1840,6 @@ watch(() => tabsStore.tabs, () => {
         placeholder="curl -X POST https://example.com/api/..."
         :auto-size="{ minRows: 8, maxRows: 16 }"
       />
-      <!-- 导入位置：创建新模块 / 使用已有模块 -->
-      <div class="mt-4 import-location-block">
-        <div class="mb-1.5 import-dialog-label">导入位置</div>
-        <a-radio-group v-model="importMode" type="button" :disabled="importingOpenApi">
-          <a-radio value="create_module">创建新模块</a-radio>
-          <a-radio value="existing_module">使用已有模块</a-radio>
-        </a-radio-group>
-        <div v-if="importMode === 'create_module'" class="mt-2">
-          <a-input
-            v-model="importModuleName"
-            placeholder="请输入新模块名称（如：用户中心）"
-            allow-clear
-            :disabled="importingOpenApi"
-          />
-        </div>
-        <div v-else class="mt-2">
-          <a-select
-            v-model="importTargetModuleId"
-            :options="importModuleSelectOptions"
-            placeholder="请选择已有模块"
-            allow-clear
-            show-search
-            :disabled="importingOpenApi"
-            class="w-full"
-          />
-        </div>
-      </div>
       <div class="mt-5 flex justify-end gap-2">
         <a-button :disabled="importingOpenApi" @click="importTextDialogVisible = false">取消</a-button>
         <a-button type="primary" :loading="importingOpenApi" @click="handleImportTextConfirm">导入</a-button>
@@ -1944,34 +1867,6 @@ watch(() => tabsStore.tabs, () => {
             placeholder="请选择导入格式"
             class="flex-1"
           />
-        </div>
-
-        <!-- 导入位置：创建新模块 / 使用已有模块 -->
-        <div class="import-location-block">
-          <div class="mb-1.5 import-dialog-label">导入位置</div>
-          <a-radio-group v-model="importMode" type="button" :disabled="importingOpenApi">
-            <a-radio value="create_module">创建新模块</a-radio>
-            <a-radio value="existing_module">使用已有模块</a-radio>
-          </a-radio-group>
-          <div v-if="importMode === 'create_module'" class="mt-2">
-            <a-input
-              v-model="importModuleName"
-              placeholder="请输入新模块名称（如：用户中心）"
-              allow-clear
-              :disabled="importingOpenApi"
-            />
-          </div>
-          <div v-else class="mt-2">
-            <a-select
-              v-model="importTargetModuleId"
-              :options="importModuleSelectOptions"
-              placeholder="请选择已有模块"
-              allow-clear
-              show-search
-              :disabled="importingOpenApi"
-              class="w-full"
-            />
-          </div>
         </div>
 
         <!-- 导入文件区域 -->
