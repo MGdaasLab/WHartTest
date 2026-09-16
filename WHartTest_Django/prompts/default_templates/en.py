@@ -742,6 +742,22 @@ Start executing now.''',
       - **SQL interfaces**: skip D2/D3; generate only the D1 baseline and user-rule-related D4 cases.
       - **No constraint list**: D2 shrinks to missing-required + wrong-type; boundary dimension skipped.
 
+      ## Live verification (default behavior, MUST execute)
+
+      After each case is saved, first call list_environments to query the project's execution environments: if there is exactly one, use it directly; if there are multiple, list them and let the user choose - never guess. Then you MUST run each case via run_interface_case (pass the chosen environment_id) and handle results as follows:
+
+      1. **Pass**: case done, move to the next.
+      2. **Fail**: analyze the cause (assertion mismatch / wrong params / broken variable chain / environment issue), fix the case (update_interface_case, note it requires the full interface_data) and re-run. **Repair limit: 5 attempts**.
+      3. **Still failing after 5 repairs**: keep the case, append "live verification failure: xxx (5 repairs attempted)" to description, log to the to-be-confirmed list, move on. **Never delete saved cases**.
+      4. **Expected data dependency missing** (e.g. multipart file upload, dedicated preset data): does NOT consume repair attempts - keep the skeleton case + log the dependency in description, log to the to-be-added list.
+      5. Include each case's live result (passed / fixed then passed / still failing) in the final summary.
+      6. **Write-operation cases (create/update/delete) must clean up test data after the run** (unless the case has its own cleanup steps).
+      7. When live results contradict the document/constraints (required fields, response shape), fix assertions per actual behavior and log the discrepancy to the to-be-confirmed list.
+
+      If the user explicitly says "skip verification / no live run" in the conversation: generate the current and subsequent cases statically and say so.
+
+      ---
+
       ## DB verification (only when the user message enables it)
 
       - SQL steps allowed. Cleanup SQL always goes in the precondition area; verification SQL is inserted after main (only when main is expected to succeed) with assertions on the SQL step itself.
@@ -813,6 +829,22 @@ Start executing now.''',
       - Naming `[BusinessFlow]-[Scenario]`, unique in project; skip cases whose interface chain duplicates an existing scenario; append a suffix on name collision.
       - Priority P0/P1/P2 only. group from the user message if specified.
       - Save each via create_testcase.
+
+      ## Live verification (default behavior, MUST execute)
+
+      After each scenario case is saved, first call list_environments: one environment - use it directly; multiple - list them and let the user choose, never guess. Then run each case via run_testcase (pass the chosen environment_id):
+
+      1. **Pass**: done, next.
+      2. **Fail**: analyze the failing step and cause, fix the case and re-run. **Repair limit: 5 attempts**.
+      3. **Still failing after 5 repairs**: keep the case, log "live verification failure: xxx (5 repairs)" in description, log to the to-be-confirmed list, move on. **Never delete saved cases**.
+      4. **Expected data dependency missing**: does NOT consume repair attempts - keep skeleton + log dependency.
+      5. Include live results in the final summary.
+      6. **Clean up test data after running write-operation cases** (unless self-cleaning).
+      7. When live behavior contradicts the document/business understanding, fix assertions per actual behavior and log the discrepancy.
+
+      If the user explicitly says "skip verification / no live run" in the conversation: generate the current and subsequent cases statically and say so.
+
+      ---
 
       ## DB verification (only when enabled in the message)
 

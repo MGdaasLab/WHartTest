@@ -103,20 +103,23 @@
         </div>
       </div>
 
-      <!-- 登录接口（场景模式） -->
-      <div v-if="formState.caseType === 'scenario'" class="form-row">
+      <!-- 登录接口（单接口/场景模式共用，候选为项目全部 HTTP 接口） -->
+      <div class="form-row">
         <span class="form-row-label">{{ pageText.loginInterface }}</span>
-        <a-select
-          v-model="formState.loginInterfaceId"
-          :placeholder="pageText.loginAutoDetect"
-          allow-clear
-          allow-search
-          :loading="isInterfacesLoading"
-        >
-          <a-option v-for="option in loginCandidates" :key="option.id" :value="option.id">
-            {{ option.label }}
-          </a-option>
-        </a-select>
+        <div class="login-select-area">
+          <a-select
+            v-model="formState.loginInterfaceId"
+            :placeholder="pageText.loginAutoDetect"
+            allow-clear
+            allow-search
+            :loading="isInterfacesLoading"
+          >
+            <a-option v-for="option in loginCandidates" :key="option.id" :value="option.id">
+              {{ option.label }}
+            </a-option>
+          </a-select>
+          <div class="login-hint">{{ pageText.loginHint }}</div>
+        </div>
       </div>
 
       <!-- 知识库 -->
@@ -264,6 +267,7 @@ const pageText = computed(() => isEnglish.value ? {
   uploadHint: 'Optional. OpenAPI/Swagger/Apifox/Postman etc. Used to extract parameter constraints for better boundary cases.',
   loginInterface: 'Login Interface',
   loginAutoDetect: 'Auto-detect (recommended)',
+  loginHint: 'Optional. When set, generated cases include a login precondition extracting a token for authenticated requests. Login interface is usually outside the selected business interfaces.',
   knowledgeBase: 'Knowledge Base',
   useKnowledgeBase: 'Search knowledge base for business context',
   selectPlaceholder: 'Select',
@@ -301,6 +305,7 @@ const pageText = computed(() => isEnglish.value ? {
   uploadHint: '可选。支持 OpenAPI/Swagger/Apifox/Postman 等，提取参数约束用于边界值用例设计。',
   loginInterface: '登录接口',
   loginAutoDetect: '自动识别（推荐）',
+  loginHint: '可选。指定后生成的用例将包含登录前置步骤（提取 token 注入请求头），使鉴权接口的用例可实际执行。登录接口通常不在所选业务接口中，可搜索全项目接口选择。',
   knowledgeBase: '知识库',
   useKnowledgeBase: '检索知识库补充业务上下文',
   selectPlaceholder: '请选择',
@@ -585,11 +590,8 @@ const handleInterfaceCheck = (checkedKeys: Array<string | number>) => {
 
 // 登录接口自动识别
 const loginCandidates = computed(() => {
-  const selectedSet = new Set(selectedInterfaceIds.value);
-  const source = selectedInterfaceIds.value.length
-    ? interfaces.value.filter(item => selectedSet.has(item.id))
-    : interfaces.value;
-  return source.map(item => ({
+  // 候选为项目全部 HTTP 接口：单接口场景下登录接口通常不在业务接口集合内
+  return interfaces.value.map(item => ({
     id: item.id,
     label: `${item.method || ''} ${item.name} ${moduleAbsolutePath(item.module) ? `(${moduleAbsolutePath(item.module)})` : ''}`.trim(),
   }));
@@ -612,12 +614,9 @@ const groupOptions = computed(() => {
 });
 
 const autoSelectLoginInterface = () => {
-  if (formState.value.caseType !== 'scenario') return;
   formState.value.loginInterfaceId = null;
-  const pool = selectedInterfaceIds.value.length
-    ? interfaces.value.filter(item => selectedInterfaceIds.value.includes(item.id))
-    : interfaces.value;
-  const candidate = pool.find(item => {
+  // 从项目全部 HTTP 接口中识别登录接口（login/auth/token/signin/登录/认证）
+  const candidate = interfaces.value.find(item => {
     const text = `${item.name} ${item.url || ''}`.toLowerCase();
     return /login|auth|token|signin|登录|认证/.test(text);
   });
@@ -732,7 +731,12 @@ watch(() => props.visible, (visible) => {
     formState.value.selectedInterfaceIds = [];
     interfaceSearch.value = '';
     dbCheckWarning.value = '';
-    fetchData();
+    fetchData().then(() => {
+      // 接口列表加载完成后做一次登录接口自动识别（两模式均生效）
+      if (!formState.value.loginInterfaceId) {
+        autoSelectLoginInterface();
+      }
+    });
   }
 });
 
@@ -860,5 +864,13 @@ defineExpose({
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.login-select-area {
+  flex: 1;
+}
+.login-hint {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--color-text-3);
 }
 </style>

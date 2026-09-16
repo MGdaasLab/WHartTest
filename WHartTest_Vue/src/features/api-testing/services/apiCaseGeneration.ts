@@ -126,8 +126,13 @@ const formatConstraintsText = (constraints: ConstraintExtractResult | null): str
       if (item.body_required && item.body_required.length) {
         lines.push(`- body 必填清单：${item.body_required.join('、')}`);
       }
+    } else if (item.notes && item.notes.length) {
+      // body 为空但带有说明（如同 schema 去重引用），把说明原样呈现，避免被误读为"无约束"
+      for (const note of item.notes) {
+        lines.push(`- body：${note}`);
+      }
     } else {
-      lines.push('- body：无字段级约束信息');
+      lines.push('- body：该接口未声明请求体，无字段级约束信息');
     }
     if (item.response) {
       const successCode = item.response.success_code || (item.response.success_codes && item.response.success_codes[0]);
@@ -176,8 +181,9 @@ export function buildGenerationMessage(options: {
   existingNames: string[];
   constraints: ConstraintExtractResult | null;
   documentName: string;
+  loginInterface?: GenerationInterfaceInfo | null;
 }): string {
-  const { formData, interfaces, projectId, existingNames, constraints, documentName } = options;
+  const { formData, interfaces, projectId, existingNames, constraints, documentName, loginInterface } = options;
 
   const lines: string[] = [];
   lines.push('请基于以下信息生成接口测试用例。');
@@ -194,11 +200,17 @@ export function buildGenerationMessage(options: {
     lines.push(`场景用例上限：${formData.caseLimit} 条，每条 2~8 步`);
   }
 
-  if (formData.caseType === 'scenario' && formData.loginInterfaceId) {
-    const login = interfaces.find(item => item.id === formData.loginInterfaceId);
-    if (login) {
-      lines.push(`登录接口：[${login.id}] ${login.name}（${login.method} ${login.url}），从其响应提取 token 供后续步骤使用。`);
-    }
+  // 鉴权前置：登录接口在选中接口集合外时，其定义已包含在下方"登录接口"区块
+  if (loginInterface) {
+    const inSelection = formData.interfaceIds.includes(loginInterface.id);
+    lines.push('');
+    lines.push('## 鉴权前置（必须遵守）');
+    lines.push(`登录接口：[${loginInterface.id}] ${loginInterface.name}（${loginInterface.method} ${loginInterface.url}）${inSelection ? '（属于选中接口集合）' : '（不在选中接口集合内，仅作为登录前置使用，不要为它生成用例）'}。`);
+    lines.push('所有需要鉴权的用例必须包含登录 precondition 步骤：登录步骤从响应 extract 变量名 token（extract_meta 的 variable_type 为 temporary、source 为 response），main 步骤在请求头注入 ${token}（如 Authorization: Bearer ${token}，以登录接口实际响应结构为准）。');
+    lines.push('登录接口自身或明确无需鉴权的接口（如公开查询）可不加登录前置。');
+  } else {
+    lines.push('');
+    lines.push('## 鉴权前置：未提供登录接口。如目标接口需要鉴权才能访问，请在对应用例的 description 中标注"需人工补充鉴权前置"，不要臆造 token 来源。');
   }
 
   lines.push('');
@@ -218,6 +230,18 @@ export function buildGenerationMessage(options: {
     lines.push('');
     lines.push('## DB 校验：关闭（禁止生成 SQL 步骤）');
   }
+
+  lines.push('');
+  lines.push('## 试跑验证（默认行为，必须执行）');
+  lines.push('每条用例保存成功后，先调用 list_environments 查询项目执行环境；仅一个环境时直接使用，多个环境时逐个列出让用户选择确认后再继续（不要自行猜测环境）。');
+  lines.push('环境确认后必须调用 run_interface_case（payload 传所选 environment_id）真实执行验证：');
+  lines.push('1. 执行通过 → 该条完成，继续下一条。');
+  lines.push('2. 执行失败 → 分析失败原因（断言预期不符 / 参数错误 / 变量链断裂 / 环境问题），修订用例（update_interface_case，需传完整 interface_data）后重新执行验证。失败修复上限 5 次。');
+  lines.push('3. 修复 5 次仍失败 → 保留用例，在 description 追加"试跑失败原因：xxx（已修复 5 次）"，登记到待确认清单，继续下一条。禁止删除已保存的用例。');
+  lines.push('4. 执行失败若属"预期数据依赖缺失"（如需要上传 multipart 文件、需要预置专属数据），不消耗修复次数：保留骨架用例 + description 登记依赖说明，登记到待补充清单。');
+  lines.push('5. 每条用例的试跑结果（通过/修复后通过/仍失败）计入最终总结。');
+  lines.push('6. 写操作用例（新增/修改/删除）试跑后必须清理测试数据（或确保用例自带自清理步骤），避免污染环境。');
+  lines.push('7. 用户在对话中明确表示"跳过验证/不要试跑"时：本条及后续用例仅静态生成并说明。');
 
   if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
     lines.push('');

@@ -162,8 +162,17 @@ const fetchSelectedInterfaces = async (ids: number[]): Promise<GenerationInterfa
 const handleGenerateSubmit = async (formData: GenerationFormData) => {
   if (!projectId.value) return
   try {
+    // 0. 登录接口 ID（选中集合外的也要拉取定义）
+    const allNeededIds = formData.loginInterfaceId
+      ? Array.from(new Set([...formData.interfaceIds, formData.loginInterfaceId]))
+      : formData.interfaceIds
+
     // 1. 获取接口定义（带完整 body/params/validators 的详情字段）
-    const interfaces = await fetchSelectedInterfaces(formData.interfaceIds)
+    const allInterfaces = await fetchSelectedInterfaces(allNeededIds)
+    const interfaces = allInterfaces.filter(item => formData.interfaceIds.includes(item.id))
+    const loginInterface = formData.loginInterfaceId
+      ? allInterfaces.find(item => item.id === formData.loginInterfaceId) || null
+      : null
     if (!interfaces.length) {
       Notification.warning({
         title: tl('获取接口定义失败'),
@@ -203,6 +212,7 @@ const handleGenerateSubmit = async (formData: GenerationFormData) => {
       existingNames,
       constraints,
       documentName,
+      loginInterface,
     })
 
     const requestData: ChatRequest = {
