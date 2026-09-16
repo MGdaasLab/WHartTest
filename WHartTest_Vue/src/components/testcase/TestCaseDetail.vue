@@ -62,6 +62,28 @@
         </a-descriptions-item>
         <a-descriptions-item label="创建者">{{ testCaseDetail.creator_detail?.username || '-' }}</a-descriptions-item>
         <a-descriptions-item label="更新时间">{{ formatDate(testCaseDetail.updated_at) }}</a-descriptions-item>
+        <a-descriptions-item label="UI自动化" :span="2">
+          <div v-if="testCaseDetail.ui_test_case_detail" style="display: flex; align-items: center; gap: 8px;">
+            <a-tag color="green" size="small">
+              <template #icon><icon-check-circle-fill /></template>
+              已绑定 UI 用例
+            </a-tag>
+            <span style="font-weight: 500;">{{ testCaseDetail.ui_test_case_detail.name }}</span>
+            <a-tag v-if="testCaseDetail.ui_test_case_detail.module_name" color="blue" size="small">
+              {{ testCaseDetail.ui_test_case_detail.module_name }}
+            </a-tag>
+            <a-tag v-if="testCaseDetail.ui_test_case_detail.step_count !== undefined" color="arcoblue" size="small">
+              {{ testCaseDetail.ui_test_case_detail.step_count }} 步
+            </a-tag>
+            <a-tag color="arcoblue" size="small">
+              模式: {{ getExecutionModeLabel(testCaseDetail.execution_mode) }}
+            </a-tag>
+          </div>
+          <div v-else style="color: var(--color-text-3);">
+            <a-tag color="gray" size="small">未绑定 UI 脚本</a-tag>
+            <span style="margin-left: 6px; font-size: 12px;">（可在编辑用例或执行时快速关联）</span>
+          </div>
+        </a-descriptions-item>
       </a-descriptions>
 
       <div class="precondition-section">
@@ -142,7 +164,7 @@
               </div>
               <!-- 图片加载失败时的占位符 -->
               <div v-if="imageLoadErrors[screenshot.id]" class="image-error-placeholder">
-                <div class="error-icon">📷</div>
+                <div class="error-icon"><icon-file-image /></div>
                 <div class="error-text">图片加载失败</div>
                 <div class="error-url">{{ getScreenshotUrl(screenshot) }}</div>
               </div>
@@ -330,7 +352,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch, toRefs, computed } from 'vue';
 import { Message, Modal } from '@arco-design/web-vue';
-import { IconArrowLeft, IconPlus, IconUpload, IconEye, IconLeft, IconRight } from '@arco-design/web-vue/es/icon';
+import { IconArrowLeft, IconPlus, IconUpload, IconEye, IconLeft, IconRight, IconCheckCircleFill, IconFileImage } from '@arco-design/web-vue/es/icon';
 import {
   getTestCaseDetail,
   deleteTestCase as deleteTestCaseService,
@@ -346,6 +368,19 @@ import {
 } from '@/services/testcaseService';
 import { type TestCaseModule } from '@/services/testcaseModuleService';
 import { formatDate, getLevelColor, getTestTypeLabel, REVIEW_STATUS_OPTIONS } from '@/utils/formatters';
+
+const getExecutionModeLabel = (mode?: string) => {
+  switch (mode) {
+    case 'hybrid':
+      return '智能双模(脚本+AI自愈)';
+    case 'script_only':
+      return '仅脚本执行';
+    case 'ai_only':
+      return '纯AI探索执行';
+    default:
+      return '智能双模';
+  }
+};
 
 const props = defineProps<{
   testCaseId: number | null;

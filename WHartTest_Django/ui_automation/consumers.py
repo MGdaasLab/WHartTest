@@ -254,6 +254,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             # 执行器返回的结果 -> 转发给前端
             handler_map = {
                 UiSocketEnum.STEP_RESULT: self.handle_step_result,
+                UiSocketEnum.TEST_CASE_ACK: self.handle_test_case_ack,
                 UiSocketEnum.PAGE_STEP_RESULT: self.handle_page_step_result,
                 UiSocketEnum.CASE_RESULT: self.handle_case_result,
                 UiSocketEnum.EXEC_FRAME: self.handle_exec_frame,
@@ -775,6 +776,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             exec_id, exec_name = await self._resolve_executor(args, user)
             payload = {
                 'case_id': args.get('case_id'),
+                'execution_request_id': args.get('execution_request_id'),
                 'status': 'failed',
                 'message': message,
                 'steps': steps or [],
@@ -1110,6 +1112,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 exec_id, exec_name = await self._resolve_executor(args, user)
                 result_args = {
                     'case_id': args.get('case_id'),
+                    'execution_request_id': args.get('execution_request_id'),
                     'status': status,
                     'message': message,
                     'duration': duration,
@@ -1239,12 +1242,28 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             )
         ))
 
+    async def _send_test_case_ack(self, args: dict):
+        await self.send_json(SocketDataModel(
+            code=ResponseCode.SUCCESS,
+            msg=self._localize("任务已发送给执行器"),
+            data=QueueModel(
+                func_name=UiSocketEnum.TEST_CASE_ACK,
+                func_args={
+                    "case_id": args.get("case_id"),
+                    "execution_request_id": args.get("execution_request_id"),
+                    "actuator_id": args.get("actuator_id"),
+                    "env_config_id": args.get("env_config_id"),
+                },
+            ),
+        ))
+
     async def handle_execute_test_case(self, args: dict, user: str):
         """处理执行测试用例请求"""
         if args.get('actuator_id') == RECORDER_BROWSER_ID:
             # 前端消息不带 user 字段：用连接注册键定位回执/帧的目标。
             # 独立任务执行：接收循环保持空闲，前端关闭画布的停止请求才能被及时处理
             self._recorder_exec_task = asyncio.ensure_future(self._execute_via_recorder('case', args, user or self.user_id))
+            await self._send_test_case_ack(args)
             return
         args, actuator, err = await self._prepare_task_dispatch(args)
         if err:
@@ -1253,7 +1272,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 msg=self._localize(err),
                 data=QueueModel(
                     func_name=UiSocketEnum.TEST_CASE,
-                    func_args={"case_id": args.get("case_id"), "error": err},
+                    func_args={
+                        "case_id": args.get("case_id"),
+                        "execution_request_id": args.get("execution_request_id"),
+                        "error": err,
+                    },
                 ),
             ))
             return
@@ -1265,7 +1288,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 msg=err or self._localize("执行器空闲 slot 不足"),
                 data=QueueModel(
                     func_name=UiSocketEnum.TEST_CASE,
-                    func_args={"case_id": args.get("case_id"), "error": err or ""},
+                    func_args={
+                        "case_id": args.get("case_id"),
+                        "execution_request_id": args.get("execution_request_id"),
+                        "error": err or "",
+                    },
                 ),
             ))
             return
@@ -1434,6 +1461,21 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             msg=self._localize("停止信号已发送")
         ))
 
+
+    async def handle_test_case_ack(self, args: dict, user: str):
+        """执行器确认单用例任务已进入其本地队列。"""
+        web_user = SocketUserManager.get_web_user(user)
+        if web_user:
+            await web_user.send_json(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg=self._localize("执行器已接收任务"),
+                user=user,
+                is_notice=NoticeType.WEB,
+                data=QueueModel(
+                    func_name=UiSocketEnum.TEST_CASE_ACK,
+                    func_args=self._sanitize_result_args(args),
+                ),
+            ))
 
     async def handle_step_result(self, args: dict, user: str):
         """处理步骤执行结果（来自执行器）"""

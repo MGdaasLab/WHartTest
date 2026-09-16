@@ -770,6 +770,11 @@ class RecorderBrowserExecTests(TestCase):
 
         consumer = UiAutomationConsumer()
 
+        async def capture_send_json(data):
+            received.append(data)
+
+        consumer.send_json = capture_send_json
+
         class _FakeLayer:
             def __init__(self):
                 self.sent = []
@@ -812,15 +817,24 @@ class RecorderBrowserExecTests(TestCase):
         from ui_automation.models import UiExecutionRecord
         consumer, session, received, layer = self._consumer_env()
         async def scenario():
-            await consumer.handle_execute_test_case({'case_id': self.case.id, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'}, 'alice')
+            await consumer.handle_execute_test_case({
+                'case_id': self.case.id,
+                'env_config_id': self.env.id,
+                'actuator_id': 'recorder-browser',
+                'execution_request_id': 'hybrid-request-1',
+            }, 'alice')
             if consumer._recorder_exec_task is not None:
                 await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
         self._run(scenario)()
+        acknowledgements = [m for m in received if m.data and m.data.func_name == 'u_test_case_ack']
+        self.assertEqual(len(acknowledgements), 1)
+        self.assertEqual(acknowledgements[0].data.func_args['execution_request_id'], 'hybrid-request-1')
         # 用例结果广播（与执行器 handle_case_result 同路径）+ 执行记录落库
         # （goto 导航步骤不计数：用例含 1 组 1 条明细 → 统计 1）
         case_broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
         self.assertEqual(len(case_broadcasts), 1)
         self.assertEqual(case_broadcasts[0]['data']['args']['status'], 'success')
+        self.assertEqual(case_broadcasts[0]['data']['args']['execution_request_id'], 'hybrid-request-1')
         self.assertEqual(case_broadcasts[0]['data']['args']['total_steps'], 1)
         self.assertEqual(case_broadcasts[0]['data']['args']['passed_steps'], 1)
         record = UiExecutionRecord.objects.get(test_case=self.case)

@@ -88,6 +88,7 @@ class StepConfig:
     upload_project_id: Optional[int] = None
     upload_file_sha: Optional[str] = None
     upload_file_size: Optional[int] = None
+    ope_value: Any = None
     
     # step details (shared steps)
     details: list['StepConfig'] = field(default_factory=list)
@@ -1049,6 +1050,101 @@ class PlaywrightExecutor:
         file_chooser = await file_chooser_info.value
         await file_chooser.set_files(payload)
         logger.info(f"步骤 {step.step_id}: 已通过 file chooser 设置上传文件")
+
+    def _get_ocr_instance(self):
+        """获取 ddddocr 识别引擎单例"""
+        if not hasattr(self, '_ocr_instance') or self._ocr_instance is None:
+            try:
+                import ddddocr
+                self._ocr_instance = ddddocr.DdddOcr(show_ad=False)
+            except ImportError:
+                self._ocr_instance = None
+            except Exception as e:
+                logger.warning(f"初始化 ddddocr 失败: {e}")
+                self._ocr_instance = None
+        return self._ocr_instance
+
+    def _resolve_target_locator(self, page: Page, target_info: dict):
+        """根据目标信息解析出定位器（支持 iframe 与 下标）"""
+        frame = page
+        if target_info.get('is_iframe') and target_info.get('iframe_locator'):
+            iframe_loc = target_info['iframe_locator']
+            if ">>>" in iframe_loc:
+                iframe_selectors = [s.strip() for s in iframe_loc.split(">>>") if s.strip()]
+            elif ">>" in iframe_loc:
+                iframe_selectors = [s.strip() for s in iframe_loc.split(">>") if s.strip()]
+            else:
+                iframe_selectors = [iframe_loc]
+            for selector in iframe_selectors:
+                frame = frame.frame_locator(selector)
+
+        l_type = target_info.get('locator_type') or 'xpath'
+        l_val = target_info.get('locator_value') or ''
+        l_idx = target_info.get('locator_index')
+        locator = self._get_locator(frame, l_type, l_val)
+        if l_idx is not None:
+            locator = locator.nth(l_idx)
+        return locator
+
+    async def _execute_captcha_recognize(
+        self,
+        page: Page,
+        img_locator: Any,
+        step: StepConfig,
+    ) -> tuple[bool, str, str | None]:
+        ocr = self._get_ocr_instance()
+        if ocr is None:
+            return False, "执行器未安装 ddddocr 库，请安装依赖: pip install ddddocr", None
+
+        ope_val = step.ope_value if isinstance(step.ope_value, dict) else {}
+        target_info = ope_val.get('target_locator')
+        if not target_info or not target_info.get('locator_value'):
+            return False, "验证码识别步骤缺少目标输入框定位信息", None
+
+        max_retries = 3
+        try:
+            if 'retry_count' in ope_val and ope_val['retry_count'] is not None:
+                max_retries = int(ope_val['retry_count'])
+        except (ValueError, TypeError):
+            max_retries = 3
+        if max_retries < 1:
+            max_retries = 1
+
+        click_refresh = bool(ope_val.get('click_to_refresh', True))
+        target_locator = self._resolve_target_locator(page, target_info)
+
+        last_error = ""
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 1. 截取验证码图片元素截图
+                img_bytes = await img_locator.screenshot(type="png")
+                # 2. 调用 ddddocr 进行识别（放到线程池中避免阻塞 Playwright async 事件循环）
+                recognized = await asyncio.to_thread(ocr.classification, img_bytes)
+                if isinstance(recognized, str):
+                    recognized = recognized.strip()
+
+                logger.info(f"步骤 {step.step_id}: 验证码识别尝试 [{attempt}/{max_retries}] 结果: '{recognized}'")
+
+                if recognized:
+                    # 3. 填入目标输入框
+                    await target_locator.fill(recognized)
+                    return True, f"验证码识别成功并填入: {recognized}", None
+
+                # 若识别为空且允许刷新重试
+                if click_refresh and attempt < max_retries:
+                    await img_locator.click()
+                    await page.wait_for_timeout(600)
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(f"步骤 {step.step_id}: 验证码识别第 {attempt} 次尝试异常: {exc}")
+                if click_refresh and attempt < max_retries:
+                    try:
+                        await img_locator.click()
+                        await page.wait_for_timeout(600)
+                    except Exception:
+                        pass
+
+        return False, f"验证码识别重试 {max_retries} 次失败" + (f": {last_error}" if last_error else ""), None
     
     async def _execute_step(
         self,
@@ -1253,6 +1349,13 @@ class PlaywrightExecutor:
             action_time = time.time() - action_start
             logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
             return True, f"元素操作 {operation} 执行成功", None
+
+        if operation == 'captcha_recognize':
+            action_start = time.time()
+            success, msg, sc = await self._execute_captcha_recognize(page, locator, step)
+            action_time = time.time() - action_start
+            logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
+            return success, msg, sc
 
         if operation in element_operations:
             action_start = time.time()

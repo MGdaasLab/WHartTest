@@ -12,6 +12,7 @@ export const UiSocketEnum = {
   PAGE_STEPS: 'u_page_steps',             // 执行页面步骤
   PAGE_STEP_RESULT: 'u_page_step_result', // 页面步骤执行结果
   TEST_CASE: 'u_test_case',               // 执行测试用例
+  TEST_CASE_ACK: 'u_test_case_ack',       // 后端已接收并下发测试用例
   TEST_CASE_BATCH: 'u_test_case_batch',   // 批量执行用例
   STOP_EXECUTION: 'u_stop_execution',     // 停止执行
   STEP_RESULT: 'u_step_result',           // 步骤执行结果
@@ -216,7 +217,7 @@ class UiWebSocketService {
   }
   
   /** 执行测试用例 */
-  runTestCase(caseId: number, envConfigId?: number, actuatorId?: string): boolean {
+  runTestCase(caseId: number, envConfigId?: number, actuatorId?: string, executionRequestId?: string): boolean {
     // 从auth store获取当前用户信息
     const authStore = useAuthStore()
     const currentUser = authStore.currentUser
@@ -227,6 +228,7 @@ class UiWebSocketService {
       actuator_id: actuatorId,
       executor_id: currentUser?.id,
       executor_name: currentUser?.username,
+      execution_request_id: executionRequestId,
     })
   }
   

@@ -71,6 +71,15 @@
         </a-button>
       </div>
       <div class="action-buttons">
+        <a-badge :count="runningTasksCount" :dot="false" :max-count="99">
+          <a-button type="outline" class="task-queue-btn" @click="emit('open-task-queue')">
+            <template #icon>
+              <icon-sync v-if="runningTasksCount > 0" spin />
+              <icon-list v-else />
+            </template>
+            {{ pageText.taskQueue }}
+          </a-button>
+        </a-badge>
         <a-button type="primary" @click="handleGenerateTestCases">{{ pageText.generateCases }}</a-button>
         <a-button type="primary" @click="handleAddTestCase">{{ pageText.addCase }}</a-button>
       </div>
@@ -151,6 +160,26 @@
         <span v-if="record.module_detail">{{ record.module_detail }}</span>
         <span v-else class="text-gray">{{ pageText.unassigned }}</span>
       </template>
+      <template #uiBinding="{ record }">
+        <div v-if="record.ui_test_case_detail" class="ui-bound-badge">
+          <a-tooltip
+            :content="`${record.ui_test_case_detail.module_name ? `[${record.ui_test_case_detail.module_name}] ` : ''}${record.ui_test_case_detail.name} (${record.ui_test_case_detail.step_count || 0} 步)`"
+            position="top"
+          >
+            <a-tag color="green" size="small" class="ui-bound-tag" @click.stop="openQuickBindModal(record)">
+              <template #icon><icon-check-circle-fill /></template>
+              <span class="ui-bound-tag-text">{{ record.ui_test_case_detail.name }}</span>
+            </a-tag>
+          </a-tooltip>
+        </div>
+        <div v-else class="ui-unbound-badge">
+          <a-tooltip :content="tl('点击快速关联 UI 自动化用例')" position="top">
+            <a-tag color="gray" size="small" class="ui-unbound-tag" @click.stop="openQuickBindModal(record)">
+              {{ tl('未绑定') }}
+            </a-tag>
+          </a-tooltip>
+        </div>
+      </template>
       <template #operations="{ record }">
         <a-space :size="4">
           <a-button type="primary" size="mini" @click.stop="handleViewTestCase(record)">{{ pageText.view }}</a-button>
@@ -161,6 +190,43 @@
         </a-space>
       </template>
     </a-table>
+
+    <!-- 快速绑定 UI 自动化用例弹窗 -->
+    <a-modal
+      v-model:visible="quickBindModalVisible"
+      :title="tl('绑定 UI 自动化用例')"
+      :width="460"
+      @ok="handleConfirmQuickBind"
+      :ok-loading="submittingQuickBind"
+    >
+      <a-form layout="vertical">
+        <a-form-item :label="tl('当前功能用例')">
+          <span style="font-weight: 500;">{{ currentBindTestCase?.name }}</span>
+        </a-form-item>
+        <a-form-item :label="tl('关联的 UI 自动化用例')">
+          <a-select
+            v-model="targetUiTestCaseId"
+            :placeholder="tl('请选择 UI 自动化用例（留空表示解绑）')"
+            allow-clear
+            :loading="loadingUiOptions"
+          >
+            <a-option
+              v-for="item in availableUiTestCases"
+              :key="item.id"
+              :value="item.id"
+              :label="`${item.name} (${item.level || 'P2'})`"
+            />
+          </a-select>
+        </a-form-item>
+        <a-form-item :label="tl('默认执行模式')">
+          <a-select v-model="targetExecutionMode">
+            <a-option value="hybrid">{{ tl('智能双模（脚本优先 + 失败 AI 自愈介入）') }}</a-option>
+            <a-option value="script_only">{{ tl('仅脚本执行') }}</a-option>
+            <a-option value="ai_only">{{ tl('纯 AI 探索执行') }}</a-option>
+          </a-select>
+        </a-form-item>
+      </a-form>
+    </a-modal>
 
     <ImportModal
       v-if="currentProjectId"
@@ -182,19 +248,26 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted, onUnmounted, computed, watch, toRefs } from 'vue';
 import { Message, Modal } from '@arco-design/web-vue';
-import { IconFolder, IconDownload, IconUpload, IconDown } from '@arco-design/web-vue/es/icon';
+import { IconFolder, IconDownload, IconUpload, IconDown, IconCheckCircleFill, IconList, IconSync } from '@arco-design/web-vue/es/icon';
 import { useAppI18n } from '@/composables/useAppI18n';
+import { useTestCaseExecutionQueue } from '@/composables/useTestCaseExecutionQueue';
 import ImportModal from '@/features/testcase-templates/components/ImportModal.vue';
 import ExportModal from '@/features/testcase-templates/components/ExportModal.vue';
 import {
   getTestCaseList,
+  getAllTestCaseIds,
   deleteTestCase as deleteTestCaseService,
   copyTestCase as copyTestCaseService,
   batchDeleteTestCases,
   updateTestCaseReviewStatus,
+  bindUiTestCase,
   type TestCase,
   type ReviewStatus,
+  type TestCaseNavigationFilters,
 } from '@/services/testcaseService';
+import { testCaseApi } from '@/features/ui-automation/api';
+import type { UiTestCase } from '@/features/ui-automation/types';
+import { extractPaginationData } from '@/features/ui-automation/types';
 import { formatDate, getLevelColor, getReviewStatusColor } from '@/utils/formatters';
 import type { TreeNodeData } from '@arco-design/web-vue';
 
@@ -207,6 +280,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'addTestCase'): void;
   (e: 'generate-test-cases'): void;
+  (e: 'open-task-queue'): void;
   (e: 'editTestCase', testCase: TestCase): void;
   (e: 'viewTestCase', testCase: TestCase): void;
   (e: 'testCaseDeleted'): void;
@@ -217,7 +291,8 @@ const emit = defineEmits<{
 }>();
 
 const { currentProjectId, selectedModuleId } = toRefs(props);
-const { isEnglish } = useAppI18n();
+const { isEnglish, tl } = useAppI18n();
+const { runningTasksCount } = useTestCaseExecutionQueue();
 
 const pageText = computed(() => (
   isEnglish.value
@@ -227,11 +302,12 @@ const pageText = computed(() => (
         priorityFilter: 'Filter priority',
         reviewStatusFilter: 'Filter review status',
         typeShort: 'Type',
-        testTypeFilter: 'Test type',
+        testTypeFilter: 'Filter test type',
         updatedAt: 'Updated at',
         export: 'Export',
         import: 'Import',
         batchDeleteButton: (count: number) => `Batch delete (${count})`,
+        taskQueue: 'Task Queue',
         generateCases: 'Generate cases',
         addCase: 'Add case',
         noProjectSelected: 'Select a project from the top bar',
@@ -248,6 +324,7 @@ const pageText = computed(() => (
         testType: 'Test type',
         reviewStatus: 'Review status',
         module: 'Module',
+        uiAutomation: 'UI Automation',
         creator: 'Created by',
         createdAt: 'Created at',
         actions: 'Actions',
@@ -285,6 +362,7 @@ const pageText = computed(() => (
         export: '导出',
         import: '导入',
         batchDeleteButton: (count: number) => `批量删除 (${count})`,
+        taskQueue: '执行队列',
         generateCases: '生成用例',
         addCase: '添加用例',
         noProjectSelected: '请在顶部选择一个项目',
@@ -301,6 +379,7 @@ const pageText = computed(() => (
         testType: '测试类型',
         reviewStatus: '审核状态',
         module: '所属模块',
+        uiAutomation: 'UI自动化',
         creator: '创建者',
         createdAt: '创建时间',
         actions: '操作',
@@ -348,17 +427,17 @@ const levelOptions = computed(() => (
 const reviewStatusOptions = computed(() => (
   isEnglish.value
     ? [
-        { value: 'pending_review', label: 'Pending', color: 'orange' },
+        { value: 'pending_review', label: 'Pending review', color: 'orange' },
         { value: 'approved', label: 'Approved', color: 'green' },
-        { value: 'needs_optimization', label: 'Optimize', color: 'blue' },
-        { value: 'optimization_pending_review', label: 'Re-review', color: 'purple' },
-        { value: 'unavailable', label: 'N/A', color: 'red' },
+        { value: 'needs_optimization', label: 'Needs optimization', color: 'blue' },
+        { value: 'optimization_pending_review', label: 'Optimization pending review', color: 'cyan' },
+        { value: 'unavailable', label: 'Unavailable', color: 'red' },
       ]
     : [
         { value: 'pending_review', label: '待审核', color: 'orange' },
         { value: 'approved', label: '通过', color: 'green' },
         { value: 'needs_optimization', label: '优化', color: 'blue' },
-        { value: 'optimization_pending_review', label: '优化待审核', color: 'purple' },
+        { value: 'optimization_pending_review', label: '优化待审核', color: 'cyan' },
         { value: 'unavailable', label: '不可用', color: 'red' },
       ]
 ));
@@ -366,13 +445,13 @@ const reviewStatusOptions = computed(() => (
 const testTypeOptions = computed(() => (
   isEnglish.value
     ? [
-        { value: 'smoke', label: 'Smoke' },
-        { value: 'functional', label: 'Functional' },
-        { value: 'boundary', label: 'Boundary' },
-        { value: 'exception', label: 'Exception' },
-        { value: 'permission', label: 'Permission' },
-        { value: 'security', label: 'Security' },
-        { value: 'compatibility', label: 'Compatibility' },
+        { value: 'smoke', label: 'Smoke test' },
+        { value: 'functional', label: 'Functional test' },
+        { value: 'boundary', label: 'Boundary test' },
+        { value: 'exception', label: 'Exception test' },
+        { value: 'permission', label: 'Permission test' },
+        { value: 'security', label: 'Security test' },
+        { value: 'compatibility', label: 'Compatibility test' },
       ]
     : [
         { value: 'smoke', label: '冒烟测试' },
@@ -438,6 +517,14 @@ const paginationConfig = reactive({
   showJumper: true,
   showPageSize: true,
   pageSizeOptions: [10, 20, 50, 100],
+});
+
+const buildCurrentFilters = (): TestCaseNavigationFilters => ({
+  search: localSearchKeyword.value,
+  module_id: localSelectedModuleId.value || undefined,
+  level: selectedLevel.value || undefined,
+  test_type: selectedTestType.value || undefined,
+  review_status_in: selectedReviewStatuses.value.length > 0 ? selectedReviewStatuses.value : undefined,
 });
 
 // 复选框选择相关的计算属性和方法
@@ -535,6 +622,7 @@ const columns = computed(() => [
   { title: pageText.value.testType, dataIndex: 'test_type', slotName: 'testType', width: 90, align: 'center' },
   { title: pageText.value.reviewStatus, dataIndex: 'review_status', slotName: 'reviewStatus', width: 120, align: 'center' },
   { title: pageText.value.module, dataIndex: 'module_detail', slotName: 'module', width: 100, ellipsis: true, tooltip: true, align: 'center' },
+  { title: pageText.value.uiAutomation, dataIndex: 'ui_test_case', slotName: 'uiBinding', width: 140, ellipsis: true, align: 'center' },
   {
     title: pageText.value.creator,
     dataIndex: 'creator_detail',
@@ -561,6 +649,57 @@ const columns = computed(() => [
   { title: pageText.value.actions, slotName: 'operations', width: 240, fixed: 'right', align: 'center' },
 ]);
 
+// 快速绑定 UI 自动化用例相关状态
+const quickBindModalVisible = ref(false);
+const currentBindTestCase = ref<TestCase | null>(null);
+const targetUiTestCaseId = ref<number | undefined>(undefined);
+const targetExecutionMode = ref<'hybrid' | 'script_only' | 'ai_only'>('hybrid');
+const availableUiTestCases = ref<UiTestCase[]>([]);
+const loadingUiOptions = ref(false);
+const submittingQuickBind = ref(false);
+
+const openQuickBindModal = async (record: TestCase) => {
+  currentBindTestCase.value = record;
+  targetUiTestCaseId.value = record.ui_test_case || undefined;
+  targetExecutionMode.value = record.execution_mode || 'hybrid';
+  quickBindModalVisible.value = true;
+
+  if (props.currentProjectId) {
+    loadingUiOptions.value = true;
+    try {
+      const res = await testCaseApi.list({ project: props.currentProjectId });
+      const { items } = extractPaginationData(res);
+      availableUiTestCases.value = items || [];
+    } catch (e) {
+      console.error('加载 UI 用例失败', e);
+    } finally {
+      loadingUiOptions.value = false;
+    }
+  }
+};
+
+const handleConfirmQuickBind = async () => {
+  if (!currentBindTestCase.value || !props.currentProjectId) return;
+  submittingQuickBind.value = true;
+  try {
+    const res = await bindUiTestCase(props.currentProjectId, currentBindTestCase.value.id, {
+      ui_test_case_id: targetUiTestCaseId.value || null,
+      execution_mode: targetExecutionMode.value,
+    });
+    if (res.success) {
+      Message.success('UI 自动化绑定设置成功');
+      quickBindModalVisible.value = false;
+      fetchTestCases();
+    } else {
+      Message.error(res.error || '绑定失败');
+    }
+  } catch (e: any) {
+    Message.error(e.message || '绑定操作出错');
+  } finally {
+    submittingQuickBind.value = false;
+  }
+};
+
 const fetchTestCases = async () => {
   if (!currentProjectId.value) {
     testCaseData.value = [];
@@ -573,13 +712,7 @@ const fetchTestCases = async () => {
     const response = await getTestCaseList(currentProjectId.value, {
       page: paginationConfig.current,
       pageSize: paginationConfig.pageSize,
-      search: localSearchKeyword.value,
-      module_id: localSelectedModuleId.value || undefined, // 使用本地模块筛选
-      level: selectedLevel.value || undefined, // 添加优先级筛选
-      test_type: selectedTestType.value || undefined, // 添加测试类型筛选
-      // 多选审核状态筛选：有选中项则传递，否则不限制（显示全部）
-      review_status_in: selectedReviewStatuses.value.length > 0 ? selectedReviewStatuses.value : undefined,
-      ordering: selectedOrdering.value || undefined,
+      ...buildCurrentFilters(),
     });
     if (response.success && response.data) {
       testCaseData.value = response.data;
@@ -836,6 +969,20 @@ const onImportSuccess = () => {
   fetchTestCases();
 };
 
+const getNavigationTestCaseIds = async () => {
+  if (!currentProjectId.value) {
+    return [];
+  }
+
+  const response = await getAllTestCaseIds(currentProjectId.value, buildCurrentFilters());
+  if (response.success && response.data) {
+    return response.data;
+  }
+
+  Message.error(response.error || pageText.value.fetchCasesFailed);
+  return testCaseData.value.map(tc => tc.id);
+};
+
 onMounted(() => {
   handleResize(); // 初始化表格高度
   fetchTestCases();
@@ -869,7 +1016,7 @@ watch(selectedModuleId, (newVal) => {
 defineExpose({
   refreshTestCases: fetchTestCases,
   // 获取当前筛选后的用例ID列表（用于编辑页面导航）
-  getTestCaseIds: () => testCaseData.value.map(tc => tc.id),
+  getTestCaseIds: getNavigationTestCaseIds,
 });
 
 </script>
@@ -1077,6 +1224,43 @@ defineExpose({
 .testcase-name-link:hover {
   color: var(--theme-accent-hover);
   text-decoration: underline;
+}
+
+.ui-bound-badge,
+.ui-unbound-badge {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.ui-bound-tag {
+  cursor: pointer;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+}
+
+:deep(.ui-bound-tag .arco-tag-content) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 86px;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.ui-bound-tag-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  max-width: 86px;
+  vertical-align: middle;
+}
+
+.ui-unbound-tag {
+  cursor: pointer;
 }
 
 /* 移除重复的样式定义 */

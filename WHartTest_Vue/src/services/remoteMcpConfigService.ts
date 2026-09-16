@@ -7,16 +7,9 @@ export interface RemoteMcpConfig {
   transport: 'stdio' | 'streamable_http' | 'sse';
   headers?: Record<string, string>;
   is_active: boolean;
+  pinging?: boolean;
   created_at?: string;
   updated_at?: string;
-}
-
-interface ApiResponse<T> {
-  status: string;
-  code: number;
-  message: string;
-  data: T;
-  errors: any;
 }
 
 interface PingResponse {
@@ -25,7 +18,6 @@ interface PingResponse {
   response_time?: number;
 }
 
-// 获取所有远程MCP配置
 export const fetchRemoteMcpConfigs = async (): Promise<RemoteMcpConfig[]> => {
   try {
     const response = await request<RemoteMcpConfig[]>({
@@ -44,7 +36,6 @@ export const fetchRemoteMcpConfigs = async (): Promise<RemoteMcpConfig[]> => {
   }
 };
 
-// 获取单个远程MCP配置
 export const fetchRemoteMcpConfigById = async (id: number): Promise<RemoteMcpConfig> => {
   try {
     const response = await request<RemoteMcpConfig>({
@@ -63,7 +54,6 @@ export const fetchRemoteMcpConfigById = async (id: number): Promise<RemoteMcpCon
   }
 };
 
-// 创建新的远程MCP配置
 export const createRemoteMcpConfig = async (config: RemoteMcpConfig): Promise<RemoteMcpConfig> => {
   try {
     const response = await request<RemoteMcpConfig>({
@@ -83,7 +73,6 @@ export const createRemoteMcpConfig = async (config: RemoteMcpConfig): Promise<Re
   }
 };
 
-// 更新远程MCP配置
 export const updateRemoteMcpConfig = async (id: number, config: Partial<RemoteMcpConfig>): Promise<RemoteMcpConfig> => {
   try {
     const response = await request<RemoteMcpConfig>({
@@ -103,7 +92,6 @@ export const updateRemoteMcpConfig = async (id: number, config: Partial<RemoteMc
   }
 };
 
-// 删除远程MCP配置
 export const deleteRemoteMcpConfig = async (id: number): Promise<void> => {
   try {
     const response = await request<void>({
@@ -120,7 +108,6 @@ export const deleteRemoteMcpConfig = async (id: number): Promise<void> => {
   }
 };
 
-// 测试远程MCP服务器连通性
 export const pingRemoteMcpConfig = async (configId: number): Promise<PingResponse> => {
   try {
     const response = await request<any>({
@@ -133,7 +120,6 @@ export const pingRemoteMcpConfig = async (configId: number): Promise<PingRespons
 
     if (response.success && response.data) {
       const pingResultPayload = response.data;
-      // 根据ping结果的内部status判断是否成功
       const isSuccess = pingResultPayload && pingResultPayload.status === 'online';
 
       return {

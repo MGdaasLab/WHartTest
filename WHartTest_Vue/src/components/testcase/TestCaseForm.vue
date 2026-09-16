@@ -43,19 +43,19 @@
       class="testcase-form"
     >
       <a-row :gutter="16">
-        <a-col :span="12">
+        <a-col :span="10">
           <a-form-item field="name" :label="text.caseName">
             <a-input v-model="formState.name" :placeholder="text.caseNamePlaceholder" allow-clear />
           </a-form-item>
         </a-col>
-        <a-col :span="4">
+        <a-col :span="3">
           <a-form-item field="level" :label="text.priority">
             <a-select v-model="formState.level" :placeholder="text.priorityPlaceholder">
               <a-option v-for="opt in priorityOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</a-option>
             </a-select>
           </a-form-item>
         </a-col>
-        <a-col :span="4">
+        <a-col :span="3">
           <a-form-item field="test_type" :label="text.testType">
             <a-select v-model="formState.test_type" :placeholder="text.testTypePlaceholder">
               <a-option v-for="opt in localizedTestTypeOptions" :key="opt.value" :value="opt.value">
@@ -82,6 +82,34 @@
               <a-option v-for="opt in localizedReviewStatusOptions" :key="opt.value" :value="opt.value">
                 <a-tag :color="opt.color" size="small">{{ opt.label }}</a-tag>
               </a-option>
+            </a-select>
+          </a-form-item>
+        </a-col>
+      </a-row>
+      <a-row :gutter="16">
+        <a-col :span="12">
+          <a-form-item field="ui_test_case" :label="tl('关联 UI 自动化用例')">
+            <a-select
+              v-model="formState.ui_test_case"
+              :placeholder="tl('请选择关联的 UI 自动化用例（可选）')"
+              allow-clear
+              :loading="loadingUiTestCases"
+            >
+              <a-option
+                v-for="item in availableUiCases"
+                :key="item.id"
+                :value="item.id"
+                :label="`${item.name} (${item.level || 'P2'})`"
+              />
+            </a-select>
+          </a-form-item>
+        </a-col>
+        <a-col :span="12">
+          <a-form-item field="execution_mode" :label="tl('默认执行模式')">
+            <a-select v-model="formState.execution_mode" :placeholder="tl('请选择执行模式')">
+              <a-option value="hybrid">{{ tl('智能双模（脚本优先 + 失败 AI 自愈介入）') }}</a-option>
+              <a-option value="script_only">{{ tl('仅脚本执行') }}</a-option>
+              <a-option value="ai_only">{{ tl('纯 AI 探索执行') }}</a-option>
             </a-select>
           </a-form-item>
         </a-col>
@@ -390,6 +418,9 @@ import {
 import { formatDate, REVIEW_STATUS_OPTIONS, TEST_TYPE_OPTIONS } from '@/utils/formatters';
 import type { ReviewStatus } from '@/services/testcaseService';
 import { useAppI18n } from '@/composables/useAppI18n';
+import { testCaseApi } from '@/features/ui-automation/api';
+import type { UiTestCase } from '@/features/ui-automation/types';
+import { extractPaginationData } from '@/features/ui-automation/types';
 
 interface StepWithError extends TestCaseStep {
   temp_id?: string; // 用于表格 row-key
@@ -402,6 +433,8 @@ interface FormState extends CreateTestCaseRequest {
   module_id?: number;
   review_status?: ReviewStatus;
   test_type?: string;
+  ui_test_case?: number | null;
+  execution_mode?: 'hybrid' | 'script_only' | 'ai_only';
 }
 
 
@@ -422,10 +455,13 @@ const emit = defineEmits<{
 }>();
 
 const { isEditing, testCaseId, currentProjectId, initialSelectedModuleId, moduleTree, testCaseIds } = toRefs(props);
-const { isEnglish } = useAppI18n();
+const { isEnglish, tl } = useAppI18n();
 
 const formLoading = ref(false);
 const testCaseFormRef = ref<FormInstance>();
+const availableUiCases = ref<UiTestCase[]>([]);
+const loadingUiTestCases = ref(false);
+
 const formState = reactive<FormState>({
   id: undefined,
   name: '',
@@ -433,10 +469,26 @@ const formState = reactive<FormState>({
   level: 'P2',
   test_type: 'functional',
   module_id: undefined,
+  ui_test_case: undefined,
+  execution_mode: 'hybrid',
   steps: [{ step_number: 1, description: '', expected_result: '', temp_id: Date.now().toString() }],
   notes: '',
   review_status: 'pending_review',
 });
+
+const loadUiTestCases = async () => {
+  if (!currentProjectId.value) return;
+  loadingUiTestCases.value = true;
+  try {
+    const res = await testCaseApi.list({ project: currentProjectId.value });
+    const { items } = extractPaginationData(res);
+    availableUiCases.value = items || [];
+  } catch (e) {
+    console.error('加载 UI 用例失败', e);
+  } finally {
+    loadingUiTestCases.value = false;
+  }
+};
 
 // 保存原始数据用于变更追踪
 const originalFormData = ref<FormState | null>(null);
@@ -756,6 +808,8 @@ const resetForm = () => {
   formState.level = 'P2';
   formState.test_type = 'functional';
   formState.module_id = initialSelectedModuleId?.value || undefined;
+  formState.ui_test_case = undefined;
+  formState.execution_mode = 'hybrid';
   formState.steps = [{ step_number: 1, description: '', expected_result: '', temp_id: Date.now().toString() }];
   formState.notes = '';
   formState.review_status = 'pending_review';
@@ -778,6 +832,8 @@ const fetchDetailsAndSetForm = async (id: number) => {
       formState.level = data.level;
       formState.test_type = data.test_type || 'functional';
       formState.module_id = data.module_id;
+      formState.ui_test_case = data.ui_test_case || undefined;
+      formState.execution_mode = data.execution_mode || 'hybrid';
       formState.notes = data.notes || ''; // 设置备注信息
       formState.review_status = data.review_status || 'pending_review'; // 设置审核状态
       formState.steps = data.steps.map((step, index) => ({ ...step, temp_id: `${Date.now()}-${index}` }));
@@ -790,6 +846,8 @@ const fetchDetailsAndSetForm = async (id: number) => {
         precondition: data.precondition,
         level: data.level,
         module_id: data.module_id,
+        ui_test_case: data.ui_test_case,
+        execution_mode: data.execution_mode || 'hybrid',
         notes: data.notes || '',
         review_status: data.review_status || 'pending_review',
         steps: data.steps
@@ -815,6 +873,7 @@ const fetchDetailsAndSetForm = async (id: number) => {
 };
 
 onMounted(() => {
+  loadUiTestCases();
   if (isEditing.value && testCaseId?.value) {
     fetchDetailsAndSetForm(testCaseId.value);
   } else {
@@ -926,6 +985,12 @@ const handleSubmit = async () => {
         if (formState.test_type !== originalFormData.value.test_type) {
           updatePayload.test_type = formState.test_type;
         }
+        if (formState.ui_test_case !== originalFormData.value.ui_test_case) {
+          updatePayload.ui_test_case = formState.ui_test_case || null;
+        }
+        if (formState.execution_mode !== originalFormData.value.execution_mode) {
+          updatePayload.execution_mode = formState.execution_mode;
+        }
 
         // 比较步骤：检查是否有变更
         // 将原始步骤数据标准化为与 payloadSteps 相同的格式后再比较
@@ -946,6 +1011,8 @@ const handleSubmit = async () => {
         updatePayload.level = formState.level;
         updatePayload.test_type = formState.test_type;
         updatePayload.module_id = formState.module_id;
+        updatePayload.ui_test_case = formState.ui_test_case || null;
+        updatePayload.execution_mode = formState.execution_mode;
         updatePayload.steps = payloadSteps;
         updatePayload.notes = formState.notes;
       }
@@ -971,6 +1038,8 @@ const handleSubmit = async () => {
         level: formState.level,
         test_type: formState.test_type,
         module_id: formState.module_id,
+        ui_test_case: formState.ui_test_case || null,
+        execution_mode: formState.execution_mode,
         steps: payloadSteps.map(({id, ...rest}) => rest), // 创建时不需要步骤id
         notes: formState.notes,
       };

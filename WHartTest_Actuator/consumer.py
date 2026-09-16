@@ -337,6 +337,18 @@ class TaskConsumer:
         """添加任务到队列"""
         await self.task_queue.put(task)
         logger.info(f"任务已入队: {task.func_name}")
+        if task.func_name == UiSocketEnum.TEST_CASE:
+            args = task.func_args or {}
+            await self.ws_client.send_result(
+                UiSocketEnum.TEST_CASE_ACK,
+                {
+                    'case_id': args.get('case_id'),
+                    'execution_request_id': args.get('execution_request_id'),
+                    'actuator_id': getattr(self.config, 'actuator_id', None),
+                    'env_config_id': args.get('env_config_id'),
+                },
+                self._current_user,
+            )
     
     async def process_tasks(self):
         """处理任务队列"""
@@ -764,6 +776,7 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
+        execution_request_id = args.get('execution_request_id')
         
         if not case_id:
             logger.error("缺少case_id参数")
@@ -824,6 +837,7 @@ class TaskConsumer:
                     UiSocketEnum.CASE_RESULT,
                     {
                         'case_id': case_id,
+                        'execution_request_id': execution_request_id,
                         'status': 'failed',
                         'message': f'准备上传文件失败: {e}',
                         'batch_id': batch_id,
@@ -848,6 +862,7 @@ class TaskConsumer:
 
             # 发送用例结果（包含 batch_id 和执行人信息）
             result_data = result.model_dump()
+            result_data['execution_request_id'] = execution_request_id
             # attach effective runtime snapshot for backend environment field
             result_data['effective_runtime'] = effective
             result_data['environment'] = effective
@@ -1605,6 +1620,7 @@ class TaskConsumer:
                 upload_project_id=upload_project_id,
                 upload_file_sha=(ope_value.get('sha256') or ope_value.get('file_sha') or None) if isinstance(ope_value, dict) else None,
                 upload_file_size=self._parse_file_id(ope_value.get('size')) if isinstance(ope_value, dict) else None,
+                ope_value=ope_value,
             ))
         
         # 页面URL处理：支持相对路径与 base_url 拼接

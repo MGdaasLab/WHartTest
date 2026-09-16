@@ -2,6 +2,7 @@ import { request } from '@/utils/request';
 import type { ApiResponse } from '@/features/langgraph/types/api';
 import type {
   LlmConfig,
+  LlmRuntimeConfig,
   CreateLlmConfigRequest,
   UpdateLlmConfigRequest,
   PartialUpdateLlmConfigRequest,
@@ -269,6 +270,29 @@ export async function getActiveLlmConfig(): Promise<ApiResponse<LlmConfig | null
     message: response.message,
     data: null,
     errors: response.errors
+  };
+}
+
+export async function getCurrentRuntimeLlmConfig(_moduleKey = 'llm_chat'): Promise<ApiResponse<LlmRuntimeConfig | null>> {
+  const response = await getActiveLlmConfig();
+  return {
+    ...response,
+    data: response.data as LlmRuntimeConfig | null,
+  };
+}
+
+export async function patchLlmConfigBundle(
+  configId: number,
+  data: { slots?: Array<{ slot_key?: string; is_configured?: boolean; system_prompt?: string }> },
+): Promise<ApiResponse<LlmRuntimeConfig>> {
+  const systemPrompt = data.slots?.find((slot) => slot.system_prompt !== undefined)?.system_prompt;
+  const response = await partialUpdateLlmConfig(configId, {
+    system_prompt: systemPrompt,
+  });
+
+  return {
+    ...response,
+    data: response.data as LlmRuntimeConfig,
   };
 }
 
