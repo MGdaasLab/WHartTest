@@ -24,7 +24,7 @@ retry_count = 3
 step_interval = 100
 screenshot_dir = "./data/screenshots"
 max_concurrent = 2
-fail_fast = false
+fail_fast = true
 
 [trace]
 enabled = true

@@ -1004,9 +1004,6 @@ class AgentLoopStreamAPIView(View):
                     "project": project,
                     "prompt": prompt_obj,
                     "title": f"新对话 - {user_message[:30]}",
-                    "resolved_module_key": "llm_chat",
-                    "resolved_source": "legacy",
-                    "resolved_runtime_mode": "auto",
                 },
             )
             if created:

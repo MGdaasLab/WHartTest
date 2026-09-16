@@ -42,7 +42,7 @@
 import { ref, watch, nextTick, onMounted, onUnmounted, computed } from 'vue';
 import MessageItem from './MessageItem.vue';
 import { brandLogoUrl } from '@/utils/assetUrl';
-import type { TodoDisplayPayload, ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
+import type { ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
 import type { FileAsset } from '@/features/file-management/types';
 import { useAppI18n } from '@/composables/useAppI18n';
 
@@ -53,7 +53,6 @@ interface ChatMessage {
   isLoading?: boolean;
   messageType?: 'human' | 'ai' | 'tool' | 'system' | 'agent_step' | 'step_separator';
   toolName?: string;
-  todoPayload?: TodoDisplayPayload;
   isExpanded?: boolean;
   isStreaming?: boolean;
   imageBase64?: string;

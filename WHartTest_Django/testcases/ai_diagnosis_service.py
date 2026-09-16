@@ -10,8 +10,8 @@ from typing import Any, Dict, Optional
 from django.utils import timezone
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from wharttest_core.config_resolver import resolve_llm_config
-from wharttest_core.llm_factory import create_llm_instance
+from langgraph_integration.models import LLMConfig
+from langgraph_integration.views import create_llm_instance
 from ui_automation.models import UiTestCase, UiExecutionRecord, UiElement, UiCaseStepsDetailed
 
 logger = logging.getLogger(__name__)
@@ -365,13 +365,8 @@ UI用例名称: {testcase.ui_test_case.name if testcase.ui_test_case else '无'}
     diagnosis_result = None
 
     try:
-        resolved = resolve_llm_config(
-            user=user,
-            module_key="testcase_execution",
-            allow_global=True,
-        )
-        if resolved and resolved.runtime_config:
-            active_config = resolved.runtime_config
+        active_config = LLMConfig.objects.filter(is_active=True).first()
+        if active_config:
             llm = create_llm_instance(active_config, temperature=0.2)
             messages = [
                 SystemMessage(content=DIAGNOSIS_SYSTEM_PROMPT),

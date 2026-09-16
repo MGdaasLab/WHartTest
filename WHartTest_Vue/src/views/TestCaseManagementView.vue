@@ -180,6 +180,7 @@ import {
 } from '@/services/testcaseService';
 import { uiWebSocket, UiSocketEnum } from '@/features/ui-automation/services/websocket';
 import { envConfigApi, actuatorApi } from '@/features/ui-automation/api';
+import { extractResponseData } from '@/features/ui-automation/types';
 
 // 测试类型提示词映射
 const TEST_TYPE_PROMPTS: Record<string, string> = {
@@ -767,22 +768,28 @@ const executeUiTestCaseWithAutoHealing = async (
 
   // 获取执行器和默认环境
   let defaultEnvId: number | undefined;
-  let availableActuatorId: string | undefined;
+  let availableActuatorId = 'recorder-browser';
 
   try {
     const [envRes, actRes] = await Promise.all([
       envConfigApi.list({ project: currentProjectId.value! }),
       actuatorApi.list(),
     ]);
-    const envItems = (envRes.data as any)?.data?.items || (envRes.data as any)?.items || [];
-    const defaultEnv = envItems.find((e: any) => e.is_default) || envItems[0];
+    const envData = extractResponseData<any>(envRes);
+    const envItems = envData?.items || [];
+    const defaultEnv = envItems.find((env: any) => env.is_default) || envItems[0];
     defaultEnvId = defaultEnv?.id;
 
-    const actItems = (actRes.data as any) || [];
-    const openActuator = actItems.find((a: any) => a.is_open && ((a.max_slots ?? 1) - (a.busy_slots ?? 0)) >= 1);
-    availableActuatorId = openActuator?.id;
-  } catch (e) {
-    console.warn('获取环境或执行器信息失败，将使用默认参数下发', e);
+    const actuatorData = extractResponseData<any>(actRes);
+    const actItems = actuatorData?.items || [];
+    const openActuator = actItems.find(
+      (actuator: any) => actuator.is_open && ((actuator.max_slots ?? 1) - (actuator.busy_slots ?? 0)) >= 1
+    );
+    if (openActuator?.id) {
+      availableActuatorId = openActuator.id;
+    }
+  } catch (error) {
+    console.warn('获取环境或执行器信息失败，将使用本地录制器浏览器执行', error);
   }
 
   if (isRetry) {
@@ -794,8 +801,83 @@ const executeUiTestCaseWithAutoHealing = async (
     addStepLog(execTask.id, '【自愈重试】元素定位已自动修复，正在自动发起第二次执行验证...', 'info');
   }
 
+  const executionRequestId = typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `hybrid-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  let dispatchAcknowledged = false;
+  let acknowledgementTimer: ReturnType<typeof window.setTimeout> | null = null;
+  let executionResultTimer: ReturnType<typeof window.setTimeout> | null = null;
+  let removeDispatchHandler: (() => void) | null = null;
+  let removeAckHandler: (() => void) | null = null;
+  let removeStepHandler: (() => void) | null = null;
+  let removeHandler: (() => void) | null = null;
+  const cleanupExecutionHandlers = () => {
+    if (acknowledgementTimer !== null) {
+      window.clearTimeout(acknowledgementTimer);
+      acknowledgementTimer = null;
+    }
+    if (executionResultTimer !== null) {
+      window.clearTimeout(executionResultTimer);
+      executionResultTimer = null;
+    }
+    removeDispatchHandler?.();
+    removeAckHandler?.();
+    removeHandler?.();
+    removeStepHandler?.();
+  };
+
+  removeDispatchHandler = uiWebSocket.on(UiSocketEnum.TEST_CASE, (socketMsg: any) => {
+    const responseArgs = socketMsg.data?.func_args || {};
+    if (
+      responseArgs.case_id !== targetUiTestCaseId
+      || responseArgs.execution_request_id !== executionRequestId
+      || !responseArgs.error
+    ) {
+      return;
+    }
+
+    const errorMessage = responseArgs.error || socketMsg.msg || 'UI 自动化任务下发失败';
+    cleanupExecutionHandlers();
+    finishTask(execTask.id, 'failed', errorMessage);
+    Message.error(errorMessage);
+  });
+
+  removeAckHandler = uiWebSocket.on(UiSocketEnum.TEST_CASE_ACK, (socketMsg: any) => {
+    const ack = socketMsg.data?.func_args || {};
+    if (
+      ack.case_id !== targetUiTestCaseId
+      || ack.execution_request_id !== executionRequestId
+    ) {
+      return;
+    }
+
+    dispatchAcknowledged = true;
+    if (acknowledgementTimer !== null) {
+      window.clearTimeout(acknowledgementTimer);
+      acknowledgementTimer = null;
+    }
+    updateTask(execTask.id, {
+      status: 'running',
+      currentStepDesc: `后端已接单，正在执行 UI 自动化用例 #${targetUiTestCaseId}...`,
+    });
+    addStepLog(
+      execTask.id,
+      `后端已接收执行任务（请求: ${executionRequestId}，执行器: ${ack.actuator_id || availableActuatorId}）`,
+      'success'
+    );
+    executionResultTimer = window.setTimeout(() => {
+      cleanupExecutionHandlers();
+      const errorMessage = 'UI 自动化执行长时间未返回结果，请检查执行器日志和在线状态';
+      finishTask(execTask.id, 'failed', errorMessage);
+      Message.error(errorMessage);
+    }, 30 * 60 * 1000);
+  });
+
   // 监听步骤级执行事件
-  const removeStepHandler = uiWebSocket.on(UiSocketEnum.STEP_RESULT, (socketMsg: any) => {
+  removeStepHandler = uiWebSocket.on(UiSocketEnum.STEP_RESULT, (socketMsg: any) => {
+    if (!dispatchAcknowledged) {
+      return;
+    }
     const stepData = socketMsg.data?.func_args || socketMsg.data || {};
     const stepIdx = stepData.step_index ?? stepData.step_number ?? (execTask.currentStepIndex + 1);
     const stepDesc = stepData.step_name || stepData.description || `步骤 ${stepIdx}`;
@@ -812,13 +894,15 @@ const executeUiTestCaseWithAutoHealing = async (
   });
 
   // 监听整体用例执行结果
-  const removeHandler = uiWebSocket.on(UiSocketEnum.CASE_RESULT, async (socketMsg: any) => {
+  removeHandler = uiWebSocket.on(UiSocketEnum.CASE_RESULT, async (socketMsg: any) => {
     const resultData = socketMsg.data?.func_args || socketMsg.data || {};
     const caseId = resultData.case_id || resultData.id;
 
-    if (caseId === targetUiTestCaseId) {
-      removeHandler(); // 移除当前监听
-      removeStepHandler();
+    if (
+      caseId === targetUiTestCaseId
+      && resultData.execution_request_id === executionRequestId
+    ) {
+      cleanupExecutionHandlers();
 
       const isSuccess = resultData.status === 'success' || (resultData.passed_steps && resultData.failed_steps === 0);
 
@@ -972,10 +1056,33 @@ const executeUiTestCaseWithAutoHealing = async (
     }
   });
 
-  const sendOk = uiWebSocket.runTestCase(targetUiTestCaseId, defaultEnvId, availableActuatorId);
-  if (!sendOk) {
-    removeHandler();
-    removeStepHandler();
+  const sendOk = uiWebSocket.runTestCase(
+    targetUiTestCaseId,
+    defaultEnvId,
+    availableActuatorId,
+    executionRequestId,
+  );
+  if (sendOk) {
+    updateTask(execTask.id, {
+      status: 'pending',
+      currentStepDesc: `执行请求已发送，等待后端接单确认...`,
+    });
+    addStepLog(
+      execTask.id,
+      `已发送 UI 自动化执行请求 #${targetUiTestCaseId}（请求: ${executionRequestId}，环境: ${defaultEnvId ?? '默认'}，执行器: ${availableActuatorId}）`,
+      'info'
+    );
+    acknowledgementTimer = window.setTimeout(() => {
+      if (dispatchAcknowledged) {
+        return;
+      }
+      cleanupExecutionHandlers();
+      const errorMessage = '后端未确认接收 UI 自动化执行任务，请检查 Django WebSocket 服务与执行器连接';
+      finishTask(execTask.id, 'failed', errorMessage);
+      Message.error(errorMessage);
+    }, 5000);
+  } else {
+    cleanupExecutionHandlers();
     finishTask(execTask.id, 'failed', '下发 UI 自动化执行命令失败');
     Message.error('下发 UI 自动化执行命令失败');
   }

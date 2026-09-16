@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('langgraph_integration', '0031_alter_llmconfigbundleslot_enable_hitl'),
+        ('langgraph_integration', '0028_alter_chatmessage_fields'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

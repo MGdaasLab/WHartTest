@@ -53,10 +53,6 @@
           @float-tool-image="handleFloatToolImage"
           @load-more="loadMoreHistory"
         />
-
-        <div v-if="pinnedTodoPayload" class="todo-summary-panel">
-          <TodoSummaryCard :payload="pinnedTodoPayload" />
-        </div>
       </div>
 
       <!-- 工具图片悬浮面板（可拖动） -->
@@ -194,10 +190,7 @@ import { useLlmConfigRefresh } from '@/composables/useLlmConfigRefresh';
 import { useAppI18n } from '@/composables/useAppI18n';
 import { marked } from 'marked';
 import { IconFullscreen, IconFullscreenExit } from '@arco-design/web-vue/es/icon';
-import type {
-  TodoDisplayPayload,
-  ToolFileAttachment,
-} from '@/features/langgraph/utils/toolResultParser';
+import type { ToolFileAttachment } from '@/features/langgraph/utils/toolResultParser';
 import { parseToolResultDisplayPayload } from '@/features/langgraph/utils/toolResultParser';
 import type { FileAsset } from '@/features/file-management/types';
 
@@ -209,7 +202,6 @@ import ChatInput from '../components/ChatInput.vue';
 import SystemPromptModal from '../components/SystemPromptModal.vue';
 import ToolApprovalCard from '../components/ToolApprovalCard.vue';
 import ToolApprovalSettingsModal from '../components/ToolApprovalSettingsModal.vue';
-import TodoSummaryCard from '../components/TodoSummaryCard.vue';
 import WeixinConnectModal from '../components/WeixinConnectModal.vue';
 import type { InterruptEvent } from '../components/ToolApprovalCard.vue';
 
@@ -351,7 +343,6 @@ interface ChatMessage {
   isLoading?: boolean;
   messageType?: 'human' | 'ai' | 'tool' | 'system' | 'agent_step' | 'step_separator';  // ⭐ 新增 step_separator 类型
   toolName?: string;
-  todoPayload?: TodoDisplayPayload;
   isExpanded?: boolean;
   isStreaming?: boolean;
   imageBase64?: string;
@@ -569,12 +560,12 @@ const isSystemPromptModalVisible = ref(false);
 const isSystemPromptLoading = ref(false);
 const currentLlmConfig = ref<LlmRuntimeConfig | null>(null);
 const currentLlmConfigForPrompt = computed(() => {
-  if (!currentLlmConfig.value?.bundle_id) {
+  if (!currentLlmConfig.value?.id) {
     return null;
   }
   return {
-    id: currentLlmConfig.value.bundle_id,
-    name: currentLlmConfig.value.bundle_name || currentLlmConfig.value.config_name,
+    id: currentLlmConfig.value.id,
+    name: currentLlmConfig.value.config_name,
     system_prompt: currentLlmConfig.value.system_prompt,
   };
 });
@@ -1032,7 +1023,6 @@ const loadSessionsFromServer = async () => {
 
 const buildHistoryMessages = (rawHistory: ChatHistoryMessage[], formatHistoryTime: (timestamp: string) => string): ChatMessage[] => {
   const result: ChatMessage[] = [];
-  let pendingTodoPayload: TodoDisplayPayload | undefined;
   const seenIds = new Set<string>();
 
   rawHistory.forEach(historyItem => {
@@ -1066,11 +1056,6 @@ const buildHistoryMessages = (rawHistory: ChatHistoryMessage[], formatHistoryTim
       message.isExpanded = false;
       const toolPayload = parseToolResultDisplayPayload(historyItem.content, historyItem.tool_input);
 
-      if (toolPayload.todoPayload) {
-        pendingTodoPayload = toolPayload.todoPayload;
-        return;
-      }
-
       if (toolPayload.fileAttachments.length > 0) {
         message.fileAttachments = toolPayload.fileAttachments;
       }
@@ -1080,11 +1065,6 @@ const buildHistoryMessages = (rawHistory: ChatHistoryMessage[], formatHistoryTim
       if (toolPayload.content) {
         message.content = toolPayload.content;
       }
-    }
-
-    if (historyItem.type === 'ai' && pendingTodoPayload) {
-      message.todoPayload = pendingTodoPayload;
-      pendingTodoPayload = undefined;
     }
 
     // 思考过程消息折叠状态
@@ -1111,16 +1091,6 @@ const buildHistoryMessages = (rawHistory: ChatHistoryMessage[], formatHistoryTim
 
     result.push(message);
   });
-
-  if (pendingTodoPayload) {
-    for (let index = result.length - 1; index >= 0; index -= 1) {
-      if (result[index].isUser || result[index].messageType === 'human') {
-        continue;
-      }
-      result[index].todoPayload = pendingTodoPayload;
-      break;
-    }
-  }
 
   return result;
 };
@@ -1305,7 +1275,6 @@ const solidifyStreamContent = () => {
         isUser: false,
         time: getCurrentTime(),
         messageType: 'ai',
-        todoPayload: stream.todoPayload,
       });
       console.log('✅ 已固化LLM流式内容到messages.value');
     }
@@ -2147,7 +2116,6 @@ const displayedMessages = computed(() => {
           isUser: false,
           time: getCurrentTime(),
           messageType: 'ai',
-          todoPayload: stream.todoPayload,
           isStreaming: false,
         });
       }
@@ -2159,8 +2127,7 @@ const displayedMessages = computed(() => {
             isUser: false,
             time: getCurrentTime(),
             messageType: 'ai',
-            todoPayload: stream.todoPayload,
-            isLoading: true,
+              isLoading: true,
           });
         }
       }
@@ -2171,33 +2138,12 @@ const displayedMessages = computed(() => {
           isUser: false,
           time: getCurrentTime(),
           messageType: 'ai',
-          todoPayload: stream.todoPayload,
           isStreaming: !stream.isComplete,
         });
       }
     }
   }
   return combined;
-});
-
-const pinnedTodoPayload = computed(() => {
-  for (let index = displayedMessages.value.length - 1; index >= 0; index -= 1) {
-    const message = displayedMessages.value[index];
-
-    if (message.isUser || message.messageType === 'human') {
-      return undefined;
-    }
-
-    if (message.todoPayload) {
-      return message.todoPayload;
-    }
-
-    if (message.messageType === 'ai') {
-      return undefined;
-    }
-  }
-
-  return undefined;
 });
 
 // 处理流式消息
@@ -2270,18 +2216,12 @@ const handleNormalMessage = async (requestData: ChatRequest, originalMessage: st
       }
 
       // 添加工具结果消息（如果有）
-      let latestTodoPayload: TodoDisplayPayload | undefined;
       if (data.tool_results && data.tool_results.length > 0) {
         for (const toolResult of data.tool_results) {
           const toolPayload = parseToolResultDisplayPayload(
             toolResult.tool_output || toolResult.summary,
             toolResult.tool_input,
           );
-
-          if (toolPayload.todoPayload) {
-            latestTodoPayload = toolPayload.todoPayload;
-            continue;
-          }
 
           messages.value.push({
             content: toolPayload.content || toolResult.summary,
@@ -2303,7 +2243,6 @@ const handleNormalMessage = async (requestData: ChatRequest, originalMessage: st
           isUser: false,
           time: getCurrentTime(),
           messageType: 'ai',
-          todoPayload: latestTodoPayload,
         });
       }
 
@@ -2383,7 +2322,11 @@ const loadCurrentLlmConfig = async () => {
       currentLlmConfig.value = response.data;
     } else {
       currentLlmConfig.value = null;
-      Message.warning(response.message || pageText.value.noAvailableLlmConfig);
+      Message.warning(
+        response.status === 'success'
+          ? pageText.value.noAvailableLlmConfig
+          : response.message || pageText.value.noAvailableLlmConfig
+      );
     }
   } catch (error) {
     console.error('获取LLM配置失败:', error);
@@ -2427,30 +2370,15 @@ const checkPromptStatusAfterClose = async () => {
   }
 };
 
-const applyResolvedLlmConfigToRequest = (requestData: ChatRequest) => {
-  const config = currentLlmConfig.value;
-  if (!config) {
-    return;
-  }
-
-  requestData.module_key = config.module_key;
-  requestData.runtime_mode = config.default_runtime_mode;
-  requestData.resolved_source = config.resolved_source;
-
-  if (typeof config.bundle_id === 'number') {
-    requestData.resolved_bundle_id = config.bundle_id;
-  }
+const applyResolvedLlmConfigToRequest = (_requestData: ChatRequest) => {
+  // 旧版 LLMConfig 使用后端全局激活配置，无需向请求体注入 Bundle 解析字段。
 };
 
 // 更新系统提示词
 const handleUpdateSystemPrompt = async (configId: number, systemPrompt: string) => {
   isSystemPromptLoading.value = true;
   try {
-    if (!currentLlmConfig.value?.bundle_id) {
-      Message.warning(pageText.value.legacyConfigPromptWarn);
-      return;
-    }
-    const response = await patchLlmConfigBundle(currentLlmConfig.value.bundle_id, {
+    const response = await patchLlmConfigBundle(configId, {
       slots: [{
         slot_key: 'llm_chat',
         is_configured: true,
@@ -2898,12 +2826,4 @@ export default {
   cursor: pointer;
 }
 
-.todo-summary-panel {
-  padding: 0 24px 12px;
-}
-
-.todo-summary-panel :deep(.todo-summary-card) {
-  width: 100%;
-  max-width: none;
-}
 </style>
