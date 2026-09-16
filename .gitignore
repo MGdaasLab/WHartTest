@@ -87,6 +87,8 @@ WHartTest_Actuator/config.toml
 # zcode
 .zcode
 ~/.dsh
+.freebuff/project-id
+
 # 独立仓库（各自有 .git 和远程），不随父仓库提交
 WHartTest_Desktop/
 WHartTest_Website/
