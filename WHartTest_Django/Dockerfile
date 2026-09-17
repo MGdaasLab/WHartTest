@@ -119,7 +119,8 @@ ENV PYTHONUNBUFFERED=1 \
     FASTEMBED_CACHE_PATH=/root/.cache/fastembed \
     USER_AGENT="WHartTest/2.6.0-ce" \
     HF_ENDPOINT=${HF_ENDPOINT} \
-    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST}
+    PLAYWRIGHT_DOWNLOAD_HOST=${PLAYWRIGHT_DOWNLOAD_HOST} \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 
 # 仅安装运行时必需的系统依赖
 RUN if [ "$APT_BASE_URL" != "http://deb.debian.org" ]; then \
@@ -207,6 +208,10 @@ RUN set -eux; \
       find "$browser_root" -maxdepth 4 -type f \( -name "LICENSE*" -o -name "COPYING*" -o -name "NOTICE*" -o -name "ABOUT" \) -exec cp --parents -f {} /app/third_party_licenses/playwright-browsers/ \; ; \
     fi
 
+# 浏览器目录放宽为全员可读：runner 以非 root（宿主文件属主）运行时也要能读到 Chromium。
+# 只加读/执行，不放开写。
+RUN chmod -R a+rX /opt/ms-playwright
+
 # 安装 browser-use CLI（Agent 浏览器 skill 驱动，替代 agent-browser）
 # 使用独立 venv，避免 browser-use 钉死依赖污染 Django 主环境。
 # Chromium 已由上方 playwright install 预装到 PLAYWRIGHT_BROWSERS_PATH，
@@ -233,6 +238,32 @@ RUN set -eux; \
     install_browser_use; \
     /opt/browser-use/bin/browser-use --help >/dev/null; \
     /opt/browser-use/bin/python -c "import browser_use, browser_harness; print('browser-use ready')"
+
+# 预装 @playwright/cli（playwright-cli 技能依赖的全局命令）
+#
+# 背景：该命令此前不在镜像中，靠「运行期装包」（agent 执行 npm install -g / npx 自动下载）
+# 落在容器可写层里 —— 容器一重建就丢失、不可复现、离线客户不可用，且等于给模型开放了
+# 任意装包能力（供应链持久化风险）。这里改为构建期钉死版本预装。
+#
+# 注意：上游 @playwright/cli 的所有版本都依赖 alpha 版 playwright（如 1.64.0-alpha-*），
+# 因此必须用它自己那版 playwright 安装匹配的 Chromium，否则它会在运行期尝试下载
+# （沙箱根文件系统只读 + 无外网时必然失败）。
+ARG PLAYWRIGHT_CLI_VERSION=0.1.20
+ARG PLAYWRIGHT_CLI_CORE_VERSION=1.64.0-alpha-2026-09-14
+# 说明（不能写在续行中间，否则 # 会把后续命令一起注释掉）：
+#   1. 浏览器安装必须显式用 /usr/local/bin/playwright（npm 版）。镜像 PATH 中
+#      /opt/venv/bin 优先，裸 `playwright` 会解析到 Python 版，装出的 revision
+#      与 CLI 期望的不一致，CLI 仍会在运行期尝试下载。
+#   2. `playwright-cli --version` 是构建期强校验：CLI 不可执行就让构建失败，
+#      避免问题留到运行期（沙箱只读根 + 无外网时无法补救）。
+RUN set -eux; \
+    npm install -g --registry="${NPM_REGISTRY}" \
+      "@playwright/cli@${PLAYWRIGHT_CLI_VERSION}" \
+      "playwright@${PLAYWRIGHT_CLI_CORE_VERSION}"; \
+    /usr/local/bin/playwright install chromium; \
+    /usr/local/bin/playwright --version; \
+    playwright-cli --version; \
+    chmod -R a+rX /opt/ms-playwright
 
 # 复制随仓库提交的 BM25 平铺模型目录（运行时通过 specific_model_path 离线加载）
 COPY bm25_model /app/bm25_model
@@ -270,6 +301,7 @@ COPY projects/ /app/projects/
 COPY prompts/ /app/prompts/
 COPY requirements/ /app/requirements/
 COPY skills/ /app/skills/
+COPY skill_runner/ /app/skill_runner/
 COPY task_center/ /app/task_center/
 COPY ui_automation/ /app/ui_automation/
 COPY weixin_integration/ /app/weixin_integration/

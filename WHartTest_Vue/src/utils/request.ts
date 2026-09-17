@@ -43,6 +43,20 @@ const service = axios.create({
 });
 
 // 请求拦截器
+
+// 从 cookie 读取 Django 种下的 csrftoken（后端 CsrfViewMiddleware 首个响应会种下）。
+function getCsrfTokenFromCookie(): string {
+  const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]*)/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // cookie 被篡改/损坏时 decodeURIComponent 会抛 URIError；
+    // 该异常发生在请求拦截器里会让所有非幂等请求失败，故退回原始值。
+    return match[1];
+  }
+}
+
 service.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     // 从authStore获取token
@@ -53,6 +67,17 @@ service.interceptors.request.use(
     // 如果有token就添加到请求头
     if (token) {
       config.headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    // CSRF：从 cookie 动态读取 csrftoken，对非幂等请求自动携带。
+    // 取代此前散落在 authService / testcaseModuleService 里的硬编码静态 token
+    // 字面量——公开在源码里的静态值没有随机性，无法起到 CSRF 防护作用。
+    // cookie 尚未建立时不带该头，由后端按既有策略决定是否校验。
+    if (!['get', 'head', 'options', 'trace'].includes(config.method?.toLowerCase() || '')) {
+      const csrfToken = getCsrfTokenFromCookie();
+      if (csrfToken) {
+        config.headers['X-CSRFTOKEN'] = csrfToken;
+      }
     }
 
     // 如果是 FormData，删除默认的 Content-Type，让浏览器自动设置（包含 boundary）

@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 - **服务端口**: 8006
 - **后端地址**: `WHARTTEST_BACKEND_URL`（默认：http://backend:8000）
-- **API密钥**: `WHARTTEST_API_KEY`（默认：wharttest-default-mcp-key-2025）
+- **API密钥**: `WHARTTEST_API_KEY`（安全：固定演示密钥已废除，请配置后台创建的密钥）
 
 **🎉 零配置启动：**
 ```bash
@@ -35,7 +35,7 @@ docker-compose up -d   # 直接启动，无需手动配置
 ```
 
 **⚠️ 生产环境安全提示：**
-- 系统会自动创建默认API Key（wharttest-default-mcp-key-2025）
+- `init_admin` 会自动创建随机命名的默认 API Key，并在 stdout 打印一次
 - 开发环境可直接使用
 - 生产环境请登录后台删除默认Key并创建新的安全密钥
 

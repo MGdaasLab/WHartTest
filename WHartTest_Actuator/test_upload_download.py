@@ -3,6 +3,7 @@
 
 import asyncio
 import hashlib
+import os
 import sys
 import tempfile
 import unittest
@@ -54,6 +55,17 @@ class UploadDownloadTests(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.TemporaryDirectory()
         self.cache_dir = Path(self.tmpdir.name) / "runtime_uploads"
+        # 可信根随测试环境走：tmpdir 本身即可信（真实部署里是上传缓存/平台数据目录）
+        self._env_patches = patch.dict(
+            os.environ,
+            {
+                "WHARTTEST_ACTUATOR_UPLOAD_CACHE_DIR": str(self.cache_dir),
+                "WHARTTEST_ACTUATOR_TRUSTED_UPLOAD_ROOTS": str(self.tmpdir.name),
+            },
+            clear=False,
+        )
+        self._env_patches.start()
+        self.addCleanup(self._env_patches.stop)
         config = MagicMock()
         config.upload_cache_dir = str(self.cache_dir)
         for attr in (
@@ -103,6 +115,39 @@ class UploadDownloadTests(unittest.TestCase):
 
         result = asyncio.run(run())
         self.assertEqual(result, str(local))
+
+    def test_rejects_untrusted_local_path(self):
+        # 用例步骤可被平台用户控制：不在可信根内的本地路径必须被拒绝，
+        # 否则执行器会把宿主任意文件（如 /etc/passwd）读进被测页面。
+        outside_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(outside_dir.cleanup)
+        outside = Path(outside_dir.name) / "passwd"
+        outside.write_text("root:x:0:0\n", encoding="utf-8")
+
+        async def run():
+            return await self.consumer._ensure_local_upload_file(
+                file_path=str(outside),
+                file_id=None,
+                project_id=None,
+            )
+
+        with self.assertRaises(FileNotFoundError):
+            asyncio.run(run())
+
+    def test_allows_path_inside_trusted_root(self):
+        trusted_root = Path(self.tmpdir.name) / "media"
+        trusted_root.mkdir(parents=True, exist_ok=True)
+        local = trusted_root / "case.csv"
+        local.write_bytes(b"a,b\n1,2\n")
+
+        async def run():
+            return await self.consumer._ensure_local_upload_file(
+                file_path=str(local),
+                file_id=None,
+                project_id=None,
+            )
+
+        self.assertEqual(asyncio.run(run()), str(local))
 
     def test_downloads_when_local_path_missing(self):
         fake_response = _FakeStreamResponse(content=b"remote-bytes")

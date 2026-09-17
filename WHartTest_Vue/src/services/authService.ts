@@ -66,9 +66,7 @@ export interface AuthServiceRegisterResponse {
  */
 export const login = async (username: string, password: string): Promise<AuthServiceLoginResponse> => {
   const API_URL = '/token/'; // 使用相对路径，由 axiosInstance 的 baseURL 处理
-  // TODO: X-CSRFTOKEN 可能需要从 cookie 或其他 API 动态获取。
-  // 目前暂时使用静态值，后续根据实际情况调整。
-  const CSRF_TOKEN = 'kMNlyN2uN6c2QRr9r2rDQbfxBGsVzjPFY1h1as93VNMRTjo5kRpDbVq5ii8FFcKW';
+  // CSRF 由 utils/request.ts 的请求拦截器从 cookie 动态注入，无需在此硬编码。
 
   try {
     const response = await request<ApiTokenResponseData>({
@@ -80,7 +78,6 @@ export const login = async (username: string, password: string): Promise<AuthSer
       },
       headers: {
         'Content-Type': 'application/json',
-        'X-CSRFTOKEN': CSRF_TOKEN,
         'accept': 'application/json',
       }
     });
@@ -149,9 +146,7 @@ export const login = async (username: string, password: string): Promise<AuthSer
  */
 export const register = async (username: string, email: string, password: string): Promise<AuthServiceRegisterResponse> => {
   const API_URL = '/accounts/register/'; // 使用相对路径，由 axiosInstance 的 baseURL 处理
-  // TODO: X-CSRFTOKEN 可能需要从 cookie 或其他 API 动态获取。
-  // 目前暂时使用静态值，后续根据实际情况调整。
-  const CSRF_TOKEN = 'gX95kndFaytIAEqNk8cRoZT9kEyeY3InUcDLW2keif3xD6nJdXaRJJ4H1geY4WDE'; // 注意：这个 token 应该与后端验证匹配
+  // CSRF 由 utils/request.ts 的请求拦截器从 cookie 动态注入，无需在此硬编码。
 
   try {
     const response = await request<ApiRegisterResponseData>({
@@ -164,7 +159,6 @@ export const register = async (username: string, email: string, password: string
       },
       headers: {
         'Content-Type': 'application/json',
-        'X-CSRFTOKEN': CSRF_TOKEN,
         'accept': 'application/json',
       }
     });

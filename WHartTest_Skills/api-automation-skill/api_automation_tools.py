@@ -12,7 +12,7 @@ if sys.platform == 'win32':
 import os
 
 _DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
-_DEFAULT_API_KEY = 'wharttest-default-mcp-key-2025'
+_DEFAULT_API_KEY = ''  # 安全：不再内置默认密钥，必须由 WHARTTEST_API_KEY 注入
 
 
 def _base_url():

@@ -23,7 +23,7 @@ from executor import (
     PlaywrightExecutor, StepConfig, PageStepConfig, TestCaseConfig
 )
 from data_processor import reset_data_processor, DataProcessor
-from runtime_env import resolve_runtime_file_path
+from runtime_env import is_trusted_upload_path, resolve_runtime_file_path, trusted_upload_roots
 from frame_stream import FrameStreamer, stream_enabled
 
 logger = logging.getLogger('actuator')
@@ -34,12 +34,17 @@ class TaskConsumer:
     
     def __init__(self, ws_client: WebSocketClient, api_base_url: str, 
                  config: Any = None,
-                 api_username: str = 'admin', api_password: str = 'admin123',
+                 api_username: str = 'admin', api_password: str = '',
+                 # 安全：api_password 不再内置默认口令；优先用 api_key 认证
+                 api_key: str = '',
                  config_path: str = 'config.toml'):
         self.ws_client = ws_client
         self.api_base_url = api_base_url.rstrip('/')
         self.api_username = api_username
         self.api_password = api_password
+        # API Key 认证（X-API-Key 头）：不经过 /api/token/，不触发单设备
+        # session_version 递增，不会挤掉浏览器登录会话（优先级高于账号密码）。
+        self.api_key = (api_key or '').strip()
         self._api_token: Optional[str] = None
         self.config = config
         self.config_path = config_path
@@ -123,7 +128,9 @@ class TaskConsumer:
             logger.info(f"已清理 {cleaned_count} 个超过 {max_age_days} 天的过期文件")
     
     async def _get_api_token(self) -> Optional[str]:
-        """获取API认证token"""
+        """获取API认证token（仅账号密码模式使用；API Key 模式不调用，避免触发单设备登录挤占）"""
+        if self.api_key:
+            return None
         if self._api_token:
             return self._api_token
         
@@ -149,16 +156,32 @@ class TaskConsumer:
             logger.error(f"获取Token请求失败: {e}")
             return None
     
+    def _auth_headers(self, token: Optional[str] = None) -> dict:
+        """构造认证请求头。
+
+        API Key 模式（X-API-Key）：不走 /api/token/、不递增 session_version，
+        不会把浏览器登录会话挤掉。注意 Key 模式只发 X-API-Key、不发 Authorization：
+        后端认证链里 JWT 认证类优先，若 Bearer 头带的是非 JWT 值会被先拦下报
+        「token 无效」，走不到 APIKeyAuthentication 回退。
+        账号密码模式：Authorization: Bearer <JWT>。
+        """
+        if self.api_key:
+            return {'X-API-Key': self.api_key}
+        if token:
+            return {'Authorization': f'Bearer {token}'}
+        return {}
+    
     async def _api_get(self, path: str) -> Optional[dict]:
         """带认证的API GET请求"""
         token = await self._get_api_token()
-        if not token:
+        if not self.api_key and not token:
             return None
+        headers = self._auth_headers(token)
         
         url = f"{self.api_base_url}{path}"
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+                response = await client.get(url, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
                     # 提取data字段
@@ -166,6 +189,10 @@ class TaskConsumer:
                         return data['data']
                     return data
                 elif response.status_code == 401:
+                    if self.api_key:
+                        # API Key 模式：401 表示 Key 无效/被禁用/过期，重试无意义
+                        logger.error(f"API请求失败(API Key 无效或被禁用): 401 - {path}")
+                        return None
                     # Token过期，重新获取
                     self._api_token = None
                     return await self._api_get(path)
@@ -232,9 +259,10 @@ class TaskConsumer:
             return None
 
         token = await self._get_api_token()
-        if not token:
+        if not self.api_key and not token:
             logger.error("无法获取 API Token，跳过 Trace 上传")
             return None
+        headers = self._auth_headers(token)
 
         url = f"{self.api_base_url}/api/ui-automation/traces/upload/"
         try:
@@ -243,7 +271,7 @@ class TaskConsumer:
                     files = {'file': (os.path.basename(trace_path), f, 'application/zip')}
                     response = await client.post(
                         url,
-                        headers={"Authorization": f"Bearer {token}"},
+                        headers=headers,
                         files=files,
                         timeout=60.0  # Trace 文件可能较大
                     )
@@ -337,18 +365,6 @@ class TaskConsumer:
         """添加任务到队列"""
         await self.task_queue.put(task)
         logger.info(f"任务已入队: {task.func_name}")
-        if task.func_name == UiSocketEnum.TEST_CASE:
-            args = task.func_args or {}
-            await self.ws_client.send_result(
-                UiSocketEnum.TEST_CASE_ACK,
-                {
-                    'case_id': args.get('case_id'),
-                    'execution_request_id': args.get('execution_request_id'),
-                    'actuator_id': getattr(self.config, 'actuator_id', None),
-                    'env_config_id': args.get('env_config_id'),
-                },
-                self._current_user,
-            )
     
     async def process_tasks(self):
         """处理任务队列"""
@@ -776,7 +792,6 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
-        execution_request_id = args.get('execution_request_id')
         
         if not case_id:
             logger.error("缺少case_id参数")
@@ -837,7 +852,6 @@ class TaskConsumer:
                     UiSocketEnum.CASE_RESULT,
                     {
                         'case_id': case_id,
-                        'execution_request_id': execution_request_id,
                         'status': 'failed',
                         'message': f'准备上传文件失败: {e}',
                         'batch_id': batch_id,
@@ -862,7 +876,6 @@ class TaskConsumer:
 
             # 发送用例结果（包含 batch_id 和执行人信息）
             result_data = result.model_dump()
-            result_data['execution_request_id'] = execution_request_id
             # attach effective runtime snapshot for backend environment field
             result_data['effective_runtime'] = effective
             result_data['environment'] = effective
@@ -1203,11 +1216,11 @@ class TaskConsumer:
             pass
 
         token = await self._get_api_token()
-        if not token:
+        if not self.api_key and not token:
             raise RuntimeError('failed to get API token for managed file download')
 
         tmp_path = local_path.with_name(f'{local_path.name}.{uuid.uuid4().hex}.part')
-        headers = {'Authorization': f'Bearer {token}'}
+        headers = self._auth_headers(token)
         logger.info(f'downloading managed file: {url} -> {local_path}')
         response_sha = None
 
@@ -1224,11 +1237,17 @@ class TaskConsumer:
                     if not response_sha and etag and len(etag) == 64:
                         response_sha = etag
                     if response.status_code == 401:
+                        if self.api_key:
+                            # API Key 模式：401 说明 Key 无效/被禁用/过期，重试无意义
+                            body = (await response.aread())[:300]
+                            raise RuntimeError(
+                                f'下载上传文件失败(API Key 无效或被禁用): HTTP 401, body={body!r}'
+                            )
                         self._api_token = None
                         token = await self._get_api_token()
                         if not token:
                             raise RuntimeError('Token 刷新失败，无法下载上传文件')
-                        headers = {'Authorization': f'Bearer {token}'}
+                        headers = self._auth_headers(token)
                         async with client.stream('GET', url, headers=headers) as retry_response:
                             if retry_response.status_code != 200:
                                 body = (await retry_response.aread())[:300]
@@ -1309,13 +1328,20 @@ class TaskConsumer:
         candidates = []
         if file_path:
             mapped = resolve_runtime_file_path(str(file_path))
-            candidates.append(mapped)
-            if mapped != file_path:
-                candidates.append(str(file_path))
-
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                return candidate
+            # 任务数据（用例步骤）属于不可信输入：本地路径必须落在可信根内
+            # （上传缓存 / 平台数据目录），否则拒绝——否则任意本地文件会被读取
+            # 并上传到被测页面（执行器宿主的 /etc/passwd 等）。
+            for candidate in (mapped, str(file_path) if mapped != file_path else None):
+                if not candidate:
+                    continue
+                if os.path.isfile(candidate):
+                    if not is_trusted_upload_path(candidate):
+                        raise FileNotFoundError(
+                            f'上传路径不在可信目录内，已拒绝: {candidate}'
+                            f'（可信根: {[str(p) for p in trusted_upload_roots()]}）'
+                        )
+                    return candidate
+                candidates.append(candidate)
 
         # Backend may still return file_id:N when path resolve failed.
         parsed_id = self._parse_file_id(file_path)

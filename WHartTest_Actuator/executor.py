@@ -23,6 +23,13 @@ from runtime_env import is_running_in_container
 
 logger = logging.getLogger('actuator')
 
+
+def _step_db_connection_allowed() -> bool:
+    """是否允许 SQL 步骤自带连接配置（默认禁止，运维显式开启才生效）。"""
+    return (os.environ.get('WHARTTEST_ACTUATOR_ALLOW_STEP_DB_CONNECTION', '') or '').strip().lower() in {
+        '1', 'true', 'yes', 'on',
+    }
+
 DEFAULT_STEALTH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -862,6 +869,16 @@ class PlaywrightExecutor:
         direct_config = sql_config.get('connection') or sql_config.get('db_config')
         if direct_config is not None and not isinstance(direct_config, dict):
             raise ValueError("SQL连接配置必须是对象")
+
+        # 任务步骤里的 connection/db_config 属于不可信输入：放行它等于允许用例作者
+        # 让执行器连接任意内网主机并执行任意 SQL。默认只信任执行环境里配置的连接；
+        # 如确需步骤级覆盖，由运维显式设置 WHARTTEST_ACTUATOR_ALLOW_STEP_DB_CONNECTION=true。
+        if direct_config is not None and not _step_db_connection_allowed():
+            logger.warning(
+                "SQL 步骤自带连接配置已被忽略（仅允许执行环境中的数据库配置）；"
+                "如需启用步骤级覆盖，请设置 WHARTTEST_ACTUATOR_ALLOW_STEP_DB_CONNECTION=true"
+            )
+            direct_config = None
 
         db_config = direct_config or env_config.get(f'{db_type}_config') or {}
         if not isinstance(db_config, dict) or not db_config:

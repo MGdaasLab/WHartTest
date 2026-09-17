@@ -27,7 +27,7 @@ python api_automation_tools.py --action list_interfaces --project_id 1 --params 
 可覆盖默认服务地址和 API Key：
 
 ```bash
-python api_automation_tools.py --action list_modules --project_id 1 --base_url http://127.0.0.1:8000 --api_key wharttest-default-mcp-key-2025
+python api_automation_tools.py --action list_modules --project_id 1 --base_url http://127.0.0.1:8000 --api_key $WHARTTEST_API_KEY
 ```
 
 ## 用例概览
