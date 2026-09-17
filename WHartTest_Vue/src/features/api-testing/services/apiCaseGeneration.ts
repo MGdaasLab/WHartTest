@@ -257,7 +257,7 @@ export function buildGenerationMessage(options: {
     lines.push(formData.businessNotes);
   } else {
     lines.push('');
-    lines.push('## 用户业务描述：无。D3 业务状态、D4 业务规则、S3 业务分支、S4 状态前置相应场景按无规则输入跳过。');
+    lines.push('## 用户业务描述：无。D3 异常场景（业务状态拒绝类）、D4 业务逻辑（业务规则/依赖类）、S3 业务分支、S4 状态前置相应场景按无规则输入跳过。');
   }
 
   if (existingNames.length) {

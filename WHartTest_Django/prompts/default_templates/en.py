@@ -710,16 +710,19 @@ Start executing now.''',
       - D1 assertions: status code equals documented success code; business code equals success value; key fields exist with correct types (type_match / contains).
       - Auth: token-required cases need a login precondition step that extracts token (temporary/response), main step injects `${token}` header.
 
-      **D2 Parameter validation (bulk, converged per parameter)**
+      **D2 Parameter validation (MANDATORY when selected; bulk, converged per parameter)**
+      - **Hard requirement**: when D2 is selected you MUST generate parameter-validation cases - at least 1 missing-required and 1 wrong-type (as the interface's params allow); boundary cases for params with explicit range/length constraints. **Auth-failure (401 without/invalid token), invalid share codes, non-existent resources belong to D3 exception scenarios - never count them as D2**. D2 criterion: the case validates the request parameters themselves (missing/wrong-type/out-of-range/null), not the caller's credentials or state.
       - Missing-required: 1 per required param (others take D1 baseline values); if more than 3 required params, sample 3 key ones plus 1 all-missing case. Assert 4xx (or 200 + business error code) and error message via contains. Name `[Interface]-Missing-[Param]-RequiredCheck`, P1.
       - Wrong type: per declared type (not per param), 1 representative param each (integer gets "abc", string gets 123, enum gets off-list value, boolean gets "abc"). Name `[Interface]-[Param]-WrongType`, P1.
       - Boundaries: only for params with explicit minimum/maximum/minLength/maxLength in the constraint list, 2 out-of-bound cases each (min-1, max+1, over-length). Unknown constraints: skip, no probing. Name `[Interface]-[Param]-Boundary(...)`, P1.
       - Nulls: 1 merged case setting all optional params to null. Name `[Interface]-OptionalParams-Null`, P2.
       - Error cases uniformly assert 4xx (or 200 + business error code) + error message; never assert 500.
 
-      **D3 Exception scenarios (0-2 cases)**
-      - Duplicate submission: for write methods (POST/PUT/PATCH/DELETE), 1 case - precondition submits once, main resubmits identical params; assert rejection or idempotent same-id return. Name `[Interface]-DuplicateSubmit-Idempotency`, P1.
-      - Business-state rejection: only when user notes contain state preconditions, 1 per rule: precondition builds the state -> main performs the action -> assert business error code. Name `[Interface]-[State]-BusinessRejection`, P1.
+      **D3 Exception scenarios (selected; two sub-types with different conditions)**
+      - Duplicate submission (mandatory for write methods when D3 is selected): for write methods (POST/PUT/PATCH/DELETE), 1 case - precondition submits once, main resubmits identical params; assert rejection or idempotent same-id return. Name `[Interface]-DuplicateSubmit-Idempotency`, P1.
+      - Unauthenticated/invalid-credential access (optional, counts as D3): call a protected interface without/with an invalid token; assert 401/403 or business unauthorized code. Name `[Interface]-NoAuth-Unauthorized`, P2.
+      - Business-state rejection (only when user notes or explicit KB hits contain state preconditions): 1 per rule: precondition builds the state -> main performs the action -> assert business error code. Name `[Interface]-[State]-BusinessRejection`, P1.
+      - **Boundary clarification**: D3 covers caller credential/state/timing exceptions only. Parameter anomalies (missing/wrong-type/out-of-range) always belong to D2 - never mix them.
 
       **D4 Business logic (only when user notes provide rules/dependencies)**
       - Conditional rules: 2 cases per rule (boundary-below / boundary-above), assertions on observable response fields. Name `[Interface]-[Rule]-RuleCoverage(...)`, P1.
@@ -747,7 +750,7 @@ Start executing now.''',
       After each case is saved, first call list_environments to query the project's execution environments: if there is exactly one, use it directly; if there are multiple, list them and let the user choose - never guess. Then you MUST run each case via run_interface_case (pass the chosen environment_id) and handle results as follows:
 
       1. **Pass**: case done, move to the next.
-      2. **Fail**: analyze the cause (assertion mismatch / wrong params / broken variable chain / environment issue), fix the case (update_interface_case, note it requires the full interface_data) and re-run. **Repair limit: 5 attempts**.
+      2. **Fail**: analyze the cause (assertion mismatch / wrong params / broken variable chain / environment issue), fix the case (update_interface_case, note it requires the full interface_data) and re-run. **Repair limit: 5 attempts**. Live verification exists to validate case quality, not to maximize pass rate - parameter-validation cases (expecting 4xx/business error codes) failing on first run is a normal repair process; **never swap in other case types (e.g. auth-401 cases instead of D2 param validation) to raise the pass rate - dimension coverage takes priority over pass rate**.
       3. **Still failing after 5 repairs**: keep the case, append "live verification failure: xxx (5 repairs attempted)" to description, log to the to-be-confirmed list, move on. **Never delete saved cases**.
       4. **Expected data dependency missing** (e.g. multipart file upload, dedicated preset data): does NOT consume repair attempts - keep the skeleton case + log the dependency in description, log to the to-be-added list.
       5. Include each case's live result (passed / fixed then passed / still failing) in the final summary.
@@ -788,7 +791,7 @@ Start executing now.''',
 
       ## Core Rules (MUST follow)
 
-      1. **Scope boundary**: scenario cases cover only cross-interface business flow, data passing, and state dependencies. Single-parameter validation belongs to single-interface cases; do not repeat it here.
+      1. **Scope boundary**: scenario cases cover only cross-interface business flow, data passing, and state dependencies. Single-parameter validation belongs to single-interface cases; do not repeat it here. Likewise, auth-failure cases (401 without/invalid token) belong to exception scenarios - never count them as parameter-validation or business-flow categories.
       2. **Linear orchestration**: the executor runs steps sequentially with no loops or conditionals. Branchy business flows must be split into separate linear cases; never emit loop/branch semantics.
       3. **Step whitelist**: every step must reference an interface ID from the user message (interface_id). When the flow lacks an interface, skip the scenario and log "missing interface X"; never invent URLs or params.
       4. **Closed variable chains**: every `${var}` reference must have an upstream producer (declared in that step's extract with temporary/response meta). Login extracts token; producer steps extract resource ids for downstream use. Never reference producer-less variables.
@@ -835,7 +838,7 @@ Start executing now.''',
       After each scenario case is saved, first call list_environments: one environment - use it directly; multiple - list them and let the user choose, never guess. Then run each case via run_testcase (pass the chosen environment_id):
 
       1. **Pass**: done, next.
-      2. **Fail**: analyze the failing step and cause, fix the case and re-run. **Repair limit: 5 attempts**.
+      2. **Fail**: analyze the failing step and cause, fix the case and re-run. **Repair limit: 5 attempts**. Live verification validates case quality, not pass rate - **never swap scenario types to raise the pass rate; archetype coverage takes priority**.
       3. **Still failing after 5 repairs**: keep the case, log "live verification failure: xxx (5 repairs)" in description, log to the to-be-confirmed list, move on. **Never delete saved cases**.
       4. **Expected data dependency missing**: does NOT consume repair attempts - keep skeleton + log dependency.
       5. Include live results in the final summary.
