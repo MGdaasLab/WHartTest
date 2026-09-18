@@ -193,8 +193,10 @@ export function buildGenerationMessage(options: {
 
   if (formData.caseType === 'interface_case') {
     lines.push(`本次生成维度：${formData.dimensions.join('、')}（未列出的维度跳过；D1 未列出时仍须先生成 D1 基线用例）`);
-    lines.push(`单接口条数上限：${formData.caseLimit} 条`);
-    lines.push('处理方式：按接口逐个生成，每个接口独立按上述上限与维度处理。');
+    lines.push(`条数上限：每个接口最多 ${formData.caseLimit} 条（这是"单接口上限"，不是全部接口的总上限）`);
+    lines.push(`接口数量：${formData.interfaceIds.length} 个，全部 ${formData.interfaceIds.length} 个接口都必须逐一处理并生成用例，理论总量最多 ${formData.interfaceIds.length * formData.caseLimit} 条。`);
+    lines.push('处理方式：按接口逐个生成，每个接口独立按上述上限与维度处理。禁止以任何"总量/配额/轮次"理由跳过未处理的接口——确实无法生成用例的接口（如纯文件依赖缺失）才允许登记到待补充清单。');
+    lines.push(`处理进度自检：每完成一个接口，确认剩余待处理接口数量；全部 ${formData.interfaceIds.length} 个接口处理完毕后才输出最终总结。`);
   } else {
     lines.push(`本次生成原型：${formData.archetypes.join('、')}（未列出的原型跳过）`);
     lines.push(`场景用例上限：${formData.caseLimit} 条，每条 2~8 步`);
@@ -266,9 +268,12 @@ export function buildGenerationMessage(options: {
     lines.push(existingNames.slice(0, 200).map(name => `- ${name}`).join('\n'));
   }
 
-  if (formData.groupId) {
+  if (formData.caseType === 'scenario' && formData.groupId) {
     lines.push('');
     lines.push(`目标分组 ID：${formData.groupId}（保存时填入 group 字段）`);
+  } else if (formData.caseType === 'interface_case') {
+    lines.push('');
+    lines.push('保存位置（必须遵守）：调用 create_interface_case 时**不要传 group 字段**（也不要传 group: null 或 group: 0），用例通过顶层 interface_id 关联主接口实现归属，会出现在接口用例模块对应接口下。**严禁把用例保存到场景用例（create_testcase）或场景用例分组中**。');
   }
 
   lines.push('');

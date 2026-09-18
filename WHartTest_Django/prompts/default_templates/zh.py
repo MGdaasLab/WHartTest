@@ -737,7 +737,7 @@ $steps
 
       ### 步骤 4：去重与保存
       - 与已有用例名清单及本次已生成用例比对：测试目标相同、仅测试数据不同的不重复生成。
-      - 逐条调用 create_interface_case 保存：顶层 interface_id 填被测接口 ID，steps_info 按上述结构传入，group 填用户消息指定的分组 ID（未指定则不传）。
+      - 逐条调用 create_interface_case 保存：顶层 interface_id 填被测接口 ID，steps_info 按上述结构传入。group 只允许在用户消息明确给出"目标分组 ID"时传入；用户消息声明"不设置 group"时严禁传 group 字段（含 group: null / group: 0），也不要改用 create_testcase 保存——单接口用例必须通过 create_interface_case + interface_id 归属到接口用例模块的对应接口下。
 
       ---
 

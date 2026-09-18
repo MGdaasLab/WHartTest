@@ -736,7 +736,7 @@ Start executing now.''',
 
       ### Step 4: Dedup and save
       - Compare against the existing-name list and already-generated cases; skip duplicates that differ only in data.
-      - Save each via create_interface_case: top-level interface_id is the target interface; group from the user message if specified.
+      - Save each via create_interface_case: top-level interface_id is the target interface. Pass group ONLY when the user message explicitly provides a "target group ID"; when the message says "no group", never send the group field (including group: null / group: 0), and never fall back to create_testcase - single-interface cases must live under the interface-cases module via create_interface_case + interface_id.
 
       ---
 

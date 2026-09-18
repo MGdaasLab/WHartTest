@@ -8,18 +8,16 @@
     @ok="handleSubmit"
   >
     <a-form :model="formState" :label-col-props="{ span: 5 }" :wrapper-col-props="{ span: 19 }">
-      <div class="header-row">
-        <div class="header-item">
-          <span class="header-label">{{ pageText.currentProject }}</span>
-          <a-input :model-value="currentProjectName" disabled style="width: 200px;" />
-        </div>
-        <div class="header-item">
-          <span class="header-label">{{ pageText.caseType }}</span>
-          <a-radio-group v-model="formState.caseType" type="button" @change="handleCaseTypeChange">
-            <a-radio value="interface_case">{{ pageText.interfaceCase }}</a-radio>
-            <a-radio value="scenario">{{ pageText.scenarioCase }}</a-radio>
-          </a-radio-group>
-        </div>
+      <div class="form-row">
+        <span class="form-row-label">{{ pageText.currentProject }}</span>
+        <a-input :model-value="currentProjectName" disabled style="width: 200px;" />
+      </div>
+      <div class="form-row">
+        <span class="form-row-label">{{ pageText.caseType }}</span>
+        <a-radio-group v-model="formState.caseType" type="button" @change="handleCaseTypeChange">
+          <a-radio value="interface_case">{{ pageText.interfaceCase }}</a-radio>
+          <a-radio value="scenario">{{ pageText.scenarioCase }}</a-radio>
+        </a-radio-group>
       </div>
 
       <!-- 生成维度（单接口模式） -->
@@ -113,8 +111,9 @@
             allow-clear
             allow-search
             :loading="isInterfacesLoading"
+            style="width: 360px;"
           >
-            <a-option v-for="option in loginCandidates" :key="option.id" :value="option.id">
+            <a-option v-for="option in loginCandidates" :key="option.id" :value="option.id" class="login-option">
               {{ option.label }}
             </a-option>
           </a-select>
@@ -155,62 +154,44 @@
         />
       </div>
 
-      <!-- DB 校验开关 -->
+
+      <!-- 目标分组（仅场景模式） -->
+      <div v-if="formState.caseType === 'scenario'" class="form-row">
+        <span class="form-row-label">{{ pageText.targetGroup }}</span>
+        <a-select
+          v-model="formState.groupId"
+          :placeholder="groupLoadFailed ? pageText.groupLoadFailedText : pageText.groupPlaceholder"
+          allow-clear
+          :loading="isGroupsLoading"
+          style="width: 260px;"
+        >
+          <template #empty>
+            <div class="group-empty-hint">
+              {{ groupLoadFailed ? pageText.groupLoadFailedText : (isEnglish ? 'No groups yet. Create one in the group manager, or leave ungrouped.' : '项目下暂无分组，可到分组管理新建，或留空保存为未分组。') }}
+            </div>
+          </template>
+          <a-option v-for="group in groupOptions" :key="group.id" :value="group.id">
+            {{ group.name }}
+          </a-option>
+        </a-select>
+      </div>
+
+      <!-- DB 校验 + 条数上限 -->
       <div class="form-row">
         <span class="form-row-label">{{ pageText.dbVerification }}</span>
         <div class="db-area">
           <a-switch v-model="formState.dbVerification" @change="handleDbSwitchChange" />
           <span v-if="formState.dbVerification && dbCheckWarning" class="db-warning">{{ dbCheckWarning }}</span>
         </div>
+        <span class="form-row-label" style="margin-left: 24px;">{{ pageText.caseLimit }}</span>
+        <a-input-number
+          v-model="formState.caseLimit"
+          :min="1"
+          :max="30"
+          style="width: 120px;"
+        />
       </div>
 
-      <!-- 目标分组与条数上限 -->
-      <div class="header-row">
-        <div class="header-item">
-          <span class="header-label">{{ pageText.targetGroup }}</span>
-          <div class="group-select-area">
-            <a-select
-              v-model="formState.groupId"
-              :placeholder="groupLoadFailed ? pageText.groupLoadFailedText : pageText.groupPlaceholder"
-              allow-clear
-              :loading="isGroupsLoading"
-              style="width: 220px;"
-            >
-              <template #empty>
-                <div class="group-empty-hint">
-                  {{ groupLoadFailed ? pageText.groupLoadFailedText : (isEnglish ? 'No groups yet. Create one in the group manager, or leave ungrouped.' : '项目下暂无分组，可到分组管理新建，或留空保存为未分组。') }}
-                </div>
-              </template>
-              <a-option v-for="group in groupOptions" :key="group.id" :value="group.id">
-                {{ group.name }}
-              </a-option>
-            </a-select>
-          </div>
-        </div>
-        <div class="header-item">
-          <span class="header-label">{{ pageText.caseLimit }}</span>
-          <a-input-number
-            v-model="formState.caseLimit"
-            :min="1"
-            :max="30"
-            style="width: 120px;"
-          />
-        </div>
-      </div>
-
-      <!-- 提示词（可选覆盖） -->
-      <a-form-item :label="pageText.promptTemplate">
-        <a-select
-          v-model="formState.promptId"
-          :placeholder="pageText.promptPlaceholder"
-          allow-clear
-          :loading="isPromptsLoading"
-        >
-          <a-option v-for="prompt in matchedPrompts" :key="prompt.id" :value="prompt.id">
-            {{ prompt.name }}
-          </a-option>
-        </a-select>
-      </a-form-item>
     </a-form>
   </a-modal>
 </template>
@@ -226,8 +207,6 @@ import { testcaseGroupService } from '../../services/testcaseGroupService';
 import { environmentService } from '../../services/environmentService';
 import { KnowledgeService } from '@/features/knowledge/services/knowledgeService';
 import type { KnowledgeBase } from '@/features/knowledge/types/knowledge';
-import { getUserPrompts } from '@/features/prompts/services/promptService';
-import type { UserPrompt, UserPromptListResponseData } from '@/features/prompts/types/prompt';
 import type { ApiModule } from '../../types/module';
 import type { ApiTestCaseGroup } from '../../types/testcase';
 import type { ApiInterface } from '../../types/interface';
@@ -248,12 +227,12 @@ const pageText = computed(() => isEnglish.value ? {
   caseType: 'Case Type',
   interfaceCase: 'Single-Interface Cases',
   scenarioCase: 'Scenario Cases',
-  dimensions: 'Dimensions',
+  dimensions: 'Generation Scope',
   dimD1: 'D1 Happy Path',
   dimD2: 'D2 Param Validation',
   dimD3: 'D3 Exceptions',
   dimD4: 'D4 Business Logic',
-  archetypes: 'Archetypes',
+  archetypes: 'Generation Scope',
   archS1: 'S1 Lifecycle',
   archS2: 'S2 Data Passing',
   archS3: 'S3 Branch Flows',
@@ -267,7 +246,7 @@ const pageText = computed(() => isEnglish.value ? {
   uploadHint: 'Optional. OpenAPI/Swagger/Apifox/Postman etc. Used to extract parameter constraints for better boundary cases.',
   loginInterface: 'Login Interface',
   loginAutoDetect: 'Auto-detect (recommended)',
-  loginHint: 'Optional. When set, generated cases include a login precondition extracting a token for authenticated requests. Login interface is usually outside the selected business interfaces.',
+  loginHint: 'Optional. Used as login precondition for authenticated cases.',
   knowledgeBase: 'Knowledge Base',
   useKnowledgeBase: 'Search knowledge base for business context',
   selectPlaceholder: 'Select',
@@ -279,19 +258,18 @@ const pageText = computed(() => isEnglish.value ? {
   groupLoadFailedText: 'Group list failed to load',
   caseLimit: 'Case Limit',
   promptTemplate: 'Prompt',
-  promptPlaceholder: 'Default (recommended)',
 } : {
   modalTitle: 'AI 生成接口测试用例',
   currentProject: '当前项目',
   caseType: '用例类型',
   interfaceCase: '单接口用例',
   scenarioCase: '场景用例',
-  dimensions: '生成维度',
+  dimensions: '生成范围',
   dimD1: 'D1 基本功能',
   dimD2: 'D2 参数验证',
   dimD3: 'D3 异常场景',
   dimD4: 'D4 业务逻辑',
-  archetypes: '场景原型',
+  archetypes: '生成范围',
   archS1: 'S1 生命周期',
   archS2: 'S2 数据传递',
   archS3: 'S3 业务分支',
@@ -305,7 +283,7 @@ const pageText = computed(() => isEnglish.value ? {
   uploadHint: '可选。支持 OpenAPI/Swagger/Apifox/Postman 等，提取参数约束用于边界值用例设计。',
   loginInterface: '登录接口',
   loginAutoDetect: '自动识别（推荐）',
-  loginHint: '可选。指定后生成的用例将包含登录前置步骤（提取 token 注入请求头），使鉴权接口的用例可实际执行。登录接口通常不在所选业务接口中，可搜索全项目接口选择。',
+  loginHint: '可选。作为鉴权用例的登录前置步骤。',
   knowledgeBase: '知识库',
   useKnowledgeBase: '检索知识库补充业务上下文',
   selectPlaceholder: '请选择',
@@ -317,7 +295,6 @@ const pageText = computed(() => isEnglish.value ? {
   groupLoadFailedText: '分组列表加载失败',
   caseLimit: '条数上限',
   promptTemplate: '提示词',
-  promptPlaceholder: '默认（推荐）',
 });
 
 const currentProjectName = computed(() => projectStore.currentProject?.name || '');
@@ -340,8 +317,8 @@ interface FormState {
 
 const formState = ref<FormState>({
   caseType: 'interface_case',
-  dimensions: ['D1', 'D2', 'D3', 'D4'],
-  archetypes: ['S1', 'S2', 'S3', 'S4'],
+  dimensions: ['D1'],
+  archetypes: ['S1'],
   selectedInterfaceIds: [],
   documentFile: null,
   loginInterfaceId: null,
@@ -361,10 +338,8 @@ const isInterfacesLoading = ref(false);
 const isGroupsLoading = ref(false);
 const groupLoadFailed = ref(false);
 const isKbLoading = ref(false);
-const isPromptsLoading = ref(false);
 const knowledgeBases = ref<KnowledgeBase[]>([]);
 const groups = ref<ApiTestCaseGroup[]>([]);
-const prompts = ref<UserPrompt[]>([]);
 const interfaceSearch = ref('');
 const dbCheckWarning = ref('');
 const documentFileList = ref<any[]>([]);
@@ -372,21 +347,15 @@ const documentFileList = ref<any[]>([]);
 // 知识库复选框：场景模式默认开启且可取消；单接口模式勾了 D3/D4 才展示
 const kbCheckboxLocked = computed(() => false);
 
-const matchedPrompts = computed(() => {
-  const targetName = formState.value.caseType === 'scenario'
-    ? (isEnglish.value ? 'API Scenario Case Generation' : '接口场景用例生成')
-    : (isEnglish.value ? 'API Single-Interface Case Generation' : '接口单接口用例生成');
-  const matched = prompts.value.filter(p => p.name === targetName);
-  // 兜底：匹配不到目标模板时展示全部通用提示词
-  return matched.length ? matched : prompts.value;
-});
-
 // 场景模式默认勾选知识库
 const handleCaseTypeChange = () => {
   formState.value.caseLimit = formState.value.caseType === 'scenario' ? 6 : 12;
   formState.value.promptId = null;
   if (formState.value.caseType === 'scenario') {
     formState.value.useKnowledgeBase = true;
+  } else {
+    // 单接口用例按主接口归属，不使用分组
+    formState.value.groupId = null;
   }
   autoSelectLoginInterface();
 };
@@ -433,7 +402,6 @@ const fetchData = async () => {
   }
   fetchGroups();
   fetchKnowledgeBases();
-  fetchPrompts();
 };
 
 const fetchGroups = async () => {
@@ -470,26 +438,6 @@ const fetchKnowledgeBases = async () => {
     knowledgeBases.value = [];
   } finally {
     isKbLoading.value = false;
-  }
-};
-
-const fetchPrompts = async () => {
-  isPromptsLoading.value = true;
-  try {
-    const response = await getUserPrompts({ prompt_type: 'general' });
-    if (response.status === 'success') {
-      if (Array.isArray(response.data)) {
-        prompts.value = response.data;
-      } else if ((response.data as UserPromptListResponseData)?.results) {
-        prompts.value = (response.data as UserPromptListResponseData).results;
-      } else {
-        prompts.value = [];
-      }
-    }
-  } catch {
-    prompts.value = [];
-  } finally {
-    isPromptsLoading.value = false;
   }
 };
 
@@ -747,20 +695,12 @@ defineExpose({
 </script>
 
 <style scoped>
-.header-row {
-  display: flex;
-  gap: 24px;
-  margin-bottom: 16px;
-}
-.header-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.header-label {
-  font-weight: 500;
+.login-option {
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-text-1);
+  display: block;
 }
 .form-row {
   display: flex;
@@ -831,10 +771,6 @@ defineExpose({
 .db-warning {
   font-size: 12px;
   color: rgb(var(--orange-6));
-}
-.group-select-area {
-  display: flex;
-  flex-direction: column;
 }
 .group-empty-hint {
   padding: 8px 12px;
