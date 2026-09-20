@@ -48,8 +48,13 @@ from .middleware_config import (
     get_user_friendly_llm_error,
 )
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
-from .stop_signal import should_stop, clear_stop_signal
-from langgraph_integration.models import ChatSession, LLMConfig
+from .generation_guard import (
+    GENERATION_MODE_MARKER,
+    GenerationInterfaceCaseGuardMiddleware,
+    should_guard_generation_prompt,
+)
+from .stop_signal import clear_stop_signal, should_stop
+from langgraph_integration.models import ChatMessage, ChatSession, LLMConfig
 from langgraph_integration.views import (
     _extract_requirement_doc_images_for_message,
     create_llm_instance,
@@ -854,6 +859,7 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        generation_guard_enabled: bool = False,
     ):
         """
         创建 SSE 流式生成器（LangChain v1 重构版）
@@ -1075,6 +1081,8 @@ class AgentLoopStreamAPIView(View):
                     tools=tools,
                     system_prompt=effective_prompt,
                 )
+                if generation_guard_enabled:
+                    middleware = list(middleware) + [GenerationInterfaceCaseGuardMiddleware()]
 
                 agent = create_agent(
                     llm,
@@ -1518,6 +1526,7 @@ class AgentLoopStreamAPIView(View):
             return api_error_response(f"Invalid JSON: {e}", 400)
 
         user_message = body_data.get("message")
+        generation_guard_enabled = should_guard_generation_prompt(user_message)
         session_id = body_data.get("session_id")
         project_id = body_data.get("project_id")
         knowledge_base_id = body_data.get("knowledge_base_id")
@@ -1603,6 +1612,7 @@ class AgentLoopStreamAPIView(View):
                     test_case_id,
                     use_pytest,
                     file_ids,
+                    generation_guard_enabled=generation_guard_enabled,
                 ):
                     yield chunk
 
@@ -1858,6 +1868,7 @@ class AgentLoopResumeAPIView(View):
         resume_data: dict,
         knowledge_base_id: Optional[str] = None,
         use_knowledge_base: bool = False,
+        generation_guard_enabled: bool = False,
     ):
         """
         创建 Resume SSE 流式生成器
@@ -2010,6 +2021,8 @@ class AgentLoopResumeAPIView(View):
                     tools=tools,
                     system_prompt=resume_system_prompt,
                 )
+                if generation_guard_enabled:
+                    middleware = list(middleware) + [GenerationInterfaceCaseGuardMiddleware()]
 
                 # 6. 创建 agent
                 agent = create_agent(
@@ -2413,6 +2426,17 @@ class AgentLoopResumeAPIView(View):
 
         # 3. 返回 SSE 流式响应
         async def async_generator():
+            generation_guard_enabled = False
+            try:
+                first_user_message = await sync_to_async(
+                    lambda: ChatMessage.objects.filter(
+                        session__session_id=session_id, role='human'
+                    ).order_by('created_at').values_list('content', flat=True).first()
+                )()
+                generation_guard_enabled = should_guard_generation_prompt(first_user_message)
+            except Exception:
+                logger.warning("[AgentLoopResumeAPI] 生成守护标记检测失败，按未启用处理")
+
             async for chunk in self._create_resume_stream_generator(
                 user,
                 session_id,
@@ -2420,6 +2444,7 @@ class AgentLoopResumeAPIView(View):
                 resume_data,
                 knowledge_base_id,
                 use_knowledge_base,
+                generation_guard_enabled,
             ):
                 yield chunk
 

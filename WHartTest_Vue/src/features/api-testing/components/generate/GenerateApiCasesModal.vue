@@ -35,10 +35,12 @@
       <div v-else class="form-row">
         <span class="form-row-label required">{{ pageText.archetypes }}</span>
         <a-checkbox-group v-model="formState.archetypes" class="dimension-checkboxes">
-          <a-checkbox value="S1">{{ pageText.archS1 }}</a-checkbox>
-          <a-checkbox value="S2">{{ pageText.archS2 }}</a-checkbox>
-          <a-checkbox value="S3">{{ pageText.archS3 }}</a-checkbox>
-          <a-checkbox value="S4">{{ pageText.archS4 }}</a-checkbox>
+          <a-checkbox v-for="option in archetypeOptions" :key="option.value" :value="option.value">
+            {{ option.label }}
+            <a-tooltip :content="option.tip" position="top">
+              <icon-question-circle class="archetype-tip-icon" />
+            </a-tooltip>
+          </a-checkbox>
         </a-checkbox-group>
       </div>
 
@@ -237,6 +239,10 @@ const pageText = computed(() => isEnglish.value ? {
   archS2: 'S2 Data Passing',
   archS3: 'S3 Branch Flows',
   archS4: 'S4 State Setup',
+  archTipS1: 'Full lifecycle chain: create -> query -> update -> delete',
+  archTipS2: 'Producer-consumer relation (e.g. create returns id -> consumed by detail/update/delete)',
+  archTipS3: 'Conditional flows from business notes or knowledge base (e.g. amount threshold routing)',
+  archTipS4: 'Cross-interface state setup (e.g. interface A makes interface B usable/unusable)',
   selectInterfaces: 'Interfaces',
   searchPlaceholder: 'Search interface name / path',
   noInterfaces: 'No HTTP interfaces',
@@ -245,7 +251,7 @@ const pageText = computed(() => isEnglish.value ? {
   selectFile: 'Select File',
   uploadHint: 'Optional. OpenAPI/Swagger/Apifox/Postman etc. Used to extract parameter constraints for better boundary cases.',
   loginInterface: 'Login Interface',
-  loginAutoDetect: 'Auto-detect (recommended)',
+  loginAutoDetect: 'Select login interface (optional)',
   loginHint: 'Optional. Used as login precondition for authenticated cases.',
   knowledgeBase: 'Knowledge Base',
   useKnowledgeBase: 'Search knowledge base for business context',
@@ -274,6 +280,10 @@ const pageText = computed(() => isEnglish.value ? {
   archS2: 'S2 数据传递',
   archS3: 'S3 业务分支',
   archS4: 'S4 状态前置',
+  archTipS1: '生成完整链路（创建→查询→修改→删除）',
+  archTipS2: '生产者-消费者关系（如创建返回 id → 详情/更新/删除消费 id）',
+  archTipS3: '用户业务描述或知识库命中的条件流转（如金额阈值分流）',
+  archTipS4: '跨接口构造前置状态（如接口 A 操作使接口 B 进入可/不可用状态）',
   selectInterfaces: '选择接口',
   searchPlaceholder: '搜索接口名称 / 路径',
   noInterfaces: '暂无 HTTP 接口',
@@ -282,7 +292,7 @@ const pageText = computed(() => isEnglish.value ? {
   selectFile: '选择文件',
   uploadHint: '可选。支持 OpenAPI/Swagger/Apifox/Postman 等，提取参数约束用于边界值用例设计。',
   loginInterface: '登录接口',
-  loginAutoDetect: '自动识别（推荐）',
+  loginAutoDetect: '请选择登录接口（可选）',
   loginHint: '可选。作为鉴权用例的登录前置步骤。',
   knowledgeBase: '知识库',
   useKnowledgeBase: '检索知识库补充业务上下文',
@@ -357,7 +367,6 @@ const handleCaseTypeChange = () => {
     // 单接口用例按主接口归属，不使用分组
     formState.value.groupId = null;
   }
-  autoSelectLoginInterface();
 };
 
 // ---------------------------------------------------------------------------
@@ -545,6 +554,13 @@ const loginCandidates = computed(() => {
   }));
 });
 
+const archetypeOptions = computed(() => [
+  { value: 'S1', label: pageText.value.archS1, tip: pageText.value.archTipS1 },
+  { value: 'S2', label: pageText.value.archS2, tip: pageText.value.archTipS2 },
+  { value: 'S3', label: pageText.value.archS3, tip: pageText.value.archTipS3 },
+  { value: 'S4', label: pageText.value.archS4, tip: pageText.value.archTipS4 },
+]);
+
 const groupOptions = computed(() => {
   const options: { id: number; name: string }[] = [];
   const walk = (list: ApiTestCaseGroup[], prefix: string, depth: number) => {
@@ -560,18 +576,6 @@ const groupOptions = computed(() => {
   walk(groups.value, '', 0);
   return options;
 });
-
-const autoSelectLoginInterface = () => {
-  formState.value.loginInterfaceId = null;
-  // 从项目全部 HTTP 接口中识别登录接口（login/auth/token/signin/登录/认证）
-  const candidate = interfaces.value.find(item => {
-    const text = `${item.name} ${item.url || ''}`.toLowerCase();
-    return /login|auth|token|signin|登录|认证/.test(text);
-  });
-  if (candidate) {
-    formState.value.loginInterfaceId = candidate.id;
-  }
-};
 
 // ---------------------------------------------------------------------------
 // 文档与 DB 校验
@@ -679,12 +683,7 @@ watch(() => props.visible, (visible) => {
     formState.value.selectedInterfaceIds = [];
     interfaceSearch.value = '';
     dbCheckWarning.value = '';
-    fetchData().then(() => {
-      // 接口列表加载完成后做一次登录接口自动识别（两模式均生效）
-      if (!formState.value.loginInterfaceId) {
-        autoSelectLoginInterface();
-      }
-    });
+    fetchData();
   }
 });
 
@@ -720,6 +719,11 @@ defineExpose({
   content: '*';
   color: rgb(var(--danger-6));
   margin-right: 2px;
+}
+.archetype-tip-icon {
+  margin-left: 2px;
+  color: var(--color-text-3);
+  cursor: help;
 }
 .dimension-checkboxes {
   display: flex;

@@ -97,9 +97,11 @@ export async function collectExistingScenarioCaseNames(): Promise<string[]> {
   return list.map((item: any) => item.name).filter(Boolean);
 }
 
-const formatConstraintsText = (constraints: ConstraintExtractResult | null): string => {
+const formatConstraintsText = (constraints: ConstraintExtractResult | null, onlyInterfaceId?: number): string => {
   if (!constraints || !constraints.interfaces.length) return '';
-  const sections = constraints.interfaces.map((item) => {
+  const sections = constraints.interfaces
+    .filter(item => onlyInterfaceId === undefined || item.interface_id === onlyInterfaceId)
+    .map((item) => {
     const lines: string[] = [];
     lines.push(`### 接口 [${item.interface_id}] ${item.name}（${item.method} ${item.url}）`);
     const paramGroups = item.params || {};
@@ -143,8 +145,11 @@ const formatConstraintsText = (constraints: ConstraintExtractResult | null): str
     }
     return lines.join('\n');
   });
-  const unmatchedNote = constraints.unmatched.length
-    ? `\n\n注意：以下接口在文档中未匹配到（生成时按约束未知处理）：${constraints.unmatched.map((item) => item.name || item.interface_id).join('、')}`
+  const relevantUnmatched = onlyInterfaceId === undefined
+    ? constraints.unmatched
+    : constraints.unmatched.filter(item => item.interface_id === onlyInterfaceId);
+  const unmatchedNote = relevantUnmatched.length
+    ? `\n\n注意：当前接口在文档中未匹配到（生成时按约束未知处理）。`
     : '';
   return `\n\n## 接口文档参数约束清单\n\n${sections.join('\n\n')}${unmatchedNote}`;
 };
@@ -186,6 +191,11 @@ export function buildGenerationMessage(options: {
   const { formData, interfaces, projectId, existingNames, constraints, documentName, loginInterface } = options;
 
   const lines: string[] = [];
+  // 会话守护标记：后端检测到后挂载工具守护中间件（拦截 create_testcase 等漂移、剥除误传 group）
+  if (formData.caseType === 'interface_case') {
+    lines.push('<!-- wharttest:generation_mode=interface_case -->');
+    lines.push('');
+  }
   lines.push('请基于以下信息生成接口测试用例。');
   lines.push('');
   lines.push(`## 任务类型：${formData.caseType === 'scenario' ? '场景用例（ApiTestCase）' : '单接口用例（ApiInterfaceCase）'}`);

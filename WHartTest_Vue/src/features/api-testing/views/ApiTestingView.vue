@@ -159,6 +159,34 @@ const fetchSelectedInterfaces = async (ids: number[]): Promise<GenerationInterfa
   return list.filter(item => idSet.has(item.id)) as GenerationInterfaceInfo[]
 }
 
+const showStartNotification = (done: number, total: number) => {
+  const isBatch = total > 1
+  const notificationReturn = Notification.info({
+    title: tl('AI 生成任务已启动'),
+    content: isBatch
+      ? tl(`共 ${total} 个接口将逐接口串行生成并保存，每个接口独立试跑验证`)
+      : tl('用例将逐条生成并保存，完成后可在对话页查看总结'),
+    footer: () => h(
+      'div',
+      { style: 'text-align: right; margin-top: 12px;' },
+      [
+        h(
+          'a',
+          {
+            href: 'javascript:;',
+            onClick: () => {
+              router.push({ name: 'LangGraphChat' })
+              if (notificationReturn) notificationReturn.close()
+            },
+          },
+          tl('查看生成进度')
+        ),
+      ]
+    ),
+    duration: 10000,
+  })
+}
+
 const handleGenerateSubmit = async (formData: GenerationFormData) => {
   if (!projectId.value) return
   try {
@@ -205,6 +233,37 @@ const handleGenerateSubmit = async (formData: GenerationFormData) => {
       : await collectExistingInterfaceCaseNames(formData.interfaceIds).catch(() => [])
 
     // 4. 拼装指令并发送
+    // 场景模式：一条 message 提交全部；单接口模式：逐接口串行提交（结构上消除工具漂移与总量收敛）
+    const submitRequest = (message: string) => new Promise<void>((resolve, reject) => {
+      const requestData: ChatRequest = {
+        message,
+        project_id: String(projectId.value),
+        module_key: 'testcase_generation',
+        use_knowledge_base: formData.useKnowledgeBase && !!formData.knowledgeBaseId,
+      }
+      if (formData.knowledgeBaseId) {
+        requestData.knowledge_base_id = formData.knowledgeBaseId
+      }
+      try {
+        sendChatMessageStream(
+          requestData,
+          (sessionId) => {
+            localStorage.setItem('langgraph_session_id', sessionId)
+            localStorage.setItem('langgraph_knowledge_settings', JSON.stringify({
+              useKnowledgeBase: requestData.use_knowledge_base || false,
+              selectedKnowledgeBaseId: formData.knowledgeBaseId || null,
+              similarityThreshold: 0.3,
+              topK: 5,
+            }))
+            // 流建立即视为该批次提交成功（后续生成在服务端异步进行）
+            resolve()
+          },
+        )
+      } catch (err) {
+        reject(err)
+      }
+    })
+
     const message = buildGenerationMessage({
       formData,
       interfaces,
@@ -214,58 +273,8 @@ const handleGenerateSubmit = async (formData: GenerationFormData) => {
       documentName,
       loginInterface,
     })
-
-    const requestData: ChatRequest = {
-      message,
-      project_id: String(projectId.value),
-      module_key: 'testcase_generation',
-      use_knowledge_base: formData.useKnowledgeBase && !!formData.knowledgeBaseId,
-    }
-    if (formData.knowledgeBaseId) {
-      requestData.knowledge_base_id = formData.knowledgeBaseId
-    }
-    if (formData.promptId) {
-      requestData.prompt_id = formData.promptId
-    }
-
-    const notificationReturn = Notification.info({
-      title: tl('AI 生成任务已启动'),
-      content: tl('用例将逐条生成并保存，完成后可在对话页查看总结'),
-      footer: () => h(
-        'div',
-        { style: 'text-align: right; margin-top: 12px;' },
-        [
-          h(
-            'a',
-            {
-              href: 'javascript:;',
-              onClick: () => {
-                router.push({ name: 'LangGraphChat' })
-                if (notificationReturn) notificationReturn.close()
-              },
-            },
-            tl('查看生成进度')
-          ),
-        ]
-      ),
-      duration: 10000,
-    })
-
-    sendChatMessageStream(
-      requestData,
-      (sessionId) => {
-        localStorage.setItem('langgraph_session_id', sessionId)
-        if (formData.promptId) {
-          localStorage.setItem('wharttest_selected_prompt_id', String(formData.promptId))
-        }
-        localStorage.setItem('langgraph_knowledge_settings', JSON.stringify({
-          useKnowledgeBase: requestData.use_knowledge_base || false,
-          selectedKnowledgeBaseId: formData.knowledgeBaseId || null,
-          similarityThreshold: 0.3,
-          topK: 5,
-        }))
-      }
-    )
+    showStartNotification(1, 1)
+    await submitRequest(message)
   } catch (error: any) {
     Notification.error({
       title: tl('启动失败'),
