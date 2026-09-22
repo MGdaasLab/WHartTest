@@ -202,7 +202,7 @@ export interface AgentLoopNonStreamResponse {
   session_title?: string;
   content: string;
   total_steps: number;
-  tool_results: Array<{ summary: string; step: number; tool_output?: unknown; tool_name?: string }>;
+  tool_results: Array<{ summary: string; step: number; tool_output?: unknown; tool_name?: string; tool_input?: unknown }>;
   context_token_count: number;
   context_limit: number;
   interrupt?: {
@@ -765,14 +765,18 @@ export async function sendChatMessageStream(
  */
 export async function getChatHistory(
   sessionId: string,
-  projectId: number | string
+  projectId: number | string,
+  limit?: number,
+  offset?: number,
 ): Promise<ApiResponse<ChatHistoryResponseData>> {
   const response = await request<ChatHistoryResponseData>({
     url: `${API_BASE_URL}/history/`,
     method: 'GET',
     params: {
       session_id: sessionId,
-      project_id: String(projectId) // 确保转换为string
+      project_id: String(projectId),
+      limit,
+      offset,
     }
   });
 

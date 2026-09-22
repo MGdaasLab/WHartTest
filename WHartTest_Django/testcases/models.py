@@ -96,6 +96,25 @@ class TestCase(models.Model):
         default='functional',
         blank=True,
     )
+    ui_test_case = models.ForeignKey(
+        'ui_automation.UiTestCase',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='bound_testcases',
+        verbose_name=_('绑定的UI自动化用例')
+    )
+    execution_mode = models.CharField(
+        _('默认执行模式'),
+        max_length=20,
+        choices=[
+            ('hybrid', _('智能双模(脚本优先+AI介入)')),
+            ('script_only', _('仅脚本执行')),
+            ('ai_only', _('纯AI执行')),
+        ],
+        default='hybrid',
+        blank=True,
+    )
 
     class Meta:
         verbose_name = _('用例')
@@ -453,6 +472,20 @@ class TestCaseResult(models.Model):
     
     # 执行日志
     execution_log = models.TextField(_('执行日志'), blank=True, null=True)
+    
+    # 混合执行与AI介入相关信息
+    execution_mode = models.CharField(_('执行模式'), max_length=20, default='hybrid', blank=True)
+    is_ai_intervened = models.BooleanField(_('是否AI介入'), default=False)
+    ai_diagnosis = models.JSONField(_('AI诊断报告'), null=True, blank=True)
+    self_healing_info = models.JSONField(_('自愈信息'), null=True, blank=True)
+    ui_execution_record = models.ForeignKey(
+        'ui_automation.UiExecutionRecord',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='testcase_results',
+        verbose_name=_('关联的UI执行记录')
+    )
     
     created_at = models.DateTimeField(_('创建时间'), auto_now_add=True)
     updated_at = models.DateTimeField(_('更新时间'), auto_now=True)

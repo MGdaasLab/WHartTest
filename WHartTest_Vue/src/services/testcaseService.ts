@@ -49,6 +49,54 @@ export interface TestCaseScreenshot {
   uploaded_at?: string;
 }
 
+// UI 自动化用例摘要接口
+export interface BoundUiTestCaseDetail {
+  id: number;
+  name: string;
+  level: string;
+  status: number;
+  module_id?: number;
+  module_name?: string;
+  step_count?: number;
+}
+
+// AI 诊断报告接口
+export interface AiDiagnosisResult {
+  root_cause_type: 'SCRIPT_DEFECT' | 'BUG' | 'ENV_ISSUE' | 'UNKNOWN';
+  root_cause_label: string;
+  confidence?: number;
+  summary: string;
+  detailed_analysis: string;
+  failure_step_info?: {
+    step_sort: number;
+    page_name?: string;
+    element_name?: string;
+    operation_type?: string;
+    error_message?: string;
+  };
+  healing_suggestion?: {
+    can_self_heal: boolean;
+    element_id?: number | null;
+    element_name?: string;
+    current_locator_type?: string;
+    current_locator_value?: string;
+    suggested_locator_type: string;
+    suggested_locator_value: string;
+    explanation?: string;
+  };
+  defect_report?: {
+    is_real_bug: boolean;
+    title: string;
+    severity: string;
+    reproduction_summary: string;
+    expected_vs_actual: string;
+  };
+  diagnosed_by?: string;
+  model_name?: string;
+  diagnosed_at?: string;
+  ui_execution_record_id?: number;
+}
+
 // 测试用例接口
 export interface TestCase {
   id: number;
@@ -64,6 +112,9 @@ export interface TestCase {
   screenshot?: string; // 兼容旧的单个截图字段
   screenshots?: TestCaseScreenshot[]; // 新的多截图字段
   review_status?: ReviewStatus; // 审核状态
+  ui_test_case?: number | null; // 绑定的UI自动化用例ID
+  ui_test_case_detail?: BoundUiTestCaseDetail | null; // 绑定的UI自动化用例详情
+  execution_mode?: 'hybrid' | 'script_only' | 'ai_only'; // 默认执行模式
   creator: number;
   creator_detail: {
     id: number;
@@ -88,6 +139,8 @@ export interface CreateTestCaseRequest {
   module_id?: number | null; // 所属模块ID
   steps: Omit<TestCaseStep, 'id'>[];
   notes?: string; // 新增备注字段
+  ui_test_case?: number | null;
+  execution_mode?: 'hybrid' | 'script_only' | 'ai_only';
 }
 
 // 更新测试用例请求参数
@@ -100,6 +153,8 @@ export interface UpdateTestCaseRequest {
   steps?: TestCaseStep[];
   notes?: string; // 新增备注字段
   review_status?: ReviewStatus; // 审核状态
+  ui_test_case?: number | null;
+  execution_mode?: 'hybrid' | 'script_only' | 'ai_only';
 }
 
 // 分页参数接口
@@ -115,6 +170,14 @@ export interface PaginationParams {
   test_type_in?: string[]; // 多个测试类型筛选
   include_steps?: boolean; // 是否返回步骤详情，默认列表不返回；思维导图需要传 true
   ordering?: string; // 排序字段，支持 id/-id/created_at/-created_at/updated_at/-updated_at
+}
+
+export interface TestCaseNavigationFilters {
+  search?: string;
+  module_id?: number;
+  level?: string;
+  test_type?: string;
+  review_status_in?: ReviewStatus[];
 }
 
 // 测试用例列表响应接口
@@ -227,6 +290,36 @@ export const getTestCaseList = async (projectId: number, params?: PaginationPara
       statusCode: error.response?.status,
     };
   }
+};
+
+export const getAllTestCaseIds = async (
+  projectId: number,
+  filters: TestCaseNavigationFilters = {},
+): Promise<{ success: boolean; data?: number[]; error?: string; statusCode?: number }> => {
+  const response = await getTestCaseList(projectId, {
+    page: 1,
+    pageSize: 10000,
+    search: filters.search,
+    module_id: filters.module_id,
+    level: filters.level,
+    test_type: filters.test_type,
+    review_status_in: filters.review_status_in,
+    ordering: 'id',
+  });
+
+  if (!response.success) {
+    return {
+      success: false,
+      error: response.error,
+      statusCode: response.statusCode,
+    };
+  }
+
+  return {
+    success: true,
+    data: (response.data || []).map(testCase => testCase.id),
+    statusCode: response.statusCode,
+  };
 };
 
 /**
@@ -1127,4 +1220,160 @@ export const updateTestCaseReviewStatus = async (
   reviewStatus: ReviewStatus
 ): Promise<TestCaseResponse> => {
   return updateTestCase(projectId, testCaseId, { review_status: reviewStatus });
+};
+
+/**
+ * 绑定或解绑 UI 自动化用例
+ * @param projectId 项目ID
+ * @param testCaseId 功能测试用例ID
+ * @param data 绑定数据
+ */
+export const bindUiTestCase = async (
+  projectId: number,
+  testCaseId: number,
+  data: { ui_test_case_id: number | null; execution_mode?: string }
+): Promise<TestCaseResponse> => {
+  const authStore = useAuthStore();
+  const accessToken = authStore.getAccessToken;
+
+  if (!accessToken) {
+    return {
+      success: false,
+      error: '未登录或会话已过期',
+    };
+  }
+
+  try {
+    const response = await axios.post(
+      `${API_BASE_URL}/projects/${projectId}/testcases/${testCaseId}/bind-ui-testcase/`,
+      data,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    if (response.data && response.data.status === 'success') {
+      return {
+        success: true,
+        data: response.data.data,
+        message: '绑定 UI 自动化用例成功',
+      };
+    } else {
+      return {
+        success: true,
+        data: response.data,
+      };
+    }
+  } catch (error: any) {
+    console.error('绑定 UI 自动化用例出错:', error);
+    return {
+      success: false,
+      error: error.response?.data?.error || error.response?.data?.message || error.message || '绑定 UI 自动化用例失败',
+    };
+  }
+};
+
+/**
+ * 触发 AI 失败归因诊断
+ * @param projectId 项目ID
+ * @param testCaseId 功能测试用例ID
+ * @param data 可选的执行记录ID
+ */
+export const diagnoseTestCaseFailure = async (
+  projectId: number,
+  testCaseId: number,
+  data?: { ui_execution_record_id?: number }
+): Promise<{ success: boolean; data?: AiDiagnosisResult; error?: string }> => {
+  const authStore = useAuthStore();
+  const accessToken = authStore.getAccessToken;
+
+  if (!accessToken) {
+    return {
+      success: false,
+      error: '未登录或会话已过期',
+    };
+  }
+
+  try {
+    const response = await axios.post(
+      `${API_BASE_URL}/projects/${projectId}/testcases/${testCaseId}/diagnose-failure/`,
+      data || {},
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    const resData = response.data?.data || response.data;
+    return {
+      success: true,
+      data: resData as AiDiagnosisResult,
+    };
+  } catch (error: any) {
+    console.error('AI 失败诊断出错:', error);
+    return {
+      success: false,
+      error: error.response?.data?.error || error.response?.data?.message || error.message || 'AI 失败诊断失败',
+    };
+  }
+};
+
+/**
+ * 一键应用 AI 自愈建议，回写 UI 元素定位配置
+ * @param projectId 项目ID
+ * @param testCaseId 功能测试用例ID
+ * @param data 自愈配置
+ */
+export const applyHealingSuggestion = async (
+  projectId: number,
+  testCaseId: number,
+  data: {
+    element_id?: number | null;
+    element_name?: string;
+    suggested_locator_type: string;
+    suggested_locator_value: string;
+  }
+): Promise<{ success: boolean; data?: any; error?: string }> => {
+  const authStore = useAuthStore();
+  const accessToken = authStore.getAccessToken;
+
+  if (!accessToken) {
+    return {
+      success: false,
+      error: '未登录或会话已过期',
+    };
+  }
+
+  try {
+    const response = await axios.post(
+      `${API_BASE_URL}/projects/${projectId}/testcases/${testCaseId}/apply-healing/`,
+      data,
+      {
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+      }
+    );
+
+    const resData = response.data?.data || response.data;
+    return {
+      success: true,
+      data: resData,
+    };
+  } catch (error: any) {
+    console.error('应用自愈建议出错:', error);
+    return {
+      success: false,
+      error: error.response?.data?.error || error.response?.data?.message || error.message || '应用自愈建议失败',
+    };
+  }
 };

@@ -8,8 +8,9 @@ from .views import (
     UiPageStepsViewSet, UiPageStepsDetailedViewSet,
     UiTestCaseViewSet, UiCaseStepsDetailedViewSet,
     UiExecutionRecordViewSet, UiPublicDataViewSet, UiEnvironmentConfigViewSet,
-    ActuatorViewSet, UiBatchExecutionRecordViewSet, upload_screenshot, upload_trace,
-    trigger_batch_execution
+    UiAuthStateViewSet, ActuatorViewSet, UiBatchExecutionRecordViewSet,
+    upload_screenshot, upload_trace,
+    trigger_batch_execution, UiRecorderSessionViewSet
 )
 
 router = DefaultRouter()
@@ -23,8 +24,10 @@ router.register('case-steps', UiCaseStepsDetailedViewSet, basename='ui-case-step
 router.register('execution-records', UiExecutionRecordViewSet, basename='ui-execution-records')
 router.register('public-data', UiPublicDataViewSet, basename='ui-public-data')
 router.register('env-configs', UiEnvironmentConfigViewSet, basename='ui-env-configs')
+router.register('auth-states', UiAuthStateViewSet, basename='ui-auth-states')
 router.register('actuators', ActuatorViewSet, basename='ui-actuators')
 router.register('batch-records', UiBatchExecutionRecordViewSet, basename='ui-batch-records')
+router.register('recorder-sessions', UiRecorderSessionViewSet, basename='ui-recorder-sessions')
 
 urlpatterns = router.urls + [
     path('screenshots/upload/', upload_screenshot, name='ui-screenshot-upload'),

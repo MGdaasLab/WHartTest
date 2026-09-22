@@ -4,6 +4,47 @@ export type InterfaceType = 'http' | 'sql';
 export type HttpMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
 export type SqlMethod = 'fetchone' | 'fetchmany' | 'fetchall' | 'insert' | 'update' | 'delete';
 export type ApiBodyType = 'none' | 'form-data' | 'x-www-form-urlencoded' | 'raw' | 'binary';
+export type InterfaceStatus = 'self_testing' | 'integrating' | 'completed' | 'deprecated';
+
+export const DEFAULT_INTERFACE_STATUS: InterfaceStatus = 'self_testing';
+
+/** Single source of truth for interface lifecycle status (value/label/color). */
+export const INTERFACE_STATUS_OPTIONS = [
+  { value: 'self_testing', label: '自测中', color: 'orangered', buttonClass: 'status-self-testing' },
+  { value: 'integrating', label: '联调中', color: 'arcoblue', buttonClass: 'status-integrating' },
+  { value: 'completed', label: '已完成', color: 'green', buttonClass: 'status-completed' },
+  { value: 'deprecated', label: '已废弃', color: 'gray', buttonClass: 'status-deprecated' },
+] as const satisfies ReadonlyArray<{
+  value: InterfaceStatus;
+  label: string;
+  color: string;
+  buttonClass: string;
+}>;
+
+export type InterfaceStatusOption = (typeof INTERFACE_STATUS_OPTIONS)[number];
+
+export function getInterfaceStatusMeta(status?: string | null): InterfaceStatusOption | {
+  value: string;
+  label: string;
+  color: string;
+  buttonClass: string;
+} {
+  const found = INTERFACE_STATUS_OPTIONS.find((item) => item.value === status);
+  if (found) return found;
+  return { value: status || '', label: status || '-', color: 'gray', buttonClass: 'status-default' };
+}
+
+export function getInterfaceStatusLabel(
+  status?: string | null,
+  statusDisplay?: string | null,
+): string {
+  if (statusDisplay) return statusDisplay;
+  return getInterfaceStatusMeta(status).label;
+}
+
+export function getInterfaceStatusColor(status?: string | null): string {
+  return getInterfaceStatusMeta(status).color;
+}
 export type ExtractVariableType = 'temporary' | 'project';
 export type ExtractSource = 'response' | 'request';
 
@@ -49,6 +90,7 @@ export interface ApiInterface {
   url: string | null;
   headers: ApiKeyValuePair[];
   params: ApiKeyValuePair[];
+  path_params?: ApiKeyValuePair[];
   body: ApiRequestBody;
   file_ids: number[];
 
@@ -65,6 +107,10 @@ export interface ApiInterface {
   validators: any[];
   extract: Record<string, string>;
   extract_meta: ApiExtractMeta;
+
+  // Status
+  status?: InterfaceStatus;
+  status_display?: string;
 
   // Relationships
   project: number;

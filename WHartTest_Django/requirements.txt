@@ -294,6 +294,9 @@ pytest>=8.0.0
 # Pin to 1.57.0 so the Chromium revision (1200) is available on common mirrors.
 playwright==1.57.0
 
+# 验证码智能识别 OCR - MIT许可证
+ddddocr>=1.4.11
+
 # Browser Use CLI（Agent 浏览器 skill 驱动，替代 agent-browser）
 # https://github.com/browser-use/browser-use
 # 注意：browser-use 依赖版本钉死较多，不放进本文件，避免与 Django 主依赖冲突。

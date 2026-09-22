@@ -42,7 +42,6 @@ from runtime_env import (
     has_display_server,
     is_running_in_container,
     parse_bool_env,
-    should_force_headless,
 )
 
 try:
@@ -108,6 +107,7 @@ retry_count = 3
 step_interval = 500
 screenshot_dir = "./data/screenshots"
 max_concurrent = 3
+fail_fast = false
 
 [trace]
 enabled = true
@@ -145,7 +145,9 @@ class Config:
         
         # 浏览器配置
         self.browser_type = "chromium"
-        self.headless = container_mode
+        # 无头开关默认关闭（观看模式）：执行画面经画布帧流展示；
+        # 无显示环境（docker）下浏览器启动时自动回退无头（见 executor）。
+        self.headless = False
         self.persistent = not container_mode
         self.user_data_dir = "./data/browser"
         self.launch_timeout = 30
@@ -160,6 +162,8 @@ class Config:
         self.step_interval = 500
         self.screenshot_dir = "./data/screenshots"
         self.max_concurrent = 3  # 批量执行最大并发数
+        # 失败中断：定位不到元素时立即中断用例并上报，不再尝试后续步骤
+        self.fail_fast = False
         
         # Trace 配置
         self.trace_enabled = True
@@ -220,6 +224,7 @@ class Config:
             self.step_interval = execution.get('step_interval', self.step_interval)
             self.screenshot_dir = execution.get('screenshot_dir', self.screenshot_dir)
             self.max_concurrent = execution.get('max_concurrent', self.max_concurrent)
+            self.fail_fast = execution.get('fail_fast', self.fail_fast)
         
         # Trace 配置
         if 'trace' in data:
@@ -267,7 +272,7 @@ class Config:
                 setattr(self, attr_name, env_value)
 
     def normalize_for_runtime(self) -> None:
-        """根据运行环境修正配置，保证容器中可直接使用无头浏览器。"""
+        """根据运行环境修正配置，保证容器中可直接使用。"""
         if not is_running_in_container():
             return
 
@@ -275,9 +280,8 @@ class Config:
             logging.info("检测到容器内无显示服务，自动禁用 GUI 登录")
             self.use_gui = False
 
-        if should_force_headless() and not self.headless:
-            logging.info("检测到容器内无显示服务，自动启用无头模式")
-            self.headless = True
+        # 不再强制无头：容器内关闭无头开关（观看模式）时，执行画面走画布帧流，
+        # 浏览器启动层自动回退无头（executor._build_browser_launch_options）。
     
     def apply_args(self, args: argparse.Namespace) -> None:
         """应用命令行参数（覆盖配置文件）"""

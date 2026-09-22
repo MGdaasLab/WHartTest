@@ -24,6 +24,7 @@ from executor import (
 )
 from data_processor import reset_data_processor, DataProcessor
 from runtime_env import resolve_runtime_file_path
+from frame_stream import FrameStreamer, stream_enabled
 
 logger = logging.getLogger('actuator')
 
@@ -56,9 +57,12 @@ class TaskConsumer:
                 'user_data_dir': getattr(config, 'user_data_dir', './data/browser'),
                 'launch_timeout': launch_timeout * 1000,  # 转毫秒
                 'action_timeout': action_timeout * 1000,  # 转毫秒
+                'stealth_enabled': getattr(config, 'stealth_enabled', True),
+                'stealth_user_agent': getattr(config, 'stealth_user_agent', None),
                 'screenshot_dir': getattr(config, 'screenshot_dir', './data/screenshots'),
                 'retry_count': getattr(config, 'retry_count', 3),
                 'step_interval': getattr(config, 'step_interval', 500),
+                'fail_fast': getattr(config, 'fail_fast', False),
                 'viewport_width': getattr(config, 'viewport_width', 1280),
                 'viewport_height': getattr(config, 'viewport_height', 720),
                 # Trace 配置
@@ -72,6 +76,13 @@ class TaskConsumer:
         self.task_queue: asyncio.Queue[QueueModel] = asyncio.Queue()
         self._stop_event = asyncio.Event()
         self._current_user: Optional[str] = None
+        # 执行画面帧推流状态（仅单任务执行使用）
+        self._exec_frame_streamer: Optional[FrameStreamer] = None
+        self._exec_frame_case_id: int = 0
+        self._exec_frame_page_step_id: int = 0
+        # 观看模式：无头开关关闭（headless=False）时开启画布直播；
+        # 批量执行一律后台执行，不置位
+        self._exec_frame_requested: bool = False
 
         # 启动时清理过期文件（超过7天）
         self._cleanup_expired_files(
@@ -236,22 +247,22 @@ class TaskConsumer:
                         files=files,
                         timeout=60.0  # Trace 文件可能较大
                     )
-                    if response.status_code == 201:
-                        resp_data = response.json()
-                        # 响应被中间件包装，path 在 data 字段中
-                        inner_data = resp_data.get('data', resp_data)
-                        server_path = inner_data.get('path')
-                        logger.info(f"Trace 上传成功: {server_path}")
-                        # 清理本地 Trace 文件
-                        try:
-                            os.remove(trace_path)
-                            logger.debug(f"已清理本地 Trace: {trace_path}")
-                        except Exception as e:
-                            logger.warning(f"清理 Trace 失败: {e}")
-                        return server_path
-                    else:
-                        logger.error(f"Trace 上传失败: {response.status_code}")
-                        return None
+                if response.status_code == 201:
+                    resp_data = response.json()
+                    # 响应被中间件包装，path 在 data 字段中
+                    inner_data = resp_data.get('data', resp_data)
+                    server_path = inner_data.get('path')
+                    logger.info(f"Trace 上传成功: {server_path}")
+                    # 清理本地 Trace 文件
+                    try:
+                        os.remove(trace_path)
+                        logger.debug(f"已清理本地 Trace: {trace_path}")
+                    except Exception as e:
+                        logger.warning(f"清理 Trace 失败: {e}")
+                    return server_path
+                else:
+                    logger.error(f"Trace 上传失败: {response.status_code}")
+                    return None
         except Exception as e:
             logger.error(f"Trace 上传异常: {e}")
             return None
@@ -308,7 +319,17 @@ class TaskConsumer:
         
         # 记录发起用户
         self._current_user = socket_data.user
-        
+
+        # 停止请求不经任务队列：任务队列被长任务占用时（单消费者串行），
+        # 入队的停止请求要等当前任务结束才被处理——在接收循环立即执行，
+        # stop_now 关闭浏览器后，在途 Playwright 调用会快速失败（实测 <1s）
+        if socket_data.data.func_name == UiSocketEnum.STOP_EXECUTION:
+            try:
+                await self.stop_execution(socket_data.data.func_args or {})
+            except Exception as exc:
+                logger.warning(f"处理停止请求异常: {exc}")
+            return
+
         # 添加到任务队列
         await self.add_task(socket_data.data)
     
@@ -316,6 +337,18 @@ class TaskConsumer:
         """添加任务到队列"""
         await self.task_queue.put(task)
         logger.info(f"任务已入队: {task.func_name}")
+        if task.func_name == UiSocketEnum.TEST_CASE:
+            args = task.func_args or {}
+            await self.ws_client.send_result(
+                UiSocketEnum.TEST_CASE_ACK,
+                {
+                    'case_id': args.get('case_id'),
+                    'execution_request_id': args.get('execution_request_id'),
+                    'actuator_id': getattr(self.config, 'actuator_id', None),
+                    'env_config_id': args.get('env_config_id'),
+                },
+                self._current_user,
+            )
     
     async def process_tasks(self):
         """处理任务队列"""
@@ -361,6 +394,7 @@ class TaskConsumer:
         'action_timeout': 'action_timeout',
         'retry_count': 'retry_count',
         'step_interval': 'step_interval',
+        'fail_fast': 'fail_fast',
         'max_concurrent': 'max_concurrent',
         'log_level': 'log_level',
         'trace_enabled': 'trace_enabled',
@@ -403,6 +437,8 @@ class TaskConsumer:
                 self.executor.retry_count = int(args['retry_count'])
             if 'step_interval' in args:
                 self.executor.step_interval = int(args['step_interval'])
+            if 'fail_fast' in args:
+                self.executor.fail_fast = bool(args['fail_fast'])
             if 'viewport_width' in args or 'viewport_height' in args:
                 self.executor.default_viewport = {
                     "width": int(args.get('viewport_width', self.executor.default_viewport.get('width', 1280))),
@@ -458,7 +494,7 @@ class TaskConsumer:
         for key in ('browser_type', 'persistent', 'launch_timeout', 'action_timeout', 'headless', 'viewport_width', 'viewport_height'):
             if key in updates and updates[key] is not None:
                 browser[key] = updates[key]
-        for key in ('retry_count', 'step_interval', 'max_concurrent'):
+        for key in ('retry_count', 'step_interval', 'max_concurrent', 'fail_fast'):
             if key in updates and updates[key] is not None:
                 execution[key] = updates[key]
         # config.toml 中 trace 组键名为 enabled/screenshots/snapshots/sources
@@ -482,6 +518,122 @@ class TaskConsumer:
         except Exception as e:
             logger.error(f"写回 config.toml 失败: {e}")
     
+
+    def _resolve_task_runtime(self, args: dict, env_config: dict | None = None) -> dict:
+        """Prefer backend effective_runtime; otherwise local merge with same rules."""
+        from runtime_config import resolve_from_env_and_actuator
+
+        effective = args.get("effective_runtime")
+        if isinstance(effective, dict) and effective.get("browser"):
+            effective = dict(effective)
+            effective.setdefault("source_mode", "backend_resolve")
+            return effective
+
+        actuator_info = {
+            "browser_type": getattr(self.config, "browser_type", "chromium") if self.config else "chromium",
+            "headless": getattr(self.config, "headless", False) if self.config else False,
+            "action_timeout": getattr(self.config, "action_timeout", 30) if self.config else 30,
+            "default_browser": getattr(self.config, "browser_type", "chromium") if self.config else "chromium",
+            "max_concurrent": getattr(self.config, "max_concurrent", 3) if self.config else 3,
+        }
+        run_options = args.get("run_options") if isinstance(args.get("run_options"), dict) else None
+        return resolve_from_env_and_actuator(
+            env=env_config,
+            actuator_info=actuator_info,
+            run_options=run_options,
+            source_mode="local_merge",
+        )
+
+    async def _resolve_auth(self, env_config_id, auth_state_id=None) -> Optional[dict]:
+        """解析执行注入的登录态：优先步骤绑定 auth_state_id；未绑定则返回 None
+        （不注入，也不回落环境生效登录态）——用例内未绑定步骤执行器按"向上匹配"
+        沿用上一个已绑定步骤的登录态。"""
+        if auth_state_id:
+            try:
+                data = await self._api_get(f"/api/ui-automation/auth-states/{auth_state_id}/")
+            except Exception as exc:
+                logger.warning(f"拉取步骤绑定登录态失败: {exc}")
+                data = None
+            if isinstance(data, dict) and isinstance(data.get('state_json'), dict):
+                logger.info(f"使用步骤绑定登录态 auth_state_id={auth_state_id}")
+                return {'storage_state': data['state_json']}
+        return None
+
+    async def _runtime_for_executor(self, effective: dict, args: dict | None = None) -> dict:
+        opts = {
+            "browser": effective.get("browser"),
+            "headless": effective.get("headless"),
+            "timeout": effective.get("timeout"),
+            "viewport_width": effective.get("viewport_width"),
+            "viewport_height": effective.get("viewport_height"),
+            "viewport_explicit": effective.get("viewport_explicit", False),
+        }
+        if args:
+            if "auth" in args:
+                # 显式指定（auth=None 表示不注入登录态；dict 为自定义认证配置）
+                opts["auth"] = args.get("auth")
+            else:
+                # 未指定时按环境配置自动拉取平台保存的生效登录态
+                opts["auth"] = await self._resolve_auth(args.get("env_config_id"), args.get("auth_state_id"))
+        return opts
+
+    # ------------------------------------------------------------------
+    # 执行画面帧推流（仅单用例/单页面步骤执行挂载；批量执行不挂载）
+    # ------------------------------------------------------------------
+
+    async def _start_exec_frame(self) -> None:
+        """注册页面就绪回调：浏览器会话进入后创建 FrameStreamer 推流。
+
+        仅观看模式（无头开关关闭）时开启；批量执行/无头执行不推流。
+        """
+        self._exec_frame_streamer = None
+        if not self._exec_frame_requested or not stream_enabled() or self.executor is None:
+            return
+
+        async def _on_page(page):
+            # 帧采集为旁路：任何异常都不允许影响用例执行
+            try:
+                # 组间切换登录态会重建 context（页面更换）→ 旧 streamer 的 CDP
+                # 会话已随旧页面失效，先停掉再挂新页面，避免泄漏采集循环
+                old_streamer, self._exec_frame_streamer = self._exec_frame_streamer, None
+                if old_streamer is not None:
+                    try:
+                        await old_streamer.stop()
+                    except Exception:
+                        pass
+                streamer = FrameStreamer(page, self._push_exec_frame)
+                await streamer.start()
+                self._exec_frame_streamer = streamer
+                logger.info('[frame_stream] 已开启执行画面推流（%s）', page.url)
+            except Exception as e:
+                logger.warning('[frame_stream] 帧采集启动失败，跳过推流: %s', e)
+
+        self.executor.on_execution_page = _on_page
+
+    async def _stop_exec_frame(self) -> None:
+        """停止帧推流并解绑钩子（幂等）。"""
+        if self.executor is not None:
+            self.executor.on_execution_page = None
+        streamer, self._exec_frame_streamer = self._exec_frame_streamer, None
+        self._exec_frame_requested = False
+        if streamer is not None:
+            await streamer.stop()
+
+    async def _push_exec_frame(self, w: int, h: int, data: str) -> None:
+        """帧上报：复用执行器上行 WS 连接，直推发起用户（Django 侧按 user 转发）。"""
+        try:
+            await self.ws_client.send_result(
+                UiSocketEnum.EXEC_FRAME,
+                {
+                    'case_id': self._exec_frame_case_id,
+                    'page_step_id': self._exec_frame_page_step_id,
+                    'frame': {'w': w, 'h': h, 'data': data},
+                },
+                self._current_user,
+            )
+        except Exception as e:
+            logger.debug('[frame_stream] 帧上报失败: %s', e)
+
     async def execute_page_steps(self, args: dict):
         """执行页面步骤"""
         page_step_id = args.get('page_step_id')
@@ -516,14 +668,25 @@ class TaskConsumer:
         
         # 构建配置，传入 base_url 和数据处理器
         config = self._build_page_step_config(page_step_data, base_url, data_processor, env_config)
+        # 步骤绑定的登录态（execute-data 已带）→ 并入任务 auth 解析
+        args['auth_state_id'] = args.get('auth_state_id') or getattr(config, 'auth_state_id', None)
         
         # 执行（使用同一浏览器会话）
         logger.info(f"开始执行页面步骤: {config.page_name}")
         
         step_results = None
         summary_result = None
+        start_time = time.time()
+        effective = self._resolve_task_runtime(args, env_config)
+        runtime_opts = await self._runtime_for_executor(effective, args)
+        previous = self.executor.apply_runtime_options(runtime_opts)
+        logger.info(f"runtime options: {runtime_opts}")
+        # 执行画面帧推流：无头开关关闭（观看模式）时经画布直播；批量执行不挂载
+        self._exec_frame_case_id = 0
+        self._exec_frame_page_step_id = page_step_id
+        self._exec_frame_requested = not bool(runtime_opts.get('headless', True))
+        await self._start_exec_frame()
         try:
-            start_time = time.time()
             try:
                 await self._materialize_page_step_uploads(config, project_id)
             except Exception as e:
@@ -545,11 +708,11 @@ class TaskConsumer:
                 )
                 return
             step_results = await self.executor.execute_page_step(config)
-            
+
             # 统计结果
             passed_steps = sum(1 for r in step_results if r.status == 'success')
             failed_steps = len(step_results) - passed_steps
-            
+
             # 处理截图为 Base64 并发送步骤结果
             import os
             for result in step_results:
@@ -573,7 +736,7 @@ class TaskConsumer:
                     result.model_dump(),
                     self._current_user
                 )
-            
+
             # 发送页面步骤执行汇总结果
             summary_result = {
                 'page_step_id': page_step_id,
@@ -585,20 +748,27 @@ class TaskConsumer:
                 'duration': time.time() - start_time,
                 'steps': [r.model_dump() for r in step_results],
             }
-            
+            summary_result['effective_runtime'] = effective
+            summary_result['environment'] = effective
+            if isinstance(effective, dict) and effective.get('actuator_id'):
+                summary_result['actuator_id'] = effective.get('actuator_id')
+
             await self.ws_client.send_result(
                 'u_page_step_result',  # 新增的结果类型
                 summary_result,
                 self._current_user
             )
+
             logger.info("页面步骤执行完成")
         finally:
+            self.executor.restore_runtime_options(previous)
             # 异常路径也必须释放 base64 / 主动回收，避免 worker RSS 居高不下
             if step_results is not None:
                 self._release_result_payloads(steps=step_results)
             summary_result = None
             await self._release_memory_after_task()
-    
+            await self._stop_exec_frame()
+
     async def execute_test_case(self, args: dict):
         """执行测试用例"""
         case_id = args.get('case_id')
@@ -606,6 +776,7 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
+        execution_request_id = args.get('execution_request_id')
         
         if not case_id:
             logger.error("缺少case_id参数")
@@ -637,11 +808,26 @@ class TaskConsumer:
 
         # 构建配置（传入数据处理器进行变量替换）
         config = self._build_test_case_config(case_data, env_config, data_processor)
+        # 每组步骤绑定的登录态：解析后交由执行器按组切换（绑定一致则复用不清理）
+        _env_auth_id = env_config.get('id') if isinstance(env_config, dict) else args.get('env_config_id')
+        for _ps in config.page_steps:
+            _ps.auth = await self._resolve_auth(_env_auth_id, _ps.auth_state_id)
 
         # 执行
-        logger.info(f"开始执行用例: {config.case_name}")
+        effective = self._resolve_task_runtime(args, env_config)
+        runtime_opts = await self._runtime_for_executor(effective, args)
+        previous = self.executor.apply_runtime_options(runtime_opts)
+        logger.info(
+            f"开始执行用例: {config.case_name}, runtime="
+            f"{runtime_opts.get('browser')}/headless={runtime_opts.get('headless')}/timeout={runtime_opts.get('timeout')}"
+        )
         result = None
         result_data = None
+        # 执行画面帧推流：无头开关关闭（观看模式）时经画布直播；批量执行不挂载
+        self._exec_frame_case_id = case_id
+        self._exec_frame_page_step_id = 0
+        self._exec_frame_requested = not bool(runtime_opts.get('headless', True))
+        await self._start_exec_frame()
         try:
             try:
                 await self._materialize_test_case_uploads(config, project_id)
@@ -651,6 +837,7 @@ class TaskConsumer:
                     UiSocketEnum.CASE_RESULT,
                     {
                         'case_id': case_id,
+                        'execution_request_id': execution_request_id,
                         'status': 'failed',
                         'message': f'准备上传文件失败: {e}',
                         'batch_id': batch_id,
@@ -675,6 +862,12 @@ class TaskConsumer:
 
             # 发送用例结果（包含 batch_id 和执行人信息）
             result_data = result.model_dump()
+            result_data['execution_request_id'] = execution_request_id
+            # attach effective runtime snapshot for backend environment field
+            result_data['effective_runtime'] = effective
+            result_data['environment'] = effective
+            if isinstance(effective, dict) and effective.get('actuator_id'):
+                result_data['actuator_id'] = effective.get('actuator_id')
             if batch_id:
                 result_data['batch_id'] = batch_id
             # 添加执行人信息
@@ -682,7 +875,7 @@ class TaskConsumer:
                 result_data['executor_id'] = executor_id
             if executor_name:
                 result_data['executor_name'] = executor_name
-                
+
             await self.ws_client.send_result(
                 UiSocketEnum.CASE_RESULT,
                 result_data,
@@ -691,11 +884,13 @@ class TaskConsumer:
 
             logger.info(f"用例执行完成: {result.status}")
         finally:
+            self.executor.restore_runtime_options(previous)
             # 结果已发送（或中途失败）：释放截图 base64 等大对象并回收内存
             if result is not None:
                 self._release_result_payloads(result)
             result_data = None
             await self._release_memory_after_task()
+            await self._stop_exec_frame()
     
     async def execute_batch(self, args: dict):
         """批量执行用例（支持并发）"""
@@ -776,6 +971,10 @@ class TaskConsumer:
 
                 # 发送结果
                 result_data = result.model_dump()
+                result_data['effective_runtime'] = effective
+                result_data['environment'] = effective
+                if effective.get('actuator_id'):
+                    result_data['actuator_id'] = effective.get('actuator_id')
                 if batch_id:
                     result_data['batch_id'] = batch_id
                 # 添加执行人信息
@@ -793,6 +992,10 @@ class TaskConsumer:
                 self._release_result_payloads(result)
 
         # 并发执行
+        effective = self._resolve_task_runtime(args, configs[0].env_config if configs else None)
+        runtime_opts = await self._runtime_for_executor(effective, args)
+        previous = self.executor.apply_runtime_options(runtime_opts)
+        logger.info(f"batch runtime options: {runtime_opts}")
         try:
             await self.executor.execute_batch_concurrent(
                 configs,
@@ -801,12 +1004,13 @@ class TaskConsumer:
             )
             logger.info("批量执行完成")
         finally:
+            self.executor.restore_runtime_options(previous)
             await self._release_memory_after_task()
     
     async def stop_execution(self, args: dict):
-        """停止执行"""
-        logger.info("收到停止执行请求")
-        self.executor.stop()
+        """停止执行：置停止标志并立即硬中断（前端关闭执行画布时触发）"""
+        logger.info("收到停止执行请求，立即中断执行")
+        await self.executor.stop_now()
         # 清空任务队列
         while not self.task_queue.empty():
             try:
@@ -1305,7 +1509,6 @@ class TaskConsumer:
                 input_value = str(input_value) if input_value else ''
             else:
                 input_value = str(ope_value) if ope_value else ''
-            
             # 定位器值也可能包含变量
             locator_value = detail.get('locator_value', '')
             locator_value_2 = detail.get('locator_value_2', '')
@@ -1326,19 +1529,19 @@ class TaskConsumer:
                 locator_value = data_processor.replace(locator_value)
                 if original_locator != locator_value:
                     logger.info(f"变量替换 (定位器): '{original_locator}' -> '{locator_value}'")
-
+                
                 if locator_value_2:
                     original_locator_2 = locator_value_2
                     locator_value_2 = data_processor.replace(locator_value_2)
                     if original_locator_2 != locator_value_2:
                         logger.info(f"变量替换 (定位器2): '{original_locator_2}' -> '{locator_value_2}'")
-
+                
                 if locator_value_3:
                     original_locator_3 = locator_value_3
                     locator_value_3 = data_processor.replace(locator_value_3)
                     if original_locator_3 != locator_value_3:
                         logger.info(f"变量替换 (定位器3): '{original_locator_3}' -> '{locator_value_3}'")
-                
+
                 # 确保替换后的值是字符串类型
                 if not isinstance(input_value, str):
                     input_value = str(input_value)
@@ -1362,12 +1565,12 @@ class TaskConsumer:
                 if not isinstance(iframe_locator, str):
                     iframe_locator = str(iframe_locator)
 
-            def _parse_index(value):
-                if value is None or value == '':
+            def _parse_index(val):
+                if val is None or val == '':
                     return None
                 try:
-                    return int(value)
-                except (TypeError, ValueError):
+                    return int(val)
+                except (ValueError, TypeError):
                     return None
 
 
@@ -1403,7 +1606,7 @@ class TaskConsumer:
                 wait_time=detail.get('wait_time', 0),
                 is_iframe=is_iframe,
                 iframe_locator=iframe_locator,
-                locator_index=detail.get('locator_index'),
+                locator_index=_parse_index(detail.get('locator_index')),
                 locator_type_2=detail.get('locator_type_2'),
                 locator_value_2=locator_value_2 or None,
                 locator_index_2=_parse_index(detail.get('locator_index_2')),
@@ -1417,6 +1620,7 @@ class TaskConsumer:
                 upload_project_id=upload_project_id,
                 upload_file_sha=(ope_value.get('sha256') or ope_value.get('file_sha') or None) if isinstance(ope_value, dict) else None,
                 upload_file_size=self._parse_file_id(ope_value.get('size')) if isinstance(ope_value, dict) else None,
+                ope_value=ope_value,
             ))
         
         # 页面URL处理：支持相对路径与 base_url 拼接
@@ -1444,6 +1648,7 @@ class TaskConsumer:
             page_name=data.get('name', ''),  # 页面步骤名称
             steps=steps,
             env_config=env_config,
+            auth_state_id=data.get('auth_state_id') or data.get('auth_state'),
         )
     
     def _build_test_case_config(self, data: dict, env_config: Optional[dict] = None, data_processor: Optional[DataProcessor] = None) -> TestCaseConfig:

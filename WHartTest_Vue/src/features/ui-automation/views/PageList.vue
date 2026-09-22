@@ -115,6 +115,8 @@
       :title="`元素管理 - ${currentPage?.name || ''}`"
       :width="800"
       :footer="false"
+      class="element-drawer"
+      body-class="element-drawer-body"
     >
       <ElementList v-if="currentPage" :page="currentPage" />
     </a-drawer>

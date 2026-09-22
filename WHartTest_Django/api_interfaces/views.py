@@ -130,6 +130,18 @@ class ApiInterfaceViewSet(BaseModelViewSet):
         strip_base_url = _parse_bool(request.data.get('strip_base_url'), default=True)
         create_environments = _parse_bool(request.data.get('create_environments'), default=False)
 
+        # 导入位置模式：create_module（创建新模块）/ existing_module（使用已有模块）
+        import_mode = str(request.data.get('import_mode') or '').strip()
+        if import_mode in ('', 'auto', 'legacy'):
+            import_mode = ''
+        import_mode = import_mode or None
+        module_name = str(request.data.get('module_name') or '')
+        try:
+            target_module_id = request.data.get('module_id', request.data.get('target_module_id'))
+            target_module_id = int(target_module_id) if target_module_id not in (None, '') else None
+        except (TypeError, ValueError):
+            target_module_id = None
+
         try:
             if source_url:
                 content, filename = fetch_api_document(str(source_url))
@@ -159,6 +171,9 @@ class ApiInterfaceViewSet(BaseModelViewSet):
                 view=self,
                 strip_base_url=strip_base_url,
                 create_environments=create_environments,
+                import_mode=import_mode,
+                module_name=module_name,
+                target_module_id=target_module_id,
             )
             result['format'] = parsed.source_format
             result['version'] = parsed.source_version
@@ -267,17 +282,11 @@ class ApiInterfaceViewSet(BaseModelViewSet):
     def duplicate(self, request, *args, **kwargs):
         """Duplicate an interface in the same project/module."""
         source = self.get_object()
-        project_pk = self.kwargs.get('project_pk')
 
         base_name = request.data.get('name') or f"{source.name} 副本"
-        candidate_name = base_name
-        suffix = 2
-        while ApiInterface.objects.filter(project_id=project_pk, name=candidate_name).exists():
-            candidate_name = f"{base_name} {suffix}"
-            suffix += 1
 
         duplicate_data = {
-            'name': candidate_name,
+            'name': base_name,
             'type': source.type,
             'method': source.method,
             'url': source.url,
@@ -510,6 +519,7 @@ class ApiInterfaceViewSet(BaseModelViewSet):
                 'url': request.data.get('url', ''),
                 'headers': request.data.get('headers', {}),
                 'params': request.data.get('params', {}),
+                'path_params': request.data.get('path_params', []),
                 'body': request.data.get('body', {}),
             })
         elif interface_type == 'sql':

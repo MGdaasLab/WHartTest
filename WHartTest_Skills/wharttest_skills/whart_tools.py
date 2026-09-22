@@ -231,7 +231,8 @@ def get_testcase_detail(project_id: int, case_id: int):
 
 def add_testcase(project_id: int, module_id: int, name: str, level: str = "P1",
                  precondition: str = "无", steps: list = None, notes: str = "",
-                 review_status: str = "pending_review", test_type: str = "functional"):
+                 review_status: str = "pending_review", test_type: str = "functional",
+                 ui_test_case_id: int = None, execution_mode: str = None):
     """新增测试用例"""
     url = f"{_base_url()}/api/projects/{project_id}/testcases/"
     data = {
@@ -244,6 +245,10 @@ def add_testcase(project_id: int, module_id: int, name: str, level: str = "P1",
         "review_status": review_status,
         "test_type": test_type
     }
+    if ui_test_case_id is not None:
+        data["ui_test_case"] = ui_test_case_id
+    if execution_mode is not None:
+        data["execution_mode"] = execution_mode
     try:
         resp = requests.post(url, headers=_headers(), json=data)
         resp.raise_for_status()
@@ -257,7 +262,8 @@ def add_testcase(project_id: int, module_id: int, name: str, level: str = "P1",
 
 def edit_testcase(project_id: int, case_id: int, name: str = None, level: str = None,
                   module_id: int = None, precondition: str = None, steps: list = None, notes: str = None,
-                  review_status: str = None, test_type: str = None, is_optimization: bool = False):
+                  review_status: str = None, test_type: str = None, is_optimization: bool = False,
+                  ui_test_case_id: int = None, execution_mode: str = None):
     """编辑测试用例"""
     url = f"{_base_url()}/api/projects/{project_id}/testcases/{case_id}/"
     data = {}
@@ -268,6 +274,8 @@ def edit_testcase(project_id: int, case_id: int, name: str = None, level: str = 
     if steps is not None: data["steps"] = steps
     if notes is not None: data["notes"] = notes
     if test_type is not None: data["test_type"] = test_type
+    if ui_test_case_id is not None: data["ui_test_case"] = ui_test_case_id
+    if execution_mode is not None: data["execution_mode"] = execution_mode
 
     # 处理优化工作流
     if is_optimization:
@@ -761,7 +769,8 @@ ACTIONS = {
         add_testcase(
             args.project_id, args.module_id, args.name, args.level,
             args.precondition or "", _parse_steps(args.steps), args.notes or "",
-            args.review_status or "pending_review", args.test_type or "functional"
+            args.review_status or "pending_review", args.test_type or "functional",
+            args.ui_test_case_id, args.execution_mode
         )
     ),
     "edit_testcase": lambda args: (
@@ -769,7 +778,8 @@ ACTIONS = {
         edit_testcase(
             args.project_id, args.case_id, args.name, args.level, args.module_id,
             args.precondition, _parse_steps(args.steps) if args.steps else None, args.notes,
-            args.review_status, args.test_type, args.is_optimization
+            args.review_status, args.test_type, args.is_optimization,
+            args.ui_test_case_id, args.execution_mode
         )
     ),
     "upload_screenshot": lambda args: upload_screenshot(
@@ -824,6 +834,8 @@ def main():
     parser.add_argument("--page_url", help="页面URL")
     parser.add_argument("--review_status", help="审核状态 (pending_review/approved/needs_optimization/optimization_pending_review/unavailable)")
     parser.add_argument("--test_type", help="测试类型 (smoke/functional/boundary/exception/permission/security/compatibility)", default="functional")
+    parser.add_argument("--ui_test_case_id", type=int, help="绑定的UI自动化用例ID")
+    parser.add_argument("--execution_mode", help="默认执行模式 (hybrid/script_only/ai_only)")
     parser.add_argument("--is_optimization", action="store_true", help="是否为优化操作（自动设置状态为optimization_pending_review）")
     parser.add_argument("--page", type=int, default=1, help="页码")
     parser.add_argument("--page_size", type=int, default=20, help="每页数量")

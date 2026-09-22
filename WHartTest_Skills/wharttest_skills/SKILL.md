@@ -12,7 +12,7 @@ description: WHartTest测试管理平台工具集。用于管理项目、模块�
 export WHARTTEST_BACKEND_URL="http://your-backend:8000"
 export WHARTTEST_API_KEY="your-api-key"
 
-# 执行操作
+# 执行操作（支持 whart_tools.py 与 whart_test_tools.py 别名）
 python whart_tools.py --action <action_name> [--参数名 参数值]
 ```
 
@@ -33,8 +33,8 @@ python whart_tools.py --action <action_name> [--参数名 参数值]
 | `get_levels` | 获取用例等级列表 | 无 |
 | `get_testcases` | 获取模块下的用例列表 | `--project_id`, `--module_id` |
 | `get_testcase_detail` | 获取用例详情 | `--project_id`, `--case_id` |
-| `add_testcase` | 新增测试用例 | `--project_id`, `--module_id`, `--name`, `--level`, `--precondition`, `--steps`, `--notes`, `--review_status`, `--test_type` |
-| `edit_testcase` | 编辑测试用例 | `--project_id`, `--case_id`, `--name`, `--level`, `--module_id`, `--precondition`, `--steps`, `--notes`, `--review_status`, `--test_type`, `--is_optimization` |
+| `add_testcase` | 新增测试用例 | `--project_id`, `--module_id`, `--name`, `--level`, `--precondition`, `--steps`, `--notes`, `--review_status`, `--test_type`, `--ui_test_case_id`, `--execution_mode` |
+| `edit_testcase` | 编辑测试用例（支持关联/解绑 UI 自动化用例） | `--project_id`, `--case_id`, `--name`, `--level`, `--module_id`, `--precondition`, `--steps`, `--notes`, `--review_status`, `--test_type`, `--ui_test_case_id`, `--execution_mode`, `--is_optimization` |
 
 ### 截图管理
 
@@ -69,6 +69,14 @@ python whart_tools.py --action <action_name> [--参数名 参数值]
 
 **设置布尔值**：`--auto_delete_on_unbind` 与 `--auto_delete_zero_refs` 使用 `true` / `false`。
 
+### 绑定的 UI 自动化用例与执行模式
+
+- `--ui_test_case_id`：绑定的 UI 自动化用例 ID（整数）。若传已存在的 UI 用例 ID 则建立关联；传空或解除关联时可传对应值。
+- `--execution_mode`：用例默认执行模式，可选值：
+  - `hybrid` - 智能双模执行（脚本优先 + 失败自动介入自愈，默认）
+  - `script_only` - 仅执行 UI 自动化脚本
+  - `ai_only` - 纯 AI 探索执行
+
 ### 审核状态
 
 `--review_status` 可选值：
@@ -90,8 +98,8 @@ python whart_tools.py --action <action_name> [--参数名 参数值]
 - `compatibility` - 兼容性测试
 
 `--is_optimization` 标志（布尔型，无需传值）：在 edit_testcase 时带上此标志，会自动将状态设为 `optimization_pending_review`（优化待审核），用于AI优化后的用例提交。**一次调用即可完成编辑+状态更新。**
-- ✅ 正确用法：`python whart_tools.py --action edit_testcase --project_id 1 --case_id 51 ... --is_optimization`
-- ❌ 错误用法：`--is_optimization true`（不要传值）
+- 正确用法：`python whart_tools.py --action edit_testcase --project_id 1 --case_id 51 ... --is_optimization`
+- 错误用法：`--is_optimization true`（不要传值）
 
 ## 使用示例
 

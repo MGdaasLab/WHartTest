@@ -5,7 +5,6 @@
       <a-button type="primary" @click="showAddForm">{{ pageText.addRemoteMcp }}</a-button>
     </div>
 
-    <!-- 远程MCP配置列表 -->
     <a-card class="content-card">
       <a-table
         :data="mcpConfigs"
@@ -62,16 +61,14 @@
         </template>
       </a-table>
 
-      <!-- 调试信息 -->
       <div v-if="mcpConfigs.length === 0 && !loading" class="empty-data">
         <p>{{ pageText.noData }}</p>
       </div>
-      <div v-if="mcpConfigs.length > 0" class="debug-info" style="margin-top: 10px; font-size: 12px; color: var(--theme-text-tertiary);">
+      <div v-if="mcpConfigs.length > 0" class="debug-info">
         <p>{{ pageText.currentDataCount(mcpConfigs.length) }}</p>
       </div>
     </a-card>
 
-    <!-- 添加/编辑远程MCP配置的弹窗 -->
     <a-modal
       v-model:visible="modalVisible"
       :title="isEditing ? pageText.editRemoteMcpTitle : pageText.addRemoteMcpTitle"
@@ -107,7 +104,6 @@
       </a-form>
     </a-modal>
 
-    <!-- 删除确认弹窗 -->
     <a-modal
       v-model:visible="deleteModalVisible"
       :title="pageText.deleteConfirmTitle"
@@ -130,7 +126,7 @@ import {
   IconDelete,
   IconEye,
   IconEyeInvisible,
-  IconLink
+  IconLink,
 } from '@arco-design/web-vue/es/icon';
 import {
   fetchRemoteMcpConfigs,
@@ -138,7 +134,7 @@ import {
   updateRemoteMcpConfig,
   deleteRemoteMcpConfig,
   pingRemoteMcpConfig,
-  type RemoteMcpConfig
+  type RemoteMcpConfig,
 } from '@/services/remoteMcpConfigService';
 import { useAppI18n } from '@/composables/useAppI18n';
 
@@ -249,7 +245,6 @@ const pageText = computed(() => (
       }
 ));
 
-// 表格数据和加载状态
 const mcpConfigs = ref<RemoteMcpConfig[]>([]);
 const loading = ref(false);
 const pagination = reactive({
@@ -258,7 +253,6 @@ const pagination = reactive({
   total: 0,
 });
 
-// 表格列定义
 const columns = computed(() => [
   {
     title: pageText.value.nameColumn,
@@ -285,13 +279,12 @@ const columns = computed(() => [
   },
 ]);
 
-// 表单数据和验证规则
 const formRef = ref();
 const formData = reactive({
   id: undefined as number | undefined,
   name: '',
   url: '',
-  transport: 'streamable_http',
+  transport: 'streamable_http' as RemoteMcpConfig['transport'],
   headersStr: '',
   is_active: true,
 });
@@ -302,8 +295,8 @@ const formRules = computed(() => ({
     { required: true, message: pageText.value.urlRequired },
     {
       match: /^https?:\/\/.+/,
-      message: pageText.value.urlInvalid
-    }
+      message: pageText.value.urlInvalid,
+    },
   ],
   headersStr: [
     {
@@ -316,29 +309,23 @@ const formRules = computed(() => ({
           return false;
         }
       },
-      message: pageText.value.headersInvalid
-    }
-  ]
+      message: pageText.value.headersInvalid,
+    },
+  ],
 }));
 
-// 弹窗状态
 const modalVisible = ref(false);
 const deleteModalVisible = ref(false);
 const isEditing = ref(false);
 const currentConfig = ref<RemoteMcpConfig | null>(null);
 
-// 加载远程MCP配置列表
 const loadMcpConfigs = async () => {
   loading.value = true;
   try {
-    console.log('开始加载MCP配置数据...');
     const data = await fetchRemoteMcpConfigs();
-    console.log('API返回的原始数据:', data);
     mcpConfigs.value = Array.isArray(data) ? data : [];
     pagination.total = mcpConfigs.value.length;
-    console.log('处理后的MCP配置数据:', mcpConfigs.value);
   } catch (error) {
-    console.error('获取远程MCP配置列表失败:', error);
     Message.error(pageText.value.fetchListFailed);
     mcpConfigs.value = [];
     pagination.total = 0;
@@ -347,7 +334,6 @@ const loadMcpConfigs = async () => {
   }
 };
 
-// 分页相关方法
 const onPageChange = (page: number) => {
   pagination.current = page;
 };
@@ -356,7 +342,6 @@ const onPageSizeChange = (pageSize: number) => {
   pagination.pageSize = pageSize;
 };
 
-// 格式化日期
 const formatDate = (dateStr?: string) => {
   if (!dateStr) return '-';
   const date = new Date(dateStr);
@@ -365,11 +350,10 @@ const formatDate = (dateStr?: string) => {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
-    minute: '2-digit'
+    minute: '2-digit',
   });
 };
 
-// 显示添加表单
 const showAddForm = () => {
   isEditing.value = false;
   formData.id = undefined;
@@ -381,7 +365,6 @@ const showAddForm = () => {
   modalVisible.value = true;
 };
 
-// 显示编辑表单
 const showEditForm = (record: RemoteMcpConfig) => {
   isEditing.value = true;
   formData.id = record.id;
@@ -393,13 +376,11 @@ const showEditForm = (record: RemoteMcpConfig) => {
   modalVisible.value = true;
 };
 
-// 关闭表单弹窗
 const closeModal = () => {
   formRef.value?.resetFields();
   modalVisible.value = false;
 };
 
-// 提交表单
 const handleSubmit = async (done: (closed: boolean) => void) => {
   const result = await formRef.value?.validate();
   if (result) {
@@ -422,43 +403,39 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
     const configData: RemoteMcpConfig = {
       name: formData.name,
       url: formData.url,
-      transport: formData.transport as RemoteMcpConfig['transport'],
+      transport: formData.transport,
       headers,
-      is_active: formData.is_active
+      is_active: formData.is_active,
     };
 
     if (isEditing.value && formData.id) {
-      // 更新配置
       await updateRemoteMcpConfig(formData.id, configData);
       Message.success(pageText.value.updateSuccess);
     } else {
-      // 创建新配置
       await createRemoteMcpConfig(configData);
       Message.success(pageText.value.createSuccess);
     }
 
-    await loadMcpConfigs(); // 重新加载列表
-    done(true); // 关闭弹窗
+    await loadMcpConfigs();
+    done(true);
   } catch (error) {
     Message.error(isEditing.value ? pageText.value.updateFailed : pageText.value.createFailed);
-    done(false); // 不关闭弹窗
+    done(false);
   }
 };
 
-// 显示删除确认弹窗
 const showDeleteConfirm = (record: RemoteMcpConfig) => {
   currentConfig.value = record;
   deleteModalVisible.value = true;
 };
 
-// 处理删除操作
 const handleDelete = async () => {
   if (!currentConfig.value?.id) return;
 
   try {
     await deleteRemoteMcpConfig(currentConfig.value.id);
     Message.success(pageText.value.deleteSuccess);
-    await loadMcpConfigs(); // 重新加载列表
+    await loadMcpConfigs();
   } catch (error) {
     Message.error(pageText.value.deleteFailed);
   } finally {
@@ -466,26 +443,23 @@ const handleDelete = async () => {
   }
 };
 
-// 切换配置状态
 const toggleStatus = async (record: RemoteMcpConfig) => {
   if (!record.id) return;
 
   try {
     await updateRemoteMcpConfig(record.id, {
-      is_active: !record.is_active
+      is_active: !record.is_active,
     });
     Message.success(record.is_active ? pageText.value.disableSuccess : pageText.value.enableSuccess);
-    await loadMcpConfigs(); // 重新加载列表
+    await loadMcpConfigs();
   } catch (error) {
     Message.error(record.is_active ? pageText.value.disableFailed : pageText.value.enableFailed);
   }
 };
 
-// 添加ping功能
 const pingConfig = async (record: RemoteMcpConfig) => {
   if (!record.id) return;
 
-  // 设置当前记录的pinging状态为true
   mcpConfigs.value = mcpConfigs.value.map(config =>
     config.id === record.id ? { ...config, pinging: true } : config
   );
@@ -505,14 +479,12 @@ const pingConfig = async (record: RemoteMcpConfig) => {
   } catch (error) {
     Message.error(pageText.value.connectivityCheckFailed);
   } finally {
-    // 重置pinging状态
     mcpConfigs.value = mcpConfigs.value.map(config =>
       config.id === record.id ? { ...config, pinging: false } : config
     );
   }
 };
 
-// 组件挂载时加载数据
 onMounted(() => {
   loadMcpConfigs();
 });
@@ -532,5 +504,11 @@ onMounted(() => {
 
 .content-card {
   margin-bottom: 16px;
+}
+
+.debug-info {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--theme-text-tertiary);
 }
 </style>

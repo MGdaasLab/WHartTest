@@ -274,8 +274,6 @@ const handleDrop = async (e: DragEvent) => {
               type="text"
               size="mini"
               class="module-tree__toggle-btn !w-4 !h-4 !p-0 !min-w-0"
-              :disabled="displayMode === 'detail' ? !module.children?.length && !interfaces.length : !module.children?.length"
-              :class="{ 'module-tree__toggle-btn--disabled': displayMode === 'detail' ? !module.children?.length && !interfaces.length : !module.children?.length }"
               @click.stop="emit('toggle-expand', module.id)"
             >
               <template #icon>
@@ -429,11 +427,6 @@ const handleDrop = async (e: DragEvent) => {
 .module-tree__toggle-btn:hover,
 .module-tree__action-btn:hover {
   color: var(--module-action-hover) !important;
-}
-
-.module-tree__toggle-btn--disabled {
-  opacity: 0.3;
-  cursor: not-allowed !important;
 }
 
 .module-tree__interface-item {

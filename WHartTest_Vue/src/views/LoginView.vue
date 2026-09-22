@@ -225,8 +225,8 @@ const featureTags = computed(() => {
     return configTags
   }
   return isEnglish.value
-    ? ['AI generation', 'RAG knowledge base', 'MCP tool calling', 'Skills library', 'Playwright automation', 'LangGraph']
-    : ['AI 智能生成', 'RAG 知识库', 'MCP 工具调用', 'Skills 技能库', 'Playwright 自动化', 'LangGraph']
+    ? ['AI generation', 'RAG knowledge base', 'MCP tool calling', 'Skills library', 'Playwright automation', 'LangGraph', 'API automation']
+    : ['AI 智能生成', 'RAG 知识库', 'MCP 工具调用', 'Skills 技能库', 'Playwright 自动化', 'LangGraph', '接口自动化']
 })
 const launcherTitle = computed(() => (
   isEnglish.value ? 'Account Login' : '账号登录'

@@ -45,6 +45,21 @@ for (const key of [
 """
 
 
+class LoginStateError(RuntimeError):
+    """登录态失效或未正确注入（页面被重定向到登录页）。"""
+
+
+# 任务级认证配置（auth）字典结构：
+#   storage_state: 登录态快照。Playwright storageState 格式：文件路径(str) 或
+#                  {"cookies": [...], "origins": [...]} JSON。同时覆盖两类系统：
+#                  JWT 系（token 在 localStorage）与 Cookie/Session 系（会话 cookie）。
+#   headers:       可选。注入到上下文所有请求的请求头，如 {"Authorization": "Bearer xxx"}。
+#   local_storage: 可选。页面加载前写入 localStorage 的键值（用于 SPA 前端路由守卫校验）。
+#   login_check:   可选。登录失效检测：{"url_pattern": "login|signin", "selector": "#login-form"}。
+#                  页面导航后若命中被判定为登录页，抛出 LoginStateError 并给出明确提示。
+AUTH_CONFIG_KEYS = ("storage_state", "headers", "local_storage", "login_check")
+
+
 @dataclass
 class StepConfig:
     """步骤配置"""
@@ -73,6 +88,7 @@ class StepConfig:
     upload_project_id: Optional[int] = None
     upload_file_sha: Optional[str] = None
     upload_file_size: Optional[int] = None
+    ope_value: Any = None
     
     # step details (shared steps)
     details: list['StepConfig'] = field(default_factory=list)
@@ -86,6 +102,9 @@ class PageStepConfig:
     page_name: str
     steps: list[StepConfig] = field(default_factory=list)
     env_config: Optional[dict] = None
+    # 步骤绑定的登录态：auth_state_id 来自平台，auth 为解析后的 storage_state（执行时按组切换）
+    auth_state_id: Optional[int] = None
+    auth: Optional[dict] = None
 
 
 @dataclass
@@ -111,6 +130,7 @@ class PlaywrightExecutor:
         screenshot_dir: str = './data/screenshots',
         retry_count: int = 3,
         step_interval: int = 500,
+        fail_fast: bool = False,
         viewport_width: int = 1280,
         viewport_height: int = 720,
         trace_enabled: bool = False,
@@ -130,6 +150,9 @@ class PlaywrightExecutor:
         self.screenshot_dir = screenshot_dir
         self.retry_count = retry_count
         self.step_interval = step_interval
+        # 失败中断：元素定位失败（主/备用表达式+操作超时均结束仍失败）时
+        # 立即中断用例并上报，跳过步骤级重试与后续步骤
+        self.fail_fast = fail_fast
         # 节点默认视口（任务级 runtime 未指定视口时使用，由执行器配置维护）
         self.default_viewport: dict = {"width": viewport_width, "height": viewport_height}
         
@@ -149,6 +172,11 @@ class PlaywrightExecutor:
         self._stop_requested = False
         self._current_trace_path: Optional[str] = None
         self._page_errors = []
+        # 任务级认证配置（auth），通过 apply_runtime_options 注入，执行后随 restore 还原
+        self._auth_config: Optional[dict] = None
+        self._auth_context_key: Optional[str] = None  # 当前 context 对应 auth 签名（组间切换判断）
+        # 执行画面帧采集钩子：browser_session 上下文进入后回调 page（consumer 侧挂 FrameStreamer）
+        self.on_execution_page = None
         
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -168,6 +196,7 @@ class PlaywrightExecutor:
             "user_data_dir": self.user_data_dir,
             "_runtime_viewport": getattr(self, "_runtime_viewport", None),
             "_viewport_explicit": getattr(self, "_viewport_explicit", False),
+            "_auth_config": getattr(self, "_auth_config", None),
         }
         if not runtime:
             return previous
@@ -204,6 +233,11 @@ class PlaywrightExecutor:
             self._runtime_viewport = None
             self._viewport_explicit = explicit
 
+        auth = runtime.get("auth")
+        if auth is not None:
+            # 任务级认证配置原样透传；None 表示无（恢复任务前状态由 restore 负责）
+            self._auth_config = auth if isinstance(auth, dict) else None
+
         return previous
 
     def restore_runtime_options(self, previous: dict | None) -> None:
@@ -216,12 +250,18 @@ class PlaywrightExecutor:
         self.user_data_dir = previous.get("user_data_dir", self.user_data_dir)
         self._runtime_viewport = previous.get("_runtime_viewport")
         self._viewport_explicit = previous.get("_viewport_explicit", False)
+        self._auth_config = previous.get("_auth_config")
 
 
     def _build_browser_launch_options(self) -> dict:
-        """构建浏览器启动参数，兼容 Docker 无头场景。"""
+        """构建浏览器启动参数。
+
+        浏览器一律无头启动：执行画面统一经画布帧流直播（前端 ExecutionScreenModal），
+        不打开本地浏览器窗口（docker 无显示；桌面端同样不弹窗）。
+        self.headless 仅作为"观看模式"开关控制帧推流（consumer），不再决定启动形态。
+        """
         launch_options = {
-            'headless': self.headless,
+            'headless': True,
             'timeout': self.launch_timeout,
         }
 
@@ -245,6 +285,15 @@ class PlaywrightExecutor:
     def _build_browser_context_options(self) -> dict:
         """构建浏览器上下文参数。"""
         context_options: dict = {}
+
+        auth = getattr(self, "_auth_config", None) or {}
+        if auth.get("storage_state"):
+            # 登录态快照：文件路径(str) 或 storageState JSON(dict)。
+            # Playwright new_context 原生支持，Cookie/Session 与 JWT(localStorage) 一并恢复。
+            context_options["storage_state"] = auth["storage_state"]
+        if auth.get("headers"):
+            # 注入到上下文全部请求（含页面导航）的请求头，JWT Bearer 双保险
+            context_options["extra_http_headers"] = auth["headers"]
 
         runtime_viewport = getattr(self, "_runtime_viewport", None)
         viewport_explicit = getattr(self, "_viewport_explicit", False)
@@ -279,11 +328,185 @@ class PlaywrightExecutor:
 
         return context_options
 
+    @staticmethod
+    def _build_local_storage_init_script(entries: dict) -> str:
+        """生成页面加载前写入 localStorage 的初始化脚本（SPA 路由守卫/请求拦截器读取用）。"""
+        try:
+            payload = json.dumps(entries, ensure_ascii=False)
+        except (TypeError, ValueError):
+            payload = json.dumps({})
+        return (
+            "(() => {"
+            "try { const d = " + payload + ";"
+            "for (const k in d) { localStorage.setItem(k, d[k]); }"
+            "} catch (_) {}"
+            "})();"
+        )
+
+    @staticmethod
+    def _build_origin_local_storage_init_script(origin: str, entries: dict) -> str:
+        """生成按 origin 匹配的 localStorage 初始化脚本（storageState origins 恢复用）。"""
+        try:
+            payload = json.dumps(entries, ensure_ascii=False)
+            target = json.dumps(origin)
+        except (TypeError, ValueError):
+            return ""
+        return (
+            "(() => {"
+            "try { if (location.origin === " + target + ") { const d = " + payload + ";"
+            "for (const k in d) { localStorage.setItem(k, d[k]); }"
+            "} } catch (_) {}"
+            "})();"
+        )
+
+    async def _apply_storage_state(self, context: BrowserContext, state: Any) -> None:
+        """手动应用登录态快照（持久化上下文不支持 storage_state 参数，需手动注入）。
+
+        cookies 用 add_cookies 注入；localStorage 用按 origin 匹配的初始化脚本写入，
+        与浏览器原生 storage_state 复用的行为一致，覆盖 Cookie/Session 与 JWT 两类系统。
+        """
+        if isinstance(state, (str, os.PathLike)):
+            try:
+                with open(os.fspath(state), 'r', encoding='utf-8') as f:
+                    state = json.load(f)
+            except Exception as e:
+                raise ValueError(f"读取登录态文件失败: {os.fspath(state)} ({e})") from e
+        if not isinstance(state, dict):
+            raise ValueError("登录态 storage_state 必须是文件路径或 storageState JSON 对象")
+
+        cookies = state.get("cookies") or []
+        if cookies:
+            await context.add_cookies(cookies)
+
+        origins = state.get("origins") or []
+        for origin in origins:
+            ls = origin.get("localStorage") or []
+            if not ls:
+                continue
+            entries = {item.get("name"): item.get("value") for item in ls if item.get("name") is not None}
+            if entries:
+                script = self._build_origin_local_storage_init_script(origin.get("origin", ""), entries)
+                if script:
+                    await context.add_init_script(script)
+
     async def _apply_context_init_scripts(self, context: BrowserContext) -> None:
         """注入上下文初始化脚本。"""
         if self.stealth_enabled:
             await context.add_init_script(STEALTH_INIT_SCRIPT)
+
+        auth = getattr(self, "_auth_config", None) or {}
+        local_storage = auth.get("local_storage")
+        if isinstance(local_storage, dict) and local_storage:
+            # 手动配置的 localStorage 键值：在任意页面加载前写入（通常为同源应用）
+            await context.add_init_script(self._build_local_storage_init_script(local_storage))
     
+    def _auth_login_check(self) -> Optional[dict]:
+        """当前任务配置的登录失效检测参数（未配置返回 None）。"""
+        auth = getattr(self, "_auth_config", None) or {}
+        check = auth.get("login_check")
+        return check if isinstance(check, dict) else None
+
+    async def _assert_logged_in(self, page: Page) -> None:
+        """导航后检测是否被重定向到登录页（登录态失效/未注入时给出明确提示）。
+
+        未配置 login_check 时不进行任何检测，不影响现有行为。
+        """
+        check = self._auth_login_check()
+        if not check:
+            return
+
+        url_pattern = str(check.get("url_pattern") or "").strip()
+        selector = str(check.get("selector") or "").strip()
+
+        current_url = page.url
+        if url_pattern and url_pattern.lower() in current_url.lower():
+            raise LoginStateError(
+                f"登录态失效或未正确注入：导航后检测到登录页（URL 包含 '{url_pattern}'，当前: {current_url}）。"
+                "请重新录制登录并保存登录态，或更新认证配置（storage_state/token 注入）后重试"
+            )
+
+        if selector:
+            try:
+                if await page.locator(selector).count() > 0:
+                    raise LoginStateError(
+                        f"登录态失效或未正确注入：导航后在页面中检测到登录页元素（{selector}，当前: {current_url}）。"
+                        "请重新录制登录并保存登录态，或更新认证配置后重试"
+                    )
+            except LoginStateError:
+                raise
+            except Exception:
+                # 定位器本身异常（如无权限）不作为登录失效判定
+                pass
+
+    async def _goto_with_login_check(self, page: Page, url: str, **kwargs) -> None:
+        """导航并执行登录失效检测（等价于 page.goto + _assert_logged_in）。
+
+        ERR_ABORTED/导航被中断：站点自身跳转（302/前端 location）仍在途中时
+        插入的 goto 会被 Chromium 中止，等待其稳定后重试一次。
+        """
+        try:
+            await page.goto(url, **kwargs)
+        except Exception as e:
+            msg = str(e)
+            if 'ERR_ABORTED' not in msg and 'Interrupted' not in msg:
+                raise
+            logger.warning(f'导航被页面跳转中止（{url}），等待稳定后重试')
+            try:
+                await page.wait_for_load_state('domcontentloaded', timeout=8000)
+            except Exception:
+                pass
+            await page.goto(url, **kwargs)
+        await self._assert_logged_in(page)
+
+    async def ensure_auth_context(self, auth: Optional[dict]) -> bool:
+        """按组切换登录态注入：auth 与当前 context 一致则直接复用（不清理，
+        覆盖"同登录态无需逐步清理"的场景）；不同则关闭旧 context、以新 auth
+        重建（保留 browser 复用）。返回是否发生重建。"""
+        key = json.dumps(auth or {}, sort_keys=True)
+        if key == self._auth_context_key and self._context is not None:
+            return False
+        if self._context is not None:
+            try:
+                await self._context.close()
+            except Exception:
+                pass
+            self._context = None
+            self._page = None
+        self._auth_config = auth
+        await self._init_browser_context()
+        self._auth_context_key = key
+        # 重建出的新页面须重新挂执行画面帧流：CDP screencast 会话随旧 context
+        # 关闭而失效，不重挂会导致画布停留在重建前的最后一帧
+        if self.on_execution_page is not None:
+            try:
+                await self.on_execution_page(self._page)
+            except Exception as exc:
+                logger.warning(f'执行画面帧流重挂失败（不影响用例执行）: {exc}')
+        return True
+
+    async def _init_browser_context(self) -> None:
+        """按当前 _auth_config 创建 context/page（init_browser 与 ensure_auth_context 共用）。"""
+        browser_launcher = getattr(self._playwright, self.browser_type)
+        launch_options = self._build_browser_launch_options()
+        context_options = self._build_browser_context_options()
+        if self.persistent:
+            ctx_options = dict(context_options)
+            storage_state = ctx_options.pop("storage_state", None)
+            self._context = await browser_launcher.launch_persistent_context(
+                self.user_data_dir, **launch_options, **ctx_options,
+            )
+            if storage_state is not None:
+                await self._apply_storage_state(self._context, storage_state)
+            await self._apply_context_init_scripts(self._context)
+            pages = self._context.pages
+            self._page = pages[0] if pages else await self._context.new_page()
+        else:
+            self._context = await self._browser.new_context(**context_options)
+            await self._apply_context_init_scripts(self._context)
+            self._page = await self._context.new_page()
+        self._page.set_default_timeout(self.action_timeout)
+        self._log_auth_injection()
+
     async def init_browser(self) -> None:
         """初始化浏览器"""
         # 若上次未正常关闭，先释放，避免叠加启动多个 Chromium
@@ -294,28 +517,33 @@ class PlaywrightExecutor:
             self._playwright = await async_playwright().start()
         
         browser_launcher = getattr(self._playwright, self.browser_type)
-        launch_options = self._build_browser_launch_options()
-        context_options = self._build_browser_context_options()
-        
         if self.persistent:
-            self._context = await browser_launcher.launch_persistent_context(
-                self.user_data_dir,
-                **launch_options,
-                **context_options,
-            )
-            await self._apply_context_init_scripts(self._context)
-            pages = self._context.pages
-            self._page = pages[0] if pages else await self._context.new_page()
+            await self._init_browser_context()
         else:
-            self._browser = await browser_launcher.launch(
-                **launch_options,
-            )
-            self._context = await self._browser.new_context(**context_options)
-            await self._apply_context_init_scripts(self._context)
-            self._page = await self._context.new_page()
-        
-        self._page.set_default_timeout(self.action_timeout)
+            self._browser = await browser_launcher.launch(**self._build_browser_launch_options())
+            await self._init_browser_context()
+        self._auth_context_key = json.dumps(self._auth_config or {}, sort_keys=True)
         logger.info(f"浏览器已初始化: {self.browser_type}, headless={self.headless}")
+
+    def _log_auth_injection(self) -> None:
+        """打印本次任务的登录态注入摘要（不含凭据明文，便于确认是否生效）。"""
+        auth = getattr(self, "_auth_config", None) or {}
+        if not auth:
+            return
+        ss = auth.get("storage_state")
+        if isinstance(ss, dict):
+            cookies = len(ss.get("cookies") or [])
+            ls_keys = sum(
+                len(o.get("localStorage") or [])
+                for o in (ss.get("origins") or [])
+            )
+            logger.info(f"已注入登录态: cookies={cookies}, localStorage_keys={ls_keys}, login_check={'on' if auth.get('login_check') else 'off'}")
+        elif ss:
+            logger.info(f"已注入登录态: storage_state 文件={ss}, login_check={'on' if auth.get('login_check') else 'off'}")
+        if auth.get("headers"):
+            logger.info(f"已注入请求头: {sorted(auth['headers'].keys())}")
+        if auth.get("local_storage"):
+            logger.info(f"已注入 localStorage 键: {sorted(auth['local_storage'].keys())}")
     
     def _release_memory(self) -> None:
         """主动回收 Python 对象，并尽量将内存归还操作系统。"""
@@ -440,6 +668,8 @@ class PlaywrightExecutor:
         """浏览器会话上下文管理器"""
         await self.init_browser()
         try:
+            if self.on_execution_page is not None:
+                await self.on_execution_page(self._page)
             yield self._page
         finally:
             await self.close()
@@ -469,7 +699,10 @@ class PlaywrightExecutor:
                     sources=self.trace_sources,
                 )
                 logger.debug(f"Trace 已启动: screenshots={self.trace_screenshots}, snapshots={self.trace_snapshots}")
-            
+
+            if self.on_execution_page is not None:
+                await self.on_execution_page(self._page)
+
             yield self._page
             
         finally:
@@ -491,8 +724,17 @@ class PlaywrightExecutor:
         return self._current_trace_path
 
     def stop(self):
-        """请求停止执行"""
+        """请求停止执行（置标志；由调用方决定是否 force 硬中断）"""
         self._stop_requested = True
+
+    async def stop_now(self) -> None:
+        """立即硬中断：置标志并关闭浏览器/上下文，使在途 Playwright 调用
+        快速失败——用于前端关闭执行画布时直接终止（不用等当前步骤结束）。"""
+        self._stop_requested = True
+        try:
+            await self.close()
+        except Exception as e:
+            logger.warning('stop_now 关闭浏览器异常: %s', e)
 
     def _setup_page_listeners(self, page: Page):
         """注册页面基础事件监听（自动处理弹窗、记录控制台 JS 错误）"""
@@ -526,6 +768,8 @@ class PlaywrightExecutor:
             'placeholder': lambda: container.get_by_placeholder(locator_value),
             'label': lambda: container.get_by_label(locator_value),
             'testid': lambda: container.get_by_test_id(locator_value),
+            # 模型/前端词汇表为 test_id（区别于旧数据遗留的 testid，两者等价）
+            'test_id': lambda: container.get_by_test_id(locator_value),
         }
         return locator_map.get(locator_type, lambda: container.locator(locator_value))()
 
@@ -776,8 +1020,22 @@ class PlaywrightExecutor:
         if not file_path or not str(file_path).strip():
             raise ValueError("上传文件路径为空，请选择文件管理中的文件或填写执行器可访问的文件路径")
 
+        payload = file_path
+        # 有原始文件名时以原名上传（路径多为平台存储的 hash/临时名，上传后服务端看到的
+        # 文件名应保持用户初衷）——读取文件内容并携带 name/mimeType。
+        original_name = (step.upload_file_name or '').strip()
+        if original_name:
+            try:
+                with open(str(file_path), 'rb') as fh:
+                    file_buffer = fh.read()
+                import mimetypes
+                mime = mimetypes.guess_type(original_name)[0] or 'application/octet-stream'
+                payload = [{'name': original_name, 'mimeType': mime, 'buffer': file_buffer}]
+            except Exception:
+                payload = file_path  # 读取失败退回路径上传
+
         try:
-            await locator.set_input_files(file_path)
+            await locator.set_input_files(payload)
             logger.info(f"步骤 {step.step_id}: 已通过 file input 设置上传文件")
             return
         except Exception as exc:
@@ -790,8 +1048,103 @@ class PlaywrightExecutor:
             await locator.click()
 
         file_chooser = await file_chooser_info.value
-        await file_chooser.set_files(file_path)
+        await file_chooser.set_files(payload)
         logger.info(f"步骤 {step.step_id}: 已通过 file chooser 设置上传文件")
+
+    def _get_ocr_instance(self):
+        """获取 ddddocr 识别引擎单例"""
+        if not hasattr(self, '_ocr_instance') or self._ocr_instance is None:
+            try:
+                import ddddocr
+                self._ocr_instance = ddddocr.DdddOcr(show_ad=False)
+            except ImportError:
+                self._ocr_instance = None
+            except Exception as e:
+                logger.warning(f"初始化 ddddocr 失败: {e}")
+                self._ocr_instance = None
+        return self._ocr_instance
+
+    def _resolve_target_locator(self, page: Page, target_info: dict):
+        """根据目标信息解析出定位器（支持 iframe 与 下标）"""
+        frame = page
+        if target_info.get('is_iframe') and target_info.get('iframe_locator'):
+            iframe_loc = target_info['iframe_locator']
+            if ">>>" in iframe_loc:
+                iframe_selectors = [s.strip() for s in iframe_loc.split(">>>") if s.strip()]
+            elif ">>" in iframe_loc:
+                iframe_selectors = [s.strip() for s in iframe_loc.split(">>") if s.strip()]
+            else:
+                iframe_selectors = [iframe_loc]
+            for selector in iframe_selectors:
+                frame = frame.frame_locator(selector)
+
+        l_type = target_info.get('locator_type') or 'xpath'
+        l_val = target_info.get('locator_value') or ''
+        l_idx = target_info.get('locator_index')
+        locator = self._get_locator(frame, l_type, l_val)
+        if l_idx is not None:
+            locator = locator.nth(l_idx)
+        return locator
+
+    async def _execute_captcha_recognize(
+        self,
+        page: Page,
+        img_locator: Any,
+        step: StepConfig,
+    ) -> tuple[bool, str, str | None]:
+        ocr = self._get_ocr_instance()
+        if ocr is None:
+            return False, "执行器未安装 ddddocr 库，请安装依赖: pip install ddddocr", None
+
+        ope_val = step.ope_value if isinstance(step.ope_value, dict) else {}
+        target_info = ope_val.get('target_locator')
+        if not target_info or not target_info.get('locator_value'):
+            return False, "验证码识别步骤缺少目标输入框定位信息", None
+
+        max_retries = 3
+        try:
+            if 'retry_count' in ope_val and ope_val['retry_count'] is not None:
+                max_retries = int(ope_val['retry_count'])
+        except (ValueError, TypeError):
+            max_retries = 3
+        if max_retries < 1:
+            max_retries = 1
+
+        click_refresh = bool(ope_val.get('click_to_refresh', True))
+        target_locator = self._resolve_target_locator(page, target_info)
+
+        last_error = ""
+        for attempt in range(1, max_retries + 1):
+            try:
+                # 1. 截取验证码图片元素截图
+                img_bytes = await img_locator.screenshot(type="png")
+                # 2. 调用 ddddocr 进行识别（放到线程池中避免阻塞 Playwright async 事件循环）
+                recognized = await asyncio.to_thread(ocr.classification, img_bytes)
+                if isinstance(recognized, str):
+                    recognized = recognized.strip()
+
+                logger.info(f"步骤 {step.step_id}: 验证码识别尝试 [{attempt}/{max_retries}] 结果: '{recognized}'")
+
+                if recognized:
+                    # 3. 填入目标输入框
+                    await target_locator.fill(recognized)
+                    return True, f"验证码识别成功并填入: {recognized}", None
+
+                # 若识别为空且允许刷新重试
+                if click_refresh and attempt < max_retries:
+                    await img_locator.click()
+                    await page.wait_for_timeout(600)
+            except Exception as exc:
+                last_error = str(exc)
+                logger.warning(f"步骤 {step.step_id}: 验证码识别第 {attempt} 次尝试异常: {exc}")
+                if click_refresh and attempt < max_retries:
+                    try:
+                        await img_locator.click()
+                        await page.wait_for_timeout(600)
+                    except Exception:
+                        pass
+
+        return False, f"验证码识别重试 {max_retries} 次失败" + (f": {last_error}" if last_error else ""), None
     
     async def _execute_step(
         self,
@@ -884,7 +1237,7 @@ class PlaywrightExecutor:
                 return 1000
 
         page_operations = {
-            'goto': lambda: page.goto(step.input_value),
+            'goto': lambda: self._goto_with_login_check(page, step.input_value),
             'reload': lambda: page.reload(),
             'go_back': lambda: page.go_back(),
             'go_forward': lambda: page.go_forward(),
@@ -997,6 +1350,13 @@ class PlaywrightExecutor:
             logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
             return True, f"元素操作 {operation} 执行成功", None
 
+        if operation == 'captcha_recognize':
+            action_start = time.time()
+            success, msg, sc = await self._execute_captcha_recognize(page, locator, step)
+            action_time = time.time() - action_start
+            logger.debug(f"步骤 {step.step_id}: {operation} 操作耗时 {action_time:.2f}s (总计 {time.time() - op_start:.2f}s)")
+            return success, msg, sc
+
         if operation in element_operations:
             action_start = time.time()
             await element_operations[operation]()
@@ -1036,10 +1396,11 @@ class PlaywrightExecutor:
         """执行单个步骤，支持失败重试（retry_count）与步骤间间隔（step_interval）。
 
         最多执行 retry_count + 1 次，任一次成功即返回；全部失败返回最后一次结果。
+        fail_fast 开启时：步骤失败立即返回，不做步骤级重试（由调用方中断用例）。
         Returns:
             tuple: (成功与否, 消息, 截图路径(可选))
         """
-        attempts = max(int(getattr(self, 'retry_count', 0)), 0) + 1
+        attempts = 1 if getattr(self, 'fail_fast', False) else max(int(getattr(self, 'retry_count', 0)), 0) + 1
         last_result: tuple[bool, str, str | None] = (False, "步骤执行失败", None)
 
         for attempt in range(attempts):
@@ -1074,7 +1435,7 @@ class PlaywrightExecutor:
         try:
             async with self.browser_session() as page:
                 if page_url:
-                    await page.goto(page_url)
+                    await self._goto_with_login_check(page, page_url)
                 
                 success, message, step_screenshot = await self._execute_step_with_retry(page, step)
                 duration = time.time() - start_time
@@ -1125,11 +1486,24 @@ class PlaywrightExecutor:
                     base_url = config.env_config.get('base_url', '') or ''
                 if base_url:
                     logger.info(f"导航到环境 base_url: {base_url}")
-                    await self._page.goto(base_url, wait_until="networkidle")
+                    await self._goto_with_login_check(page, base_url, wait_until="networkidle")
 
+                pending_auth = None
                 for page_step in config.page_steps:
                     if self._stop_requested:
                         raise Exception("用例被手动停止")
+
+                    # 组间登录态切换：未绑定步骤"向上匹配"最近绑定的登录态
+                    # （沿用 pending_auth，不触发清理）；显式绑定变更时才重建 context
+                    if getattr(page_step, 'auth_state_id', None):
+                        pending_auth = getattr(page_step, 'auth', None)
+                    rebuilt = await self.ensure_auth_context(pending_auth)
+                    page = self._page
+                    if rebuilt:
+                        self._setup_page_listeners(page)
+                        nav_url = page_step.page_url or base_url
+                        if nav_url:
+                            await self._goto_with_login_check(page, nav_url, wait_until="domcontentloaded")
 
                     logger.info(f"执行页面步骤: {page_step.page_name}")
 
@@ -1221,6 +1595,12 @@ class PlaywrightExecutor:
                         
                         step_results.append(step_result)
 
+                        if not success:
+                            # 失败中断模式：元素定位失败即中断整条用例，不再定位后续步骤
+                            if getattr(self, 'fail_fast', False):
+                                logger.warning(f"  ⏹ 失败中断已开启，用例在步骤 {step.step_id} 处中断")
+                                raise Exception(f"失败中断: {step.description or step.operation_type} 执行失败: {message}")
+
                     # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
                     try:
                         await page.wait_for_load_state("load", timeout=10000)
@@ -1278,7 +1658,11 @@ class PlaywrightExecutor:
     async def execute_page_step(self, config: PageStepConfig) -> list[StepResultModel]:
         """执行单个页面步骤（包含多个操作）- 使用同一个浏览器会话"""
         step_results = []
-        
+
+        # 新任务开始前清除上一次执行遗留的停止标志：
+        # stop_once/stop_now 置位后无人复位，会让后续每次页面步骤调试在第一步误报"手动停止"
+        self._stop_requested = False
+
         try:
             async with self.browser_session() as page:
                 logger.info(f"开始执行页面步骤: {config.page_name}")
@@ -1288,7 +1672,7 @@ class PlaywrightExecutor:
                 # 导航到页面
                 if config.page_url:
                     nav_start = time.time()
-                    await page.goto(config.page_url)
+                    await self._goto_with_login_check(page, config.page_url)
                     await page.wait_for_load_state("domcontentloaded")
                     logger.debug(f"页面导航 {config.page_name} 耗时 {time.time() - nav_start:.2f}s")
                 
@@ -1375,6 +1759,8 @@ class PlaywrightExecutor:
         passed_steps = 0
         failed_steps = 0
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
+        # 与 execute_test_case 一致：新用例开始前清除遗留的停止标志
+        self._stop_requested = False
         trace_path = None
         page = None
 
@@ -1400,7 +1786,7 @@ class PlaywrightExecutor:
                 base_url = config.env_config.get('base_url', '') or ''
             if base_url:
                 logger.info(f"[并发] 导航到环境 base_url: {base_url}")
-                await page.goto(base_url, wait_until="networkidle")
+                await self._goto_with_login_check(page, base_url, wait_until="networkidle")
 
             for page_step in config.page_steps:
                 if self._stop_requested:
@@ -1481,6 +1867,12 @@ class PlaywrightExecutor:
                         )
 
                     step_results.append(step_result)
+
+                    if not success:
+                        # 失败中断模式：元素定位失败即中断整条用例，不再定位后续步骤
+                        if getattr(self, 'fail_fast', False):
+                            logger.warning(f"  ⏹ 失败中断已开启，用例在步骤 {step.step_id} 处中断")
+                            raise Exception(f"失败中断: {step.description or step.operation_type} 执行失败: {message}")
 
                 # 页面步骤执行完毕后，等待页面稳定（处理可能的页面跳转）
                 try:

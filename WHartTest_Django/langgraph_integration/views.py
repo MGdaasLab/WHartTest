@@ -2014,7 +2014,7 @@ def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
                 )
 
             if messages_to_create:
-                ChatMessage.objects.bulk_create(messages_to_create)
+                ChatMessage.objects.bulk_create(messages_to_create, ignore_conflicts=True)
                 logger.info(f"sync_chat_messages_from_checkpointer: Successfully bulk-created {len(messages_to_create)} ChatMessage records.")
 
     except Exception as e:

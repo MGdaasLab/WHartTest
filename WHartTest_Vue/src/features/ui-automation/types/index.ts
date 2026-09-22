@@ -93,6 +93,7 @@ export interface UiPageSteps extends TimeStampFields {
   page_name?: string
   module: number
   module_name?: string
+  auth_state_id?: number | null  // 绑定登录态（执行时优先注入该登录态）
   name: string
   description?: string
   run_flow?: string
@@ -359,6 +360,28 @@ export interface UiEnvironmentConfig extends TimeStampFields {
   is_default: boolean
   creator: number | null
   creator_name?: string
+}
+
+/** 环境登录态（Playwright storageState 快照，绑定环境配置） */
+export interface UiAuthState extends TimeStampFields {
+  id: number
+  name: string
+  env_config: number
+  env_name?: string
+  project_id?: number
+  state_json?: Record<string, unknown>
+  is_active: boolean
+  description: string
+  creator: number | null
+  creator_name?: string
+}
+
+export interface UiAuthStateForm {
+  name: string
+  env_config: number
+  state_json?: Record<string, unknown>
+  is_active?: boolean
+  description?: string
 }
 
 /** API 分页响应 */

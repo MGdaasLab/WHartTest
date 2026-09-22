@@ -40,7 +40,26 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class TestCaseListSerializer(serializers.ModelSerializer):
+class UiTestCaseDetailMixin:
+    """提供统一的 UI 自动化用例摘要序列化方法"""
+
+    def get_ui_test_case_detail(self, obj):
+        """获取绑定的UI自动化用例摘要"""
+        if not obj.ui_test_case_id:
+            return None
+        ui_tc = obj.ui_test_case
+        return {
+            "id": ui_tc.id,
+            "name": ui_tc.name,
+            "level": ui_tc.level,
+            "status": ui_tc.status,
+            "module_id": ui_tc.module_id,
+            "module_name": ui_tc.module.name if ui_tc.module else None,
+            "step_count": len(ui_tc.case_steps.all()) if hasattr(ui_tc, "_prefetched_objects_cache") and "case_steps" in ui_tc._prefetched_objects_cache else ui_tc.case_steps.count(),
+        }
+
+
+class TestCaseListSerializer(UiTestCaseDetailMixin, serializers.ModelSerializer):
     """
     用例列表序列化器。
 
@@ -52,6 +71,7 @@ class TestCaseListSerializer(serializers.ModelSerializer):
     creator_detail = UserDetailSerializer(source="creator", read_only=True)
     module_id = serializers.PrimaryKeyRelatedField(source="module", read_only=True)
     module_detail = serializers.StringRelatedField(source="module", read_only=True)
+    ui_test_case_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = TestCase
@@ -72,6 +92,9 @@ class TestCaseListSerializer(serializers.ModelSerializer):
             "updated_at",
             "review_status",
             "test_type",
+            "ui_test_case",
+            "ui_test_case_detail",
+            "execution_mode",
         ]
         read_only_fields = fields
 
@@ -81,7 +104,7 @@ class TestCaseListSerializer(serializers.ModelSerializer):
         return TestCaseScreenshotSerializer(screenshots, many=True).data
 
 
-class TestCaseSerializer(serializers.ModelSerializer):
+class TestCaseSerializer(UiTestCaseDetailMixin, serializers.ModelSerializer):
     """
     用例序列化器，支持嵌套创建和更新用例步骤
     """
@@ -98,9 +121,7 @@ class TestCaseSerializer(serializers.ModelSerializer):
     module_detail = serializers.StringRelatedField(
         source="module", read_only=True
     )  # 用于只读展示模块名称
-
-    # project 字段在创建时需要，但通常通过 URL 传递，不在请求体中
-    # project = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all()) # 可以取消注释用于校验
+    ui_test_case_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = TestCase
@@ -122,21 +143,21 @@ class TestCaseSerializer(serializers.ModelSerializer):
             "updated_at",
             "review_status",
             "test_type",
+            "ui_test_case",
+            "ui_test_case_detail",
+            "execution_mode",
         ]
         read_only_fields = [
             "id",
             "project",
             "module_detail",  # module_detail 仅用于展示
+            "ui_test_case_detail",
             "creator",
             "creator_detail",
             "created_at",
             "updated_at",
         ]
-        # project 字段在创建时是必需的，但通常从 URL 获取，不在 request.data 中。
-        # 如果要通过 request.data 传递 project_id，则需要将其从 read_only_fields 中移除，
-        # 并在视图中处理或使用 HiddenField/SerializerMethodField 等。
-        # 这里我们假设 project 将从 URL 传递给视图，并在视图的 perform_create 中设置。
-        # 因此，对于序列化器本身，project 字段可以被视为只读或在创建时不直接通过此序列化器输入。
+
         # 为了简单起见，我们先将其保留在 fields 中，视图将负责处理其赋值。
 
     def validate(self, attrs):
@@ -148,6 +169,13 @@ class TestCaseSerializer(serializers.ModelSerializer):
         # 更新时如果传入了模块字段，则必须验证
         if self.instance and "module" in attrs and attrs["module"] is None:
             raise serializers.ValidationError({"module_id": "请选择所属模块"})
+
+        # 校验绑定的 UI 测试用例必须属于当前项目
+        ui_test_case = attrs.get("ui_test_case")
+        if ui_test_case is not None:
+            project = self.instance.project if self.instance else attrs.get("project")
+            if project and ui_test_case.project_id != project.id:
+                raise serializers.ValidationError({"ui_test_case": "绑定的 UI 自动化用例不属于当前项目"})
 
         return attrs
 
@@ -186,6 +214,10 @@ class TestCaseSerializer(serializers.ModelSerializer):
             instance.review_status = validated_data["review_status"]
         if "test_type" in validated_data:
             instance.test_type = validated_data["test_type"]
+        if "ui_test_case" in validated_data:
+            instance.ui_test_case = validated_data["ui_test_case"]
+        if "execution_mode" in validated_data:
+            instance.execution_mode = validated_data["execution_mode"]
 
         # project 和 creator 通常不允许通过此接口更新
         instance.save()
@@ -577,6 +609,11 @@ class TestCaseResultSerializer(serializers.ModelSerializer):
             "mcp_session_id",
             "screenshots",
             "execution_log",
+            "execution_mode",
+            "is_ai_intervened",
+            "ai_diagnosis",
+            "self_healing_info",
+            "ui_execution_record",
             "created_at",
             "updated_at",
         ]

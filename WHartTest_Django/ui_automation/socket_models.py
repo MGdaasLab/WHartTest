@@ -26,12 +26,27 @@ class UiSocketEnum:
     PAGE_STEPS = 'u_page_steps'           # 执行页面步骤
     PAGE_STEP_RESULT = 'u_page_step_result'  # 页面步骤执行结果
     TEST_CASE = 'u_test_case'             # 执行测试用例
+    TEST_CASE_ACK = 'u_test_case_ack'     # 测试用例任务已接收并下发
     TEST_CASE_BATCH = 'u_test_case_batch' # 批量执行用例
     STOP_EXECUTION = 'u_stop_execution'   # 停止执行
     STEP_RESULT = 'u_step_result'         # 步骤执行结果
     CASE_RESULT = 'u_case_result'         # 用例执行结果
+    EXEC_FRAME = 'u_exec_frame'           # 执行过程画面帧（执行器→后端→前端，直播）
     SET_ACTUATOR_INFO = 't_set_actuator_info'  # 设置执行器信息
     SET_ACTUATOR_CONFIG = 't_set_actuator_config'  # 平台下发执行器配置
+    # 录制器
+    RECORDER_START = 'u_recorder_start'    # 前端→后端：绑定录制会话，启动帧中继
+    RECORDER_INPUT = 'u_recorder_input'    # 前端→后端：浏览器输入事件（鼠标/键盘/滚轮）
+    RECORDER_ASSERT = 'u_recorder_assert'  # 前端→后端：记录断言动作
+    RECORDER_REMOVE_ACTION = 'u_recorder_remove_action'  # 前端→后端：删除已录动作
+    RECORDER_ADD_WAIT = 'u_recorder_add_wait'          # 前端→后端：插入等待动作
+    RECORDER_LOCATE_UPLOAD = 'u_recorder_locate_upload'  # 前端→后端：定位上传控件
+    RECORDER_ADD_UPLOAD = 'u_recorder_add_upload'        # 前端→后端：插入上传动作
+    RECORDER_SWITCH_ACCOUNT = 'u_recorder_switch_account'  # 前端→后端：无痕切换账号（不登出旧账号）
+    RECORDER_STOP = 'u_recorder_stop'      # 前端→后端：停止帧中继
+    RECORDER_FRAME = 'u_recorder_frame'    # 后端→前端：浏览器画面帧（base64 jpeg）
+    RECORDER_ACTION = 'u_recorder_action'  # 后端→前端：录制动作增量
+    RECORDER_STATUS = 'u_recorder_status'  # 后端→前端：录制状态/错误
 
 
 class QueueModel(BaseModel):

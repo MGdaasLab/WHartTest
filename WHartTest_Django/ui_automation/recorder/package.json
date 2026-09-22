@@ -1,0 +1,13 @@
+{
+  "name": "wharttest-ui-recorder",
+  "version": "1.0.0",
+  "private": true,
+  "description": "WHartTest UI 录制器（Playwright 驱动，独立于 skills 资产）",
+  "main": "recorder_server.js",
+  "dependencies": {
+    "playwright": "^1.57.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

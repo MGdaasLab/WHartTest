@@ -1,12 +1,23 @@
 # -*- coding: utf-8 -*-
 """UI 自动化视图"""
 
+import logging
+import os
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+logger = logging.getLogger('ui_automation')
+
+from django.conf import settings
 from rest_framework import viewsets, status
 from rest_framework.decorators import action
+from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework.filters import SearchFilter, OrderingFilter
 from django.db.models.deletion import ProtectedError
+from django.db.models import Count
 from django.db import transaction
 from copy import deepcopy
 from file_management.services import maybe_cleanup_unreferenced_files, sync_file_references
@@ -14,7 +25,7 @@ from file_management.services import maybe_cleanup_unreferenced_files, sync_file
 from .models import (
     UiModule, UiPage, UiElement, UiPageSteps, UiPageStepsDetailed,
     UiTestCase, UiCaseStepsDetailed, UiExecutionRecord, UiPublicData, UiEnvironmentConfig,
-    UiBatchExecutionRecord
+    UiBatchExecutionRecord, UiAuthState
 )
 from file_management.models import FileReference
 from .serializers import (
@@ -22,8 +33,9 @@ from .serializers import (
     UiElementSerializer, UiPageStepsSerializer, UiPageStepsListSerializer, UiPageStepsDetailSerializer,
     UiPageStepsDetailedSerializer, UiTestCaseSerializer, UiTestCaseListSerializer, UiTestCaseDetailSerializer,
     UiCaseStepsDetailedSerializer, UiExecutionRecordSerializer, UiExecutionRecordListSerializer,
-    UiPublicDataSerializer, UiEnvironmentConfigSerializer, UiTestCaseExecuteSerializer,
-    UiPageStepsExecuteSerializer, UiBatchExecutionRecordSerializer, UiBatchExecutionRecordDetailSerializer
+    UiPublicDataSerializer, UiEnvironmentConfigSerializer, UiAuthStateSerializer,
+    UiTestCaseExecuteSerializer, UiPageStepsExecuteSerializer, UiBatchExecutionRecordSerializer,
+    UiBatchExecutionRecordDetailSerializer
 )
 
 
@@ -380,6 +392,29 @@ class UiElementViewSet(viewsets.ModelViewSet):
             )
         return super().destroy(request, *args, **kwargs)
 
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request):
+        """批量删除元素。POST: {"ids": [1, 2]}；被页面步骤引用的元素拒绝删除。"""
+        ids = request.data.get('ids') or []
+        if not ids:
+            return Response({'error': 'ids 参数必填'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            elements = list(UiElement.objects.filter(id__in=ids).annotate(
+                usage=Count('step_details'),
+            ))
+            if not elements:
+                return Response({'deleted': 0, 'blocked': []})
+            blocked = [(e.id, e.name, e.usage) for e in elements if e.usage]
+            if blocked:
+                detail = '、'.join(f'「{name}」（被 {usage} 个步骤引用）' for _, name, usage in blocked[:10])
+                return Response(
+                    {'error': f'以下元素存在引用无法删除：{detail}'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            deleted_ids = [e.id for e in elements]
+            UiElement.objects.filter(id__in=deleted_ids).delete()
+        return Response({'deleted': len(deleted_ids), 'blocked': []})
+
 
 class UiPageStepsViewSet(viewsets.ModelViewSet):
     """页面步骤管理视图"""
@@ -520,6 +555,25 @@ class UiPageStepsDetailedViewSet(viewsets.ModelViewSet):
         instance.delete()
         if old_file_ids and project:
             maybe_cleanup_unreferenced_files(project, candidate_file_ids=old_file_ids, reason='unbind')
+
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request):
+        """批量删除步骤明细。POST: {"ids": [1, 2]}；同步清理附件引用。"""
+        ids = request.data.get('ids') or []
+        if not ids:
+            return Response({'error': 'ids 参数必填'}, status=status.HTTP_400_BAD_REQUEST)
+        with transaction.atomic():
+            qs = self.get_queryset().select_related('page_step', 'page_step__project').filter(id__in=ids)
+            old_file_ids = []
+            project = None
+            for step in qs:
+                old_file_ids.extend(_remove_upload_step_file_reference(step, request.user))
+                if project is None and step.page_step_id and step.page_step:
+                    project = step.page_step.project
+            deleted_count = qs.delete()[0]
+            if old_file_ids and project:
+                maybe_cleanup_unreferenced_files(project, candidate_file_ids=old_file_ids, reason='unbind')
+        return Response({'deleted': deleted_count})
 
     @action(detail=False, methods=['post'])
     def batch_update(self, request):
@@ -937,12 +991,28 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
         serializer.save(creator=self.request.user)
 
 
-# 执行器可编辑配置字段白名单（与执行器 Config 属性一致）
+class UiAuthStateViewSet(viewsets.ModelViewSet):
+    """环境登录态管理视图（登录态绑定环境配置，执行时按环境自动注入）"""
+    queryset = UiAuthState.objects.select_related('env_config', 'creator')
+    serializer_class = UiAuthStateSerializer
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+    filterset_fields = ['env_config', 'is_active']
+    search_fields = ['name', 'description']
+    ordering_fields = ['updated_at', 'created_at']
+    ordering = ['-updated_at']
+
+    def perform_create(self, serializer):
+        serializer.save(creator=self.request.user)
+
+    def perform_update(self, serializer):
+        # 登录态注入仅由"是否显式选择绑定"决定，不再维护"环境生效登录态"互斥
+        serializer.save()
+
 _ACTUATOR_CONFIG_FIELDS = frozenset({
     'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
     'retry_count', 'step_interval', 'max_concurrent', 'log_level',
     'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
-    'headless', 'viewport_width', 'viewport_height',
+    'headless', 'viewport_width', 'viewport_height', 'fail_fast',
 })
 
 
@@ -992,6 +1062,7 @@ class ActuatorViewSet(viewsets.ViewSet):
                 'action_timeout': raw.get('action_timeout', 30),
                 'retry_count': raw.get('retry_count', 3),
                 'step_interval': raw.get('step_interval', 500),
+                'fail_fast': raw.get('fail_fast', False),
                 'log_level': raw.get('log_level', 'INFO'),
                 'trace_enabled': raw.get('trace_enabled', True),
                 'trace_screenshots': raw.get('trace_screenshots', True),
@@ -1090,7 +1161,7 @@ class ActuatorViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless'):
+        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless', 'fail_fast'):
             if key in normalized:
                 normalized[key] = bool(normalized[key])
 
@@ -1103,13 +1174,6 @@ class ActuatorViewSet(viewsets.ViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             normalized['name'] = name
-
-        # 容器内执行器禁止启用有头模式
-        if normalized.get('headless') is False and consumer.actuator_info.get('in_container'):
-            return Response(
-                {'error': '当前执行器使用docker环境部署无法启用有头模式'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         # 更新 registry，使列表立即反映新配置
         try:
@@ -1354,6 +1418,12 @@ def trigger_batch_execution(request):
             start_time=tz.now(),
         )
 
+        # 批量执行不展示执行画面：强制无头（执行器优先采用下发的 effective_runtime）
+        if isinstance(effective, dict) and effective.get("browser"):
+            effective["headless"] = True
+        if isinstance(run_options, dict):
+            run_options["headless"] = True
+
         args = {
             'case_ids': case_ids,
             'actuator_id': actuator_id,
@@ -1395,3 +1465,479 @@ def trigger_batch_execution(request):
             'effective_runtime': effective,
         },
     })
+
+
+# ---------------------------------------------------------------------------
+# 录制器会话（Playwright 无头浏览器录制，方案：截图帧流式）
+# ---------------------------------------------------------------------------
+
+_DEFAULT_RECORDER_VIEWPORT = {'width': 1400, 'height': 900}
+
+
+def _resolve_recorder_skill_dir() -> str:
+    """定位 playwright npm 依赖所在目录（录制器运行目录）。
+
+    优先级：环境变量 RECORDER_SKILL_DIR（兼容旧配置）> 录制器自身目录
+    （ui_automation/recorder/，自带 package.json，首次自动 npm install）>
+    DB 中已部署的 playwright skill > 仓库内 WHartTest_Skills 兜底。
+    录制器不再依赖可卸载的 skill 资产。
+    """
+    env_dir = os.environ.get('RECORDER_SKILL_DIR', '').strip()
+    if env_dir and os.path.isdir(env_dir):
+        return env_dir
+
+    own_dir = Path(__file__).parent / 'recorder'
+    if (own_dir / 'package.json').is_file():
+        return str(own_dir)
+
+    try:
+        from skills.models import Skill
+        skill = (
+            Skill.objects.filter(name__in=['playwright-skill', 'playwright-cli'], is_active=True)
+            .order_by('id')
+            .first()
+        )
+        if skill:
+            full = skill.get_full_path()
+            if full and os.path.isdir(full):
+                return full
+    except Exception:
+        pass  # skills 应用不可用/被移除时忽略
+
+    fallback = Path(settings.BASE_DIR).parent / 'WHartTest_Skills' / 'playwright-skill'
+    if fallback.is_dir():
+        return str(fallback)
+    return ''
+
+
+def _parse_opt_int(value):
+    """请求参数转 int，空/非法返回 None（避免各处重复 try）。"""
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _auth_state_by_id(auth_state_id):
+    """按 id 取登录态快照（录制表单选择的绑定登录态），无效返回 None。"""
+    if not auth_state_id:
+        return None
+    state = UiAuthState.objects.filter(id=auth_state_id).first()
+    if state is None or not isinstance(state.state_json, dict):
+        return None
+    return state
+
+def _start_recorder_session(env_config, page, base_url, skill_dir, request, meta):
+    """创建录制会话并启动浏览器（含可选前置步骤执行）。
+
+    失败时关闭会话并抛出 RecorderSessionError（detail 可直接展示给用户）。
+    返回 (session_id, viewport, pre_result)。
+    """
+    from .recorder.session_manager import (
+        recorder_manager, RecorderSessionError,
+    )
+
+    session = recorder_manager.create_session(
+        user_id=request.user.username,
+        project_id=env_config.project_id,
+        skill_dir=skill_dir,
+    )
+    recorder_manager.set_meta(session.session_id, meta)
+    session_id = session.session_id
+    try:
+        session.start(timeout=120)
+        # 仅当录制表单选择了绑定登录态时才注入；清空选择框 → 无痕启动（不注入任何登录态）
+        storage_state = None
+        if meta.auth_state_id:
+            bound = _auth_state_by_id(meta.auth_state_id)
+            if bound is not None:
+                storage_state = bound.state_json
+                logger.info(
+                    '录制器注入绑定登录态（auth_state_id=%s）', meta.auth_state_id,
+                )
+            else:
+                logger.info(
+                    '绑定登录态无效（auth_state_id=%s），录制器按无痕上下文启动', meta.auth_state_id,
+                )
+        start_params = {
+            'url': base_url,
+            'viewport': meta.viewport,
+        }
+        if storage_state:
+            start_params['storage_state'] = storage_state
+        result = session.request('start', start_params, timeout=90)
+    except RecorderSessionError:
+        recorder_manager.close(session_id, graceful=False)
+        raise
+
+    # 执行前置步骤（自动完成登录等可复用操作，执行过程不进入录制动作）
+    pre_result = {'executed': 0, 'failed': False}
+    if meta.pre_page_step_id:
+        pre_page_step = UiPageSteps.objects.filter(id=meta.pre_page_step_id).first()
+        if pre_page_step is None:
+            recorder_manager.close(session_id, graceful=False)
+            raise RecorderSessionError('前置步骤不存在或不属于当前项目')
+        pre_steps = _serialize_page_step_for_recorder(pre_page_step)
+        try:
+            pre_resp = session.request(
+                'run_steps', {'steps': pre_steps}, timeout=180,
+            )
+            pre_result = {
+                'executed': pre_resp.get('state', {}).get('executed', 0),
+                'failed': pre_resp.get('state', {}).get('failed', False),
+            }
+            # 不再重建页面：reset_page 会关闭当前页并重新导航，清空前置步骤
+            # 已填写的表单值（如登录页账号输入）。页面的滚动/弹层残留已由
+            # 录制器 run_steps 结束时的"归位"（Escape/滚顶/失焦）清理。
+        except RecorderSessionError:
+            recorder_manager.close(session_id, graceful=False)
+            raise
+
+    viewport = result.get('state', {}).get('viewport') or meta.viewport
+    return session_id, viewport, pre_result
+
+
+def _serialize_page_step_for_recorder(page_step: UiPageSteps) -> list[dict]:
+    """把页面步骤序列化为录制器可执行的动作列表（含元素定位）。
+
+    上传步骤（ope_key=upload）解析附件为本地可访问路径（file_path），
+    录制器 run_steps 用 setInputFiles 执行。
+    """
+    from file_management.services import validate_file_ids, serialize_file_for_runtime
+    steps = []
+    details = (
+        UiPageStepsDetailed.objects.filter(page_step=page_step)
+        .select_related('element')
+        .order_by('step_sort')
+    )
+    for detail in details:
+        selector = None
+        if detail.element is not None:
+            selector = {
+                'locator_type': detail.element.locator_type,
+                'locator_value': detail.element.locator_value,
+                'locator_index': detail.element.locator_index,
+            }
+            # 备用定位器：主定位 strict 冲突/失效时回退（与执行器降级链一致）
+            if detail.element.locator_type_2 and detail.element.locator_value_2:
+                selector['locator_type_2'] = detail.element.locator_type_2
+                selector['locator_value_2'] = detail.element.locator_value_2
+                selector['locator_index_2'] = detail.element.locator_index_2
+            if detail.element.locator_type_3 and detail.element.locator_value_3:
+                selector['locator_type_3'] = detail.element.locator_type_3
+                selector['locator_value_3'] = detail.element.locator_value_3
+                selector['locator_index_3'] = detail.element.locator_index_3
+            # iframe 元素：录制器执行步骤时按链式 frame 定位下钻
+            if detail.element.is_iframe and detail.element.iframe_locator:
+                selector['is_iframe'] = True
+                selector['iframe_locator'] = detail.element.iframe_locator
+        ope_value = dict(detail.ope_value or {})
+        if detail.ope_key == 'upload' and ope_value.get('file_id'):
+            # 与执行器 execute-data 同规则：解析附件为本地路径
+            try:
+                project = detail.page_step.project if detail.page_step else None
+                files = validate_file_ids([ope_value['file_id']], project, None)
+                if files:
+                    runtime_file = serialize_file_for_runtime(files[0])
+                    resolved = runtime_file.get('path') or ''
+                    if resolved:
+                        ope_value['file_path'] = resolved
+                        ope_value['value'] = resolved
+                        ope_value['file_name'] = runtime_file.get('name') or ope_value.get('file_name')
+                        ope_value['mime_type'] = runtime_file.get('mime_type')
+            except Exception as exc:
+                logger.warning('录制器上传步骤解析文件失败: %s', exc, exc_info=True)
+        steps.append({
+            'ope_key': detail.ope_key,
+            'ope_value': ope_value,
+            'step_type': detail.step_type,
+            'element': selector,
+            # 与执行器 description 同源：元素名称（回退步骤描述），执行记录步骤名展示用
+            'element_name': (detail.element.name if detail.element is not None else None),
+            'description': detail.description or (detail.element.name if detail.element is not None else ''),
+        })
+    return steps
+
+
+class UiRecorderSessionViewSet(viewsets.ViewSet):
+    """录制会话生命周期：创建（启动浏览器）/ 结束（存脚本+解析入库）/ 取消。"""
+
+    permission_classes = [IsAuthenticated]
+
+    @staticmethod
+    def _owner_ok(request, meta) -> bool:
+        return meta.user_id == request.user.username or request.user.is_superuser
+
+    def create(self, request):
+        """POST recorder-sessions/
+        {env_config_id, page_id, page_step_id, create_elements, create_steps}
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError, RecorderSessionMeta,
+        )
+
+        env_config = UiEnvironmentConfig.objects.filter(
+            id=request.data.get('env_config_id')
+        ).first()
+        if env_config is None:
+            return Response({'detail': '请选择有效的环境配置'}, status=status.HTTP_400_BAD_REQUEST)
+
+        page = UiPage.objects.filter(id=request.data.get('page_id'), project=env_config.project).first()
+        if page is None:
+            return Response({'detail': '请选择当前项目下的页面'}, status=status.HTTP_400_BAD_REQUEST)
+
+        page_step = UiPageSteps.objects.filter(
+            id=request.data.get('page_step_id'),
+            project=env_config.project,
+            page=page,
+        ).first()
+        if page_step is None:
+            return Response({'detail': '请选择当前页面下的页面步骤'}, status=status.HTTP_400_BAD_REQUEST)
+
+        base_url = (env_config.base_url or page.url or '').strip()
+        if not base_url:
+            return Response(
+                {
+                    'detail': (
+                        f'所选环境「{env_config.name}」未配置 base_url，且页面「{page.name}」也未配置 url，'
+                        '无法确定录制导航地址。请先在环境配置中填写 base_url（录制优先使用环境地址），'
+                        '或填写页面 url。'
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        skill_dir = _resolve_recorder_skill_dir()
+        if not skill_dir:
+            return Response(
+                {'detail': '未找到 playwright skill 目录（可设置环境变量 RECORDER_SKILL_DIR）'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 前置步骤（可选）：录制前自动执行的可复用页面步骤（如登录）
+        pre_page_step = None
+        pre_step_id = request.data.get('pre_page_step_id')
+        if pre_step_id not in (None, ''):
+            pre_page_step = UiPageSteps.objects.filter(
+                id=pre_step_id, project=env_config.project,
+            ).first()
+            if pre_page_step is None:
+                return Response(
+                    {'detail': '前置步骤不存在或不属于当前项目'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        session_id = None
+        meta = RecorderSessionMeta(
+            user_id=request.user.username,
+            project_id=env_config.project_id,
+            page_id=page.id,
+            page_step_id=page_step.id,
+            # 录制结束后必定创建页面元素与页面步骤
+            create_elements=True,
+            create_steps=True,
+            base_url=base_url,
+            viewport=_DEFAULT_RECORDER_VIEWPORT,
+            kind='record',
+            pre_page_step_id=(
+                int(pre_step_id) if pre_step_id not in (None, '') else None
+            ),
+            env_config_id=env_config.id,
+            auth_state_id=_parse_opt_int(request.data.get('auth_state_id')),
+        )
+
+        try:
+            session_id, viewport, pre_result = _start_recorder_session(
+                env_config=env_config,
+                page=page,
+                base_url=base_url,
+                skill_dir=skill_dir,
+                request=request,
+                meta=meta,
+            )
+        except RecorderSessionError as exc:
+            return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response({
+            'session_id': session_id,
+            'viewport': viewport,
+            'base_url': base_url,
+            'page_id': page.id,
+            'page_step_id': page_step.id,
+            'pre_executed': pre_result.get('executed', 0),
+            'pre_failed': pre_result.get('failed', False),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def finish(self, request, pk=None):
+        """POST recorder-sessions/{id}/finish/
+        停止录制 → 动作解析入库（record 模式：动作全部解析到所选页面步骤下）。
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError,
+        )
+        from .recorder_apply import apply_recorded_actions
+
+        session_id = pk
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None or not self._owner_ok(request, meta):
+            return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            result = session.request('finish', {}, timeout=30)
+        except RecorderSessionError as exc:
+            recorder_manager.close(session_id, graceful=False)
+            return Response({'detail': f'结束录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        actions = result.get('state', {}).get('actions') or []
+
+        # ---------- record 模式：动作解析到所选页面步骤下 ----------
+        apply_stats = {
+            'elements_created': 0,
+            'elements_updated': 0,
+            'steps_created': 0,
+        }
+        if (meta.create_elements or meta.create_steps) and meta.page_step_id:
+            page = UiPage.objects.filter(id=meta.page_id).first()
+            page_step = UiPageSteps.objects.filter(id=meta.page_step_id).first()
+            if page and page_step:
+                apply_stats = apply_recorded_actions(
+                    page=page,
+                    page_step=page_step,
+                    user=request.user,
+                    actions=actions,
+                    auth_state_id=meta.auth_state_id,  # 录制表单选择的登录态：绑定到所选步骤
+                )
+
+        recorder_manager.close(session_id)
+        return Response({
+            'message': '录制完成',
+            'actions_count': len(actions),
+            **apply_stats,
+        })
+
+    @action(detail=False, methods=['post'], url_path='auth-capture')
+    def auth_capture(self, request):
+        """POST recorder-sessions/auth-capture/
+        登录态录制会话：无痕启动浏览器导航到环境登录页，仅暴露"保存登录态"，
+        保存后会话由 cancel 关闭。不注入既有登录态（本次就是要录登录流程）。
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError, RecorderSessionMeta,
+        )
+        env_config = UiEnvironmentConfig.objects.filter(
+            id=request.data.get('env_config_id')
+        ).first()
+        if env_config is None:
+            return Response({'detail': '请选择有效的环境配置'}, status=status.HTTP_400_BAD_REQUEST)
+        skill_dir = _resolve_recorder_skill_dir()
+        if not skill_dir:
+            return Response(
+                {'detail': '未找到 playwright skill 目录（可设置环境变量 RECORDER_SKILL_DIR）'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        meta = RecorderSessionMeta(
+            user_id=request.user.username,
+            project_id=env_config.project_id,
+            page_id=None,
+            page_step_id=None,
+            create_elements=False,
+            create_steps=False,
+            base_url=env_config.base_url or '',
+            viewport=_DEFAULT_RECORDER_VIEWPORT,
+            kind='auth',
+            env_config_id=env_config.id,
+        )
+        try:
+            session_id, viewport, _pre = _start_recorder_session(
+                env_config=env_config,
+                page=None,
+                base_url=env_config.base_url or '',
+                skill_dir=skill_dir,
+                request=request,
+                meta=meta,
+            )
+        except RecorderSessionError as exc:
+            return Response({'detail': f'启动录制失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'session_id': session_id,
+            'viewport': viewport,
+            'base_url': env_config.base_url or '',
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """POST recorder-sessions/{id}/cancel/ 取消录制，释放浏览器进程。"""
+        from .recorder.session_manager import recorder_manager
+
+        session_id = pk
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None or not self._owner_ok(request, meta):
+            return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
+        recorder_manager.close(session_id, graceful=False)
+        return Response({'message': '录制已取消'})
+
+    @action(detail=True, methods=['post'], url_path='save-login-state')
+    def save_login_state(self, request, pk=None):
+        """POST recorder-sessions/{id}/save-login-state/
+        保存当前录制浏览器上下文登录态，绑定到录制会话所属的环境配置。
+        同环境旧登录态自动停用（每环境一份生效登录态），执行时由执行器
+        按环境自动拉取注入。
+        """
+        from .recorder.session_manager import (
+            recorder_manager, RecorderSessionError,
+        )
+
+        session_id = pk
+        session = recorder_manager.get(session_id)
+        meta = recorder_manager.get_meta(session_id)
+        if session is None or meta is None or not self._owner_ok(request, meta):
+            return Response({'detail': '录制会话不存在或无权访问'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not meta.env_config_id:
+            return Response(
+                {'detail': '该录制会话未关联环境配置，无法保存登录态（请使用新的录制会话）'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        env_config = UiEnvironmentConfig.objects.filter(id=meta.env_config_id).first()
+        if env_config is None:
+            return Response({'detail': '关联的环境配置不存在，无法保存登录态'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            storage_state = session.save_login_state()
+        except RecorderSessionError as exc:
+            return Response({'detail': f'保存登录态失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cookies = storage_state.get('cookies') or []
+        origins = storage_state.get('origins') or []
+        ls_total = sum(len(o.get('localStorage') or []) for o in origins)
+        if not cookies and ls_total == 0:
+            return Response(
+                {'detail': '当前浏览器没有捕获到任何登录凭据（cookies/localStorage），'
+                           '请先在录制画布中完成目标系统登录后再保存登录态'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        name = str(request.data.get('name') or '').strip() or f"录制登录态-{env_config.name}"
+        description = str(request.data.get('description') or '').strip()
+        auth_state = UiAuthState.objects.create(
+            name=name,
+            env_config=env_config,
+            state_json=storage_state,
+            description=description,
+            creator=request.user,
+        )
+        # 录制过程中重新保存的登录态：作为会话当前生效绑定，本步骤及以下步骤继承
+        meta.auth_state_id = auth_state.id
+        return Response({
+            'message': '登录态已保存到环境「%s」' % env_config.name,
+            'auth_state_id': auth_state.id,
+            'name': auth_state.name,
+            'env_config_id': env_config.id,
+            'cookies': len(cookies),
+            'local_storage_keys': ls_total,
+        }, status=status.HTTP_201_CREATED)

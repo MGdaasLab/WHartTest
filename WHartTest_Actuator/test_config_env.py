@@ -52,7 +52,9 @@ class ConfigEnvOverrideTest(unittest.TestCase):
         config.normalize_for_runtime()
 
         self.assertFalse(config.use_gui)
-        self.assertTrue(config.headless)
+        # 无头开关不再被强制开启：观看模式（headless=False）保留，
+        # 无显示环境由 executor 启动层回退无头，执行画面走画布帧流
+        self.assertFalse(config.headless)
 
     @patch.dict(
         os.environ,

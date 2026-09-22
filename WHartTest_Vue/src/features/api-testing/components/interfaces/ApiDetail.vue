@@ -2,9 +2,9 @@
 import { ref, computed, watch, provide, onMounted, onBeforeUnmount, shallowRef, nextTick } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Message } from '@arco-design/web-vue'
-import { useDraggable } from '@vueuse/core'
 import ApiRequestHeader from './ApiRequestHeader.vue'
 import ApiParamsConfig from './ApiParamsConfig.vue'
+import ApiPathParamsConfig from './ApiPathParamsConfig.vue'
 import ApiHeadersConfig from './ApiHeadersConfig.vue'
 import ApiBodyConfig from './ApiBodyConfig.vue'
 import ApiResponse from './ApiResponse.vue'
@@ -12,10 +12,13 @@ import ApiExtractConfig from './ApiExtractConfig.vue'
 import ApiAssertConfig from './ApiAssertConfig.vue'
 import ApiHooksConfigEnhanced from './ApiHooksConfigEnhanced.vue'
 import { createInterface, updateInterface, debugInterface, quickDebugInterface, type ApiInterface, type DebugInterfaceRequest, type QuickDebugInterfaceRequest, type KeyValuePair } from '../../services/interfaceService'
-import type { ApiExtractPayload } from '../../types/interface'
+import { DEFAULT_INTERFACE_STATUS } from '../../types/interface'
 import { useProjectStore } from '@/store/projectStore'
 import { useEnvironmentStore } from '../../stores/environmentStore'
 import { useApiTabsStore } from '../../stores/apiTabsStore'
+import type { ApiExtractPayload } from '../../types/interface'
+// keep existing type imports
+import { showExtractPersistenceNotice } from '../../utils/extractPersistence'
 
 // Props定义
 interface Props {
@@ -85,6 +88,7 @@ provide('apiResponse', response)
 
 // 组件引用
 const paramsRef = ref()
+const pathParamsRef = ref()
 const headersRef = ref()
 const bodyRef = ref()
 const setupHooksRef = ref()
@@ -94,30 +98,32 @@ const assertRef = ref()
 // ApiRequestHeader 组件引用
 const requestHeaderRef = ref<any>()
 
-const getCurrentExtractPayload = (): ApiExtractPayload => {
-  const payload = extractRef.value?.getExtractRules()
-  if (payload && typeof payload === 'object' && 'extract' in payload && 'extractMeta' in payload) {
-    return payload as ApiExtractPayload
-  }
-  return {
-    extract: payload ?? props.interface?.extract ?? {},
-    extractMeta: (props.interface as any)?.extract_meta ?? {}
-  }
-}
-
 // 响应卡片高度
-const responseCardHeight = ref(44)
+const responseCardHeight = ref('44%')
 const resizeDragHandle = ref<HTMLElement | null>(null)
+const responseCardRef = ref<HTMLElement | null>(null)
+
+const MIN_RESPONSE_HEIGHT = 48
+const MIN_REQUEST_CONFIG_HEIGHT = 80
 
 // 简单的拖动实现
 let startY = 0
-let startHeight = 0
+let startResponseHeight = 0
+let maxResponseHeight = 0
 let isDragging = false
 
 const handleMouseDown = (e: MouseEvent) => {
+  const configPanel = resizeDragHandle.value?.previousElementSibling as HTMLElement | null
+  const responsePanel = responseCardRef.value
+  if (!configPanel || !responsePanel) return
+
   isDragging = true
   startY = e.clientY
-  startHeight = responseCardHeight.value
+  startResponseHeight = responsePanel.getBoundingClientRect().height
+  maxResponseHeight = Math.max(
+    MIN_RESPONSE_HEIGHT,
+    startResponseHeight + configPanel.getBoundingClientRect().height - MIN_REQUEST_CONFIG_HEIGHT
+  )
   
   // 防止文本选中
   document.body.style.userSelect = 'none'
@@ -130,16 +136,12 @@ const handleMouseDown = (e: MouseEvent) => {
 const handleMouseMove = (e: MouseEvent) => {
   if (!isDragging) return
   
-  // 计算鼠标移动的距离
   const deltaY = e.clientY - startY
-  const containerHeight = window.innerHeight
-  
-  // 根据移动距离调整高度百分比（向上拖动增加高度，向下拖动减少高度）
-  const deltaPercent = (deltaY / containerHeight) * 100
-  const newHeightPercent = startHeight - deltaPercent
-  
-  // 限制在10%到90%之间
-  responseCardHeight.value = Math.min(Math.max(newHeightPercent, 10), 90)
+  const nextHeight = Math.min(
+    Math.max(startResponseHeight - deltaY, MIN_RESPONSE_HEIGHT),
+    maxResponseHeight
+  )
+  responseCardHeight.value = `${Math.round(nextHeight)}px`
 }
 
 const handleMouseUp = () => {
@@ -194,11 +196,12 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
       sendingLoading.value = true
     }
     const params = paramsRef.value?.getParams()
+    const pathParams = pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.()
     const headers = headersRef.value?.getHeaders()
     const body = bodyRef.value?.getBody()
     const setupHooks = setupHooksRef.value?.getHooks()
     const teardownHooks = teardownHooksRef.value?.getHooks()
-    const extractPayload = getCurrentExtractPayload()
+    const extractPayload = getExtractPayload()
     const assertRules = assertRef.value?.getAssertRules()
 
     // 如果是快速调试
@@ -223,6 +226,11 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
         });
       }
 
+      // 添加path_params
+      if (pathParams) {
+        (quickDebugData as any).path_params = pathParams;
+      }
+
       // 添加body - 按原项目格式传递，runner 能识别 {type, content} 结构
       if (body) {
         if (body.type === 'none') {
@@ -238,10 +246,8 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
       }
 
       // 添加extract
-      if (extractPayload.extract) {
-        quickDebugData.extract = extractPayload.extract;
-        quickDebugData.extract_meta = extractPayload.extractMeta;
-      }
+      quickDebugData.extract = extractPayload.extract;
+      quickDebugData.extract_meta = extractPayload.extractMeta;
 
       // 添加validators（断言）
       if (assertRules) {
@@ -261,6 +267,7 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
       console.log('发送快速调试请求:', quickDebugData);
 
       const { data } = await quickDebugInterface(quickDebugData);
+      showExtractPersistenceNotice(data.extract_persistence)
       response.value = {
         status: data.status_code || null,
         time: data.elapsed || null,
@@ -279,6 +286,7 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
         url: requestData.url,
         headers,
         params,
+        path_params: pathParams,
         body,
         setup_hooks: setupHooks,
         teardown_hooks: teardownHooks,
@@ -291,6 +299,7 @@ const handleSend = async (requestData: { method: string, url: string, id?: numbe
       console.log('发送调试请求:', debugData);
 
       const { data } = await debugInterface(requestData.id!, debugData)
+      showExtractPersistenceNotice(data.extract_persistence)
       response.value = {
         status: data.status_code || null,
         time: data.elapsed || null,
@@ -346,6 +355,13 @@ const normalizeModuleValue = (moduleValue: unknown) => {
 // 获取当前环境ID
 const currentEnvironmentId = computed(() => environmentStore.currentEnvironmentId)
 
+const getExtractPayload = (): ApiExtractPayload => {
+  return extractRef.value?.getExtractRules() ?? {
+    extract: props.interface?.extract ?? {},
+    extractMeta: props.interface?.extract_meta ?? {},
+  }
+}
+
 const collectFileIdsFromBody = (body: any): number[] => {
   const ids = new Set<number>()
   const content = body?.content
@@ -359,7 +375,7 @@ const collectFileIdsFromBody = (body: any): number[] => {
 }
 
 // 处理保存用例
-const handleSave = async (requestData: { method: string, url: string, name: string, module?: number | string | null }) => {
+const handleSave = async (requestData: { method: string, url: string, name: string, module?: number | string | null, status?: string }) => {
   if (!projectStore.currentProjectId) {
     Message.warning('请先选择项目')
     return
@@ -385,11 +401,12 @@ const handleSave = async (requestData: { method: string, url: string, name: stri
   try {
     savingLoading.value = true
     const params = paramsRef.value?.getParams() ?? props.interface?.params ?? {}
+    const pathParams = pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.() ?? props.interface?.path_params ?? []
     const headers = headersRef.value?.getHeaders() ?? props.interface?.headers ?? {}
     const body = bodyRef.value?.getBody() ?? props.interface?.body ?? { type: 'none', content: null }
     const setupHooks = setupHooksRef.value?.getHooks() ?? props.interface?.setup_hooks ?? []
     const teardownHooks = teardownHooksRef.value?.getHooks() ?? props.interface?.teardown_hooks ?? []
-    const extractPayload = getCurrentExtractPayload()
+    const extractPayload = getExtractPayload()
     const assertRules = assertRef.value?.getAssertRules() ?? props.interface?.validators ?? []
 
     // 调试日志
@@ -419,8 +436,10 @@ const handleSave = async (requestData: { method: string, url: string, name: stri
       url: requestData.url,
       project: Number(projectStore.currentProjectId),
       module: normalizedModuleId,
+      status: requestData.status || props.interface?.status || DEFAULT_INTERFACE_STATUS,
       headers,
       params,
+      path_params: pathParams,
       body,
       setup_hooks: processHooks(setupHooks),
       teardown_hooks: processHooks(teardownHooks),
@@ -465,7 +484,7 @@ const handleSave = async (requestData: { method: string, url: string, name: stri
         setupHooks: savedInterface.setup_hooks,
         teardownHooks: savedInterface.teardown_hooks,
         extractRules: savedInterface.extract,
-        extractMeta: (savedInterface as any).extract_meta,
+        extractMeta: savedInterface.extract_meta,
         assertRules: savedInterface.validators
       })
     }
@@ -517,33 +536,69 @@ watch(() => tabsStore.activeTabId, (newTabId, oldTabId) => {
   }
 }, { immediate: true })
 
+// 标记是否处于接口/页签切换过渡中，避免过渡期未就绪的空数据反向覆盖页签
+const isSwitchingInterface = ref(false)
+
+watch(() => [props.interface?.id, tabsStore.activeTabId], (newVal, oldVal) => {
+  if (newVal[0] !== oldVal?.[0] || newVal[1] !== oldVal?.[1]) {
+    isSwitchingInterface.value = true
+    nextTick(() => {
+      setTimeout(() => {
+        isSwitchingInterface.value = false
+      }, 100)
+    })
+  }
+}, { immediate: true })
+
 // 监听接口数据变化，保存到页签
 watch(() => [
   paramsRef.value?.getParams(),
   headersRef.value?.getHeaders(),
+  pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.(),
   bodyRef.value?.getBody(),
   setupHooksRef.value?.getHooks(),
   teardownHooksRef.value?.getHooks(),
   extractRef.value?.getExtractRules(),
   assertRef.value?.getAssertRules()
 ], () => {
-  // 保存当前的请求配置到页签
-  if (tabsStore.activeTabId && props.interface) {
-    tabsStore.updateTabRequest(tabsStore.activeTabId, {
-      method: props.interface.method,
-      url: props.interface.url,
-      name: props.interface.name,
-      module: props.interface.module,
-      params: paramsRef.value?.getParams(),
-      headers: headersRef.value?.getHeaders(),
-      body: bodyRef.value?.getBody(),
-      setupHooks: setupHooksRef.value?.getHooks(),
-      teardownHooks: teardownHooksRef.value?.getHooks(),
-      extractRules: getCurrentExtractPayload().extract,
-      extractMeta: getCurrentExtractPayload().extractMeta,
-      assertRules: assertRef.value?.getAssertRules()
-    })
+  if (isSwitchingInterface.value) return
+  if (!tabsStore.activeTabId || !props.interface) return
+
+  // 严格检查：当前活跃页签必须与当前展示的接口相对应
+  const activeTab = tabsStore.tabs.find(t => t.id === tabsStore.activeTabId)
+  if (!activeTab) return
+  if (activeTab.interfaceId && props.interface.id && activeTab.interfaceId !== props.interface.id) {
+    return
   }
+
+  const currentBody = bodyRef.value?.getBody()
+  // 防止在子组件重载未就绪时，将空 body 覆盖已有有效 body 的页签
+  const tabHasBody = activeTab.body && activeTab.body.type !== 'none'
+  const newBodyIsEmpty = !currentBody || currentBody.type === 'none'
+  const resolvedBody = (tabHasBody && newBodyIsEmpty) ? activeTab.body : (currentBody ?? activeTab.body)
+
+  const currentParams = paramsRef.value?.getParams() ?? activeTab.params
+  const currentHeaders = headersRef.value?.getHeaders() ?? activeTab.headers
+  const currentPathParams = (pathParamsRef.value?.getPathParams?.() ?? pathParamsRef.value?.getParams?.()) ?? activeTab.pathParams
+  const currentSetupHooks = setupHooksRef.value?.getHooks() ?? activeTab.setupHooks
+  const currentTeardownHooks = teardownHooksRef.value?.getHooks() ?? activeTab.teardownHooks
+
+  const extractPayload = getExtractPayload()
+  tabsStore.updateTabRequest(tabsStore.activeTabId, {
+    method: props.interface.method,
+    url: props.interface.url,
+    name: props.interface.name,
+    module: props.interface.module,
+    params: currentParams,
+    headers: currentHeaders,
+    pathParams: currentPathParams,
+    body: resolvedBody,
+    setupHooks: currentSetupHooks,
+    teardownHooks: currentTeardownHooks,
+    extractRules: extractPayload.extract,
+    extractMeta: extractPayload.extractMeta,
+    assertRules: assertRef.value?.getAssertRules() ?? activeTab.assertRules
+  })
 }, { deep: true })
 
 // 监听接口信息变化
@@ -664,6 +719,11 @@ watch(() => props.autoDebug, async (newValue) => {
           <ApiParamsConfig ref="paramsRef" :params="(props.interface?.params as any)" />
         </a-tab-pane>
 
+        <!-- 路径参数配置 -->
+        <a-tab-pane key="path_params" title="Path Params">
+          <ApiPathParamsConfig ref="pathParamsRef" :path-params="(props.interface?.path_params as any)" :url="requestHeaderRef?.requestData?.url || props.interface?.url || ''" />
+        </a-tab-pane>
+
         <!-- Body配置 -->
         <a-tab-pane key="body" title="Body">
           <ApiBodyConfig ref="bodyRef" :body="(props.interface?.body as any)" />
@@ -688,11 +748,7 @@ watch(() => props.autoDebug, async (newValue) => {
 
         <!-- Extract配置 -->
         <a-tab-pane key="extract" title="Extract">
-          <ApiExtractConfig
-            ref="extractRef"
-            :extract="props.interface?.extract"
-            :extract-meta="(props.interface as any)?.extract_meta"
-          />
+          <ApiExtractConfig ref="extractRef" :extract="props.interface?.extract" :extract-meta="props.interface?.extract_meta" />
         </a-tab-pane>
 
         <!-- Assert配置 -->
@@ -714,8 +770,9 @@ watch(() => props.autoDebug, async (newValue) => {
 
     <!-- 底部响应卡片 -->
     <div
+      ref="responseCardRef"
       class="detail-shell detail-shell--response rounded-lg shadow-lg overflow-hidden"
-      :style="{ height: `${responseCardHeight}%` }"
+      :style="{ height: responseCardHeight }"
     >
       <ApiResponse :response="response" />
     </div>
@@ -759,6 +816,12 @@ watch(() => props.autoDebug, async (newValue) => {
 
   .arco-tabs-content {
     @apply flex-1 min-h-0 overflow-auto;
+  }
+
+  .arco-tabs-content-list,
+  .arco-tabs-content-item-active,
+  .arco-tabs-pane {
+    @apply h-full min-h-0;
   }
 
   .arco-tabs-nav {
@@ -810,4 +873,3 @@ watch(() => props.autoDebug, async (newValue) => {
   user-select: none;
 }
 </style>
-

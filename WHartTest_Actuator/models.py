@@ -26,10 +26,12 @@ class UiSocketEnum:
     """UI自动化Socket端点枚举"""
     PAGE_STEPS = 'u_page_steps'
     TEST_CASE = 'u_test_case'
+    TEST_CASE_ACK = 'u_test_case_ack'
     TEST_CASE_BATCH = 'u_test_case_batch'
     STOP_EXECUTION = 'u_stop_execution'
     STEP_RESULT = 'u_step_result'
     CASE_RESULT = 'u_case_result'
+    EXEC_FRAME = 'u_exec_frame'  # 执行过程画面帧（直播，仅单用例/单页面步骤执行）
     SET_ACTUATOR_INFO = 't_set_actuator_info'  # 设置执行器信息
     SET_ACTUATOR_CONFIG = 't_set_actuator_config'  # 平台下发执行器配置
 

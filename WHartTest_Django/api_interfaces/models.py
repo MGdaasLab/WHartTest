@@ -28,6 +28,19 @@ class ApiInterface(models.Model):
         ('delete', 'Delete'),
     ]
 
+    # Interface status
+    STATUS_INTEGRATING = 'integrating'
+    STATUS_SELF_TESTING = 'self_testing'
+    STATUS_COMPLETED = 'completed'
+    STATUS_DEPRECATED = 'deprecated'
+
+    STATUS_CHOICES = [
+        (STATUS_SELF_TESTING, '自测中'),
+        (STATUS_INTEGRATING, '联调中'),
+        (STATUS_COMPLETED, '已完成'),
+        (STATUS_DEPRECATED, '已废弃'),
+    ]
+
     # Basic info
     name = models.CharField(max_length=100, verbose_name='Interface Name')
     type = models.CharField(
@@ -48,6 +61,7 @@ class ApiInterface(models.Model):
     url = models.TextField(blank=True, null=True, verbose_name='URL')
     headers = models.JSONField(default=dict, blank=True, verbose_name='Headers')
     params = models.JSONField(default=dict, blank=True, verbose_name='Query Params')
+    path_params = models.JSONField(default=list, blank=True, verbose_name='Path Params')
     body = models.JSONField(default=dict, blank=True, verbose_name='Request Body')
 
     # SQL-specific fields
@@ -110,6 +124,13 @@ class ApiInterface(models.Model):
         verbose_name='附件 file_id 列表',
         help_text='统一文件管理中的附件ID列表',
     )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_SELF_TESTING,
+        blank=True,
+        verbose_name='Status',
+    )
 
     # Relationships
     project = models.ForeignKey(
@@ -141,7 +162,6 @@ class ApiInterface(models.Model):
         verbose_name = 'API Interface'
         verbose_name_plural = 'API Interfaces'
         ordering = ['-created_at']
-        unique_together = ['name', 'project']
 
     def __str__(self):
         return f"{self.project.name}-{self.name}"
@@ -161,6 +181,7 @@ class ApiInterface(models.Model):
             self.url = None
             self.headers = {}
             self.params = {}
+            self.path_params = []
             self.body = {}
 
         super().save(*args, **kwargs)
@@ -185,6 +206,7 @@ class ApiInterface(models.Model):
                 'url': self.url,
                 'headers': self.headers,
                 'params': self.params,
+                'path_params': self.path_params,
                 'body': self.body,
             })
         elif self.type == self.TYPE_SQL:

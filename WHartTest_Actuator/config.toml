@@ -2,11 +2,12 @@
 ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
 api_url = "http://172.31.69.83:5173"
 use_gui = true
+api_key = "wharttest-default-mcp-key-2025"
 api_username = "admin"
 api_password = "admin123456"
 
 [actuator]
-name = "WHarttest001"
+name = "Actuator"
 
 [browser]
 browser_type = "chromium"
@@ -19,10 +20,11 @@ viewport_width = 1280
 viewport_height = 720
 
 [execution]
-retry_count = 1
+retry_count = 3
 step_interval = 100
 screenshot_dir = "./data/screenshots"
-max_concurrent = 3
+max_concurrent = 2
+fail_fast = true
 
 [trace]
 enabled = true

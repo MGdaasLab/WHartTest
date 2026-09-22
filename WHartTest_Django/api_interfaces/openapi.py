@@ -87,6 +87,9 @@ def import_openapi_interfaces(
     view,
     strip_base_url: bool = True,
     create_environments: bool = False,
+    import_mode: str | None = None,
+    module_name: str = "",
+    target_module_id: int | None = None,
 ) -> dict[str, Any]:
     operations = _iter_operations(document, strip_base_url=strip_base_url)
 
@@ -99,8 +102,24 @@ def import_openapi_interfaces(
     # 不会出现导入到一半留下部分接口的情况。
     with transaction.atomic():
         module_cache: dict[str, ApiModule] = _existing_module_cache(project)
-        existing_by_key, used_names = _existing_interface_index(project)
+        # scoped 模式：接口全部导入到指定目标模块下，重复路径只在目标模块及
+        # 其子模块范围内匹配覆盖，避免污染其他模块下的同名接口。
+        scoped = import_mode in ("create_module", "existing_module")
+        target_module: ApiModule | None = None
+        child_module_cache: dict[str, ApiModule] = {}
+        if scoped:
+            target_module = _resolve_target_module(
+                project=project,
+                user=user,
+                import_mode=import_mode,
+                module_name=module_name,
+                target_module_id=target_module_id,
+            )
+
+        existing_by_key = _existing_interface_index(project, scope_module=target_module)
         touched_modules: set[str] = set()
+        if target_module is not None:
+            touched_modules.add(target_module.name)
 
         for operation in operations:
             method = operation["method"]
@@ -111,30 +130,48 @@ def import_openapi_interfaces(
                 continue
 
             try:
-                payload = _operation_to_interface_payload(document, operation)
+                payload = _operation_to_interface_payload(
+                    document,
+                    operation,
+                    module_from_tags_only=scoped,
+                )
             except OpenAPIError as exc:
                 skipped.append({"method": method, "path": path, "reason": str(exc)})
                 continue
 
-            module_name = payload.pop("_module_name", "")
-            if module_name:
+            raw_module_name = payload.pop("_module_name", "")
+            if scoped:
+                module: ApiModule | None = target_module
+                if raw_module_name:
+                    child = _get_or_create_child_module(
+                        project=project,
+                        user=user,
+                        name=raw_module_name,
+                        parent=target_module,
+                        cache=child_module_cache,
+                    )
+                    if child is not None:
+                        module = child
+                        touched_modules.add(child.name)
+                if module is not None:
+                    payload["module"] = module.id
+            elif raw_module_name:
                 module = _get_or_create_module(
                     project=project,
                     user=user,
-                    name=module_name,
+                    name=raw_module_name,
                     cache=module_cache,
                 )
                 payload["module"] = module.id
                 touched_modules.add(module.name)
 
             existing = existing_by_key.get((payload["method"], payload["url"]))
-            existing_name = existing.name if existing else None
 
-            payload["name"] = _unique_interface_name(
-                name=payload["name"],
-                used_names=used_names,
-                exclude_name=existing_name,
-            )
+            # scoped 模式下：接口路径一致但内容（请求头、请求体、参数等）完全一致时
+            # 视为无变化，跳过覆盖，不计入“修改”；内容不一致才覆盖并计为“修改”。
+            if existing and scoped and _interface_import_content_equal(existing, payload):
+                imported_ids.append(existing.id)
+                continue
 
             serializer = ApiInterfaceSerializer(
                 existing,
@@ -155,9 +192,6 @@ def import_openapi_interfaces(
                 created_count += 1
 
             existing_by_key[(payload["method"], payload["url"])] = instance
-            if existing_name:
-                used_names.discard(existing_name)
-            used_names.add(instance.name)
 
         created_environments: list[dict[str, Any]] = []
         if create_environments:
@@ -167,7 +201,7 @@ def import_openapi_interfaces(
                 user=user,
             )
 
-    return {
+    result: dict[str, Any] = {
         "format": "swagger" if document.get("swagger") == "2.0" else "openapi",
         "version": document.get("swagger") or document.get("openapi"),
         "created_count": created_count,
@@ -179,6 +213,10 @@ def import_openapi_interfaces(
         "module_count": len(touched_modules),
         "created_environments": created_environments,
     }
+    if target_module is not None:
+        result["target_module_id"] = target_module.id
+        result["target_module_name"] = target_module.name
+    return result
 
 
 def build_openapi_document(project: Project, queryset) -> dict[str, Any]:
@@ -294,6 +332,7 @@ def _iter_operations(
 def _operation_to_interface_payload(
     document: dict[str, Any],
     operation_info: dict[str, Any],
+    module_from_tags_only: bool = False,
 ) -> dict[str, Any]:
     operation = operation_info["operation"]
     method = operation_info["method"]
@@ -308,6 +347,7 @@ def _operation_to_interface_payload(
 
     headers = _parameters_to_pairs(document, parameters, "header")
     query_params = _parameters_to_pairs(document, parameters, "query")
+    path_params = _parameters_to_pairs(document, parameters, "path")
 
     body = (
         _swagger_request_body(document, operation, parameters)
@@ -331,6 +371,7 @@ def _operation_to_interface_payload(
         "url": path,
         "headers": headers,
         "params": query_params,
+        "path_params": path_params,
         "body": body,
         "setup_hooks": [],
         "teardown_hooks": [],
@@ -339,7 +380,12 @@ def _operation_to_interface_payload(
         "extract": {},
         "extract_meta": {},
         "file_ids": [],
-        "_module_name": _module_name_from_operation(operation, path, document),
+        "_module_name": _module_name_from_operation(
+            operation,
+            path,
+            document,
+            tags_only=module_from_tags_only,
+        ),
     }
 
 
@@ -587,12 +633,22 @@ def _operation_name(operation: dict[str, Any], method: str, path: str) -> str:
     return name[:100] or f"{method} {path}"[:100]
 
 
-def _module_name_from_operation(operation: dict[str, Any], path: str, document: dict[str, Any] | None = None) -> str:
+def _module_name_from_operation(
+    operation: dict[str, Any],
+    path: str,
+    document: dict[str, Any] | None = None,
+    tags_only: bool = False,
+) -> str:
     tags = operation.get("tags")
     if isinstance(tags, list):
         for tag in tags:
             if tag not in (None, ""):
                 return str(tag).strip()[:100]
+
+    # 定向导入（创建新模块 / 使用已有模块）模式下：无 tag 的接口
+    # 直接导入到目标模块下，不再用文档标题或路径推断子模块名。
+    if tags_only:
+        return ""
 
     # 无显式 tags 时取文档 title 作为模块名
     if isinstance(document, dict):
@@ -622,21 +678,32 @@ def _existing_module_cache(project: Project) -> dict[str, ApiModule]:
     return cache
 
 
-def _existing_interface_index(project: Project) -> tuple[dict[tuple[str, str], ApiInterface], set[str]]:
-    """预取项目下的接口数据,返回 (HTTP 接口 method+url 索引, 项目全部接口的已用名称集合)。"""
+def _existing_interface_index(
+    project: Project,
+    scope_module: ApiModule | None = None,
+) -> dict[tuple[str, str], ApiInterface]:
+    """预取项目下的接口数据,返回 HTTP 接口 method+url 索引。
+
+    scope_module 非 None 时,接口索引只包含该模块及其全部子模块下的接口,
+    用于「创建新模块 / 使用已有模块」的定向导入,避免覆盖其他模块的同路径接口。
+    """
     index: dict[tuple[str, str], ApiInterface] = {}
-    used_names: set[str] = set()
+
+    if scope_module is not None:
+        subtree_ids = set(scope_module.get_all_descendant_ids())
+    else:
+        subtree_ids = None
 
     for interface in (
         ApiInterface.objects.filter(project=project)
-        .only("id", "type", "method", "url", "name")
+        .only("id", "type", "method", "url", "name", "module_id")
         .iterator(chunk_size=1000)
     ):
-        used_names.add(interface.name)
         if interface.type == ApiInterface.TYPE_HTTP:
-            index.setdefault((interface.method.upper(), interface.url), interface)
+            if subtree_ids is None or interface.module_id in subtree_ids:
+                index.setdefault((interface.method.upper(), interface.url), interface)
 
-    return index, used_names
+    return index
 
 
 def _get_or_create_module(
@@ -667,28 +734,123 @@ def _get_or_create_module(
     return module
 
 
-def _unique_interface_name(
+def _resolve_target_module(
     *,
+    project: Project,
+    user,
+    import_mode: str | None,
+    module_name: str,
+    target_module_id: int | None,
+) -> ApiModule:
+    """解析导入目标模块。
+
+    - create_module：按名称创建（或复用同名）顶层模块，作为导入的父模块；
+    - existing_module：使用当前项目中的已有模块。
+    """
+    if import_mode == "create_module":
+        name = _normalize_module_name(module_name)
+        if not name:
+            raise OpenAPIError("创建新模块时请填写模块名称。")
+        return _get_or_create_module(
+            project=project,
+            user=user,
+            name=name,
+            cache=_existing_module_cache(project),
+        )
+
+    if import_mode == "existing_module":
+        if not target_module_id:
+            raise OpenAPIError("使用已有模块时请选择目标模块。")
+        module = ApiModule.objects.filter(project=project, id=target_module_id).first()
+        if module is None:
+            raise OpenAPIError("所选模块不存在或不属于当前项目。")
+        return module
+
+    raise OpenAPIError(f"不支持的导入模式: {import_mode}")
+
+
+def _get_or_create_child_module(
+    *,
+    project: Project,
+    user,
     name: str,
-    used_names: set[str],
-    exclude_name: str | None = None,
-) -> str:
-    base = re.sub(r"\s+", " ", name).strip() or "Imported API"
-    base = base[:100]
+    parent: ApiModule | None,
+    cache: dict[str, ApiModule],
+) -> ApiModule | None:
+    """在目标模块下按名称创建（或复用）子模块，用作文档 tag 对应的子模块。
 
-    def available(candidate: str) -> bool:
-        return candidate not in used_names or candidate == exclude_name
+    目标模块层级达到 5 级上限时返回 None，接口直接挂到目标模块下。
+    """
+    if parent is None or (parent.level or 1) >= 5:
+        return None
 
-    if available(base):
-        return base
+    normalized_name = _normalize_module_name(name)
+    if not normalized_name:
+        return None
 
-    suffix = 2
-    while True:
-        suffix_text = f" {suffix}"
-        candidate = f"{base[:100 - len(suffix_text)]}{suffix_text}"
-        if available(candidate):
-            return candidate
-        suffix += 1
+    if normalized_name in cache:
+        return cache[normalized_name]
+
+    module = ApiModule.objects.filter(
+        project=project,
+        parent=parent,
+        name=normalized_name,
+    ).order_by("id").first()
+
+    if module is None:
+        module = ApiModule.objects.create(
+            project=project,
+            created_by=user,
+            name=normalized_name,
+            parent=parent,
+        )
+
+    cache[normalized_name] = module
+    return module
+
+
+def _interface_import_content_equal(
+    existing: ApiInterface,
+    payload: dict[str, Any],
+) -> bool:
+    """判断已存在接口与本次导入内容（请求头、请求体、参数等）是否完全一致。
+
+    一致则视为无变化，不覆盖、不计入“修改”；不一致才覆盖并计为“修改”。
+    请求头 / 参数以键值对集合比较（忽略顺序与 enabled 布尔值差异的序列化形式），
+    body / validators 以规范化 JSON 比较。
+    """
+
+    def norm_pairs(pairs: Any) -> list[tuple[Any, ...]]:
+        if not isinstance(pairs, list):
+            return []
+        out: list[tuple[Any, ...]] = []
+        for item in pairs:
+            if not isinstance(item, dict):
+                continue
+            out.append((
+                str(item.get("key", "")),
+                item.get("value", ""),
+                str(item.get("description", "") or ""),
+                bool(item.get("enabled", True)),
+            ))
+        return sorted(out)
+
+    def norm_json(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): norm_json(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return sorted((norm_json(item) for item in value), key=repr)
+        return value
+
+    return (
+        str(existing.method or "").upper() == str(payload.get("method") or "").upper()
+        and str(existing.url or "") == str(payload.get("url") or "")
+        and str(existing.name or "") == str(payload.get("name") or "")
+        and norm_pairs(existing.headers) == norm_pairs(payload.get("headers") or [])
+        and norm_pairs(existing.params) == norm_pairs(payload.get("params") or [])
+        and norm_json(existing.body) == norm_json(payload.get("body"))
+        and norm_json(existing.validators) == norm_json(payload.get("validators"))
+    )
 
 
 def _resolve_ref(
@@ -930,6 +1092,16 @@ def _enabled_pairs(value: Any) -> list[dict[str, Any]]:
 
 def _build_parameters(interface: ApiInterface) -> list[dict[str, Any]]:
     parameters = []
+    for item in _enabled_pairs(interface.path_params or []):
+        parameters.append({
+            "name": str(item.get("key")),
+            "in": "path",
+            "required": True,
+            "description": item.get("description", ""),
+            "schema": _schema_from_value(item.get("value", "")),
+            "example": item.get("value", ""),
+        })
+
     for item in _enabled_pairs(interface.params):
         parameters.append({
             "name": str(item.get("key")),

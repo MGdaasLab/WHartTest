@@ -8,6 +8,7 @@ from httprunner.client import sanitize_json_record
 from api_interfaces.logging_utils import new_trace_id, summarize_for_log
 from file_management.services import validate_file_ids, serialize_file_for_runtime
 from api_interfaces.payloads import (
+    apply_path_params_to_url,
     flatten_key_value_pairs,
     normalize_request_body,
     prepare_request_body_for_runner,
@@ -129,6 +130,9 @@ class TestCaseRunner(HttpRunner):
 
         method = interface_data['method'].lower()
         url = interface_data['url']
+        path_params = interface_data.get('path_params')
+        if path_params:
+            url = apply_path_params_to_url(url, path_params, self.variables if isinstance(self.variables, dict) else None)
         if not url.startswith(('http://', 'https://')):
             url = f"{self.base_url.rstrip('/')}/{url.lstrip('/')}"
 
@@ -292,6 +296,12 @@ class TestCaseRunner(HttpRunner):
             else:
                 step_obj = self._create_http_step(step.name, interface_data)
                 snapshot_url = interface_data.get('url', '')
+                if interface_data.get('path_params'):
+                    snapshot_url = apply_path_params_to_url(
+                        snapshot_url,
+                        interface_data.get('path_params'),
+                        self.variables if isinstance(self.variables, dict) else None,
+                    )
                 if not snapshot_url.startswith(('http://', 'https://')):
                     snapshot_url = f"{self.base_url.rstrip('/')}/{snapshot_url.lstrip('/')}"
                 request_snapshot = {

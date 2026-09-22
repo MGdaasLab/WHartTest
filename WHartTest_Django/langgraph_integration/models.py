@@ -8,42 +8,27 @@ class LLMConfig(models.Model):
     LLM配置模型 - 管理大语言模型的配置信息
     统一使用OpenAI兼容格式，支持所有兼容的服务商
     """
-    
+
     PROVIDER_CHOICES = [
         ('openai_compatible', 'OpenAI 兼容'),
         ('deepseek', 'DeepSeek'),
         ('qwen', 'Qwen/通义千问'),
     ]
-    
-    # 配置标识字段（新增）
+
     config_name = models.CharField(max_length=255, unique=True, verbose_name="配置名称",
                                   help_text="用户自定义的配置名称，如'生产环境OpenAI'、'测试Claude配置'")
-    
-    # 供应商字段（新增）
     provider = models.CharField(max_length=50, choices=PROVIDER_CHOICES, default='openai_compatible', verbose_name="供应商",
                                help_text="LLM服务供应商")
-    
-    # 模型名称字段（原来的name字段，现在表示具体模型）
     name = models.CharField(max_length=255, verbose_name="模型名称",
                            help_text="具体的模型名称，如 gpt-4, claude-3-sonnet, gpt-3.5-turbo")
-    
-    # API连接配置（保持不变）
     api_url = models.URLField(verbose_name="API地址", help_text="LLM服务的API端点URL")
     api_key = models.CharField(max_length=512, blank=True, default='', verbose_name="API密钥", help_text="访问LLM服务的API密钥（可选）")
-    
-    # 提示词配置（保持不变）
     system_prompt = models.TextField(blank=True, null=True, verbose_name="系统提示词",
                                     help_text="指导LLM行为的系统级提示词")
-    
-    # 多模态支持（新增）
     supports_vision = models.BooleanField(default=False, verbose_name="支持图片输入",
                                         help_text="模型是否支持图片/多模态输入（如GPT-4V、Qwen-VL等）")
-    
-    # 上下文限制（用于Token计数和对话压缩）
     context_limit = models.IntegerField(default=128000, verbose_name="上下文限制",
                                        help_text="模型最大上下文Token数（GPT-4o: 128000, Claude: 200000, Gemini: 1000000）")
-
-    # 请求超时和重试配置
     request_timeout = models.IntegerField(
         default=120,
         verbose_name="请求超时(秒)",
@@ -54,8 +39,6 @@ class LLMConfig(models.Model):
         verbose_name="最大重试次数",
         help_text="请求失败时的自动重试次数，默认3次。设为0禁用重试"
     )
-
-    # v2.0.0: 中间件配置
     enable_summarization = models.BooleanField(
         default=True,
         verbose_name="启用上下文摘要",
@@ -71,12 +54,8 @@ class LLMConfig(models.Model):
         verbose_name="启用流式输出",
         help_text="启用后，AI回复将以流式方式逐字输出；禁用则等待完整回复后一次性返回"
     )
-
-    # 状态字段（保持不变）
     is_active = models.BooleanField(default=False, verbose_name="是否激活",
                                    help_text="是否为当前激活的LLM配置")
-    
-    # 时间戳字段（保持不变）
     created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
     updated_at = models.DateTimeField(auto_now=True, verbose_name="更新时间")
 
@@ -89,7 +68,6 @@ class LLMConfig(models.Model):
         ordering = ['-created_at']
 
     def save(self, *args, **kwargs):
-        # 确保只有一个配置可以激活
         if self.is_active:
             LLMConfig.objects.filter(is_active=True).exclude(pk=self.pk).update(is_active=False)
         super().save(*args, **kwargs)
@@ -107,14 +85,6 @@ class ChatSession(models.Model):
     project = models.ForeignKey('projects.Project', on_delete=models.CASCADE, null=True, blank=True, verbose_name="关联项目")
     prompt = models.ForeignKey('prompts.UserPrompt', on_delete=models.SET_NULL, null=True, blank=True,
                                verbose_name="关联提示词", help_text="该会话使用的提示词")
-
-    # LLM 运行时解析信息。部分历史数据库已通过 bundle 分支迁移把这些列设为 NOT NULL；
-    # 模型层必须提供默认值，否则新建 ChatSession 时 ORM 不会写入这些列，PostgreSQL 会报
-    # resolved_module_key/resolved_source/resolved_runtime_mode 违反非空约束。
-    resolved_module_key = models.CharField(max_length=64, default='llm_chat', verbose_name="解析模块Key")
-    resolved_source = models.CharField(max_length=32, default='legacy', verbose_name="LLM配置来源")
-    resolved_bundle_id = models.BigIntegerField(null=True, blank=True, verbose_name="解析配置包ID")
-    resolved_runtime_mode = models.CharField(max_length=16, default='auto', verbose_name="运行模式")
 
     # Token 使用统计
     total_input_tokens = models.BigIntegerField(default=0, verbose_name="累计输入 Token",
@@ -135,7 +105,7 @@ class ChatSession(models.Model):
         verbose_name = "对话会话"
         verbose_name_plural = "对话会话"
         ordering = ['-updated_at']
-        
+
     def __str__(self):
         return f"{self.user.username} - {self.title}"
 
@@ -171,8 +141,14 @@ class TokenUsageRecord(models.Model):
         verbose_name_plural = "Token 使用记录"
         ordering = ['-created_at']
         indexes = [
-            models.Index(fields=['user', 'created_at']),
-            models.Index(fields=['created_at']),
+            models.Index(
+                fields=['user', 'created_at'],
+                name='langgraph_i_user_id_6bb484_idx',
+            ),
+            models.Index(
+                fields=['created_at'],
+                name='langgraph_i_created_30561a_idx',
+            ),
         ]
 
     def __str__(self):
@@ -234,7 +210,6 @@ class UserToolApproval(models.Model):
     class Meta:
         verbose_name = "用户工具审批偏好"
         verbose_name_plural = "用户工具审批偏好"
-        # 每个用户对每个工具只能有一个偏好（永久）或每个会话一个偏好
         constraints = [
             models.UniqueConstraint(
                 fields=['user', 'tool_name', 'scope', 'session_id'],
@@ -251,21 +226,40 @@ class UserToolApproval(models.Model):
 
 class ChatMessage(models.Model):
     """
-    对话消息模型 - 用于权限管理，不存储实际消息内容
-    实际消息内容存储在 chat_history.sqlite 中，此模型仅用于Django权限系统
+    对话消息模型 - 用于持久化保存聊天消息内容与元数据，支持极速加载历史。
     """
     session = models.ForeignKey(ChatSession, on_delete=models.CASCADE, verbose_name="对话会话")
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, verbose_name="用户")
-    message_id = models.CharField(max_length=255, verbose_name="消息ID", 
-                                 help_text="LangGraph消息的唯一标识符")
-    role = models.CharField(max_length=20, verbose_name="角色", 
-                           choices=[('user', '用户'), ('assistant', '助手'), ('system', '系统')])
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="创建时间")
+    message_id = models.CharField(
+        max_length=255,
+        verbose_name="消息ID",
+        help_text="LangGraph消息的唯一标识符",
+        db_index=True
+    )
+    role = models.CharField(
+        max_length=20,
+        verbose_name="角色/类型",
+        choices=[
+            ('system', '系统'),
+            ('human', '用户'),
+            ('ai', '助手'),
+            ('tool', '工具'),
+            ('unknown', '未知')
+        ]
+    )
+    content = models.TextField(blank=True, default="", verbose_name="消息内容")
+    images = models.JSONField(blank=True, default=list, verbose_name="图片列表")
+    image = models.TextField(blank=True, null=True, verbose_name="单张图片(兼容)")
+    metadata = models.JSONField(blank=True, default=dict, verbose_name="元数据")
+    created_at = models.DateTimeField(default=timezone.now, verbose_name="创建时间")
 
     class Meta:
         verbose_name = "对话消息"
         verbose_name_plural = "对话消息"
-        ordering = ['created_at']
-        
+        ordering = ['created_at', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['session', 'message_id'], name='unique_session_chat_message')
+        ]
+
     def __str__(self):
-        return f"{self.session.title} - {self.role} [{self.created_at}]"
+        return f"{self.session.session_id} - {self.role} [{self.created_at}]"

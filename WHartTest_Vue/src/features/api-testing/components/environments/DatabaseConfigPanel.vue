@@ -287,8 +287,8 @@ const applyCalculatedWidths = () => {
       
       // 类型标签自适应：按标签内容实际宽度撑开类型列，保证完整包裹数据库类型文字
       const card = configCardRef.value[index]
-      const tag = card?.querySelector('.type-tag')
-      const typeCol = card?.querySelector('.col-type')
+      const tag = card?.querySelector('.type-tag') as HTMLElement | null
+      const typeCol = card?.querySelector('.col-type') as HTMLElement | null
       if (tag && typeCol) {
         // offsetWidth 含 padding；scrollWidth 为内容宽度，取较大者保证完整包裹类型文字
         const tagWidth = Math.max(tag.offsetWidth, tag.scrollWidth + 12) // 12px = 标签左右 padding
