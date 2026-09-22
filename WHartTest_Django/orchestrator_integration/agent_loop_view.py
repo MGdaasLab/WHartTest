@@ -44,6 +44,7 @@ from wharttest_django.checkpointer import get_async_checkpointer
 
 from .middleware_config import (
     get_middleware_from_config,
+    get_model_tier,
     get_user_tool_approvals,
     get_user_friendly_llm_error,
 )
@@ -211,6 +212,19 @@ _LINKED_IMAGE_FETCH_TIMEOUT = _get_env_float(
 )
 _MAX_SAFE_TOOL_MESSAGE_CHARS = _get_env_int(
     "AGENT_LOOP_MAX_SAFE_TOOL_MESSAGE_CHARS", 20000, min_value=1000
+)
+
+# ============== 弱模型 Agent Loop 调优（issue.md）==============
+# 弱模型（短上下文、工具调用准确率低）需更短的循环步数上限与更激进的 ToolMessage 截断，
+# 避免长循环撑爆上下文、provider 重试与前端逐 token 渲染卡死。
+_WEAK_MODEL_RECURSION_LIMIT = _get_env_int(
+    "AGENT_LOOP_WEAK_RECURSION_LIMIT", 160, min_value=20
+)
+_STRONG_MODEL_RECURSION_LIMIT = _get_env_int(
+    "AGENT_LOOP_STRONG_RECURSION_LIMIT", 1000, min_value=20
+)
+_WEAK_MODEL_TOOL_MESSAGE_CHARS = _get_env_int(
+    "AGENT_LOOP_WEAK_TOOL_MESSAGE_CHARS", 6000, min_value=1000
 )
 
 
@@ -491,16 +505,25 @@ def process_mcp_tool_output(content: Any) -> tuple:
     return content, summary
 
 
-def _build_sanitized_messages(messages: List[Any]) -> tuple[List[Any], int]:
+def _build_sanitized_messages(
+    messages: List[Any], tool_message_chars: int = _MAX_SAFE_TOOL_MESSAGE_CHARS
+) -> tuple[List[Any], int]:
     """
     构建合法的消息列表：
     1) 为缺失 ToolMessage 响应的 tool_call 插入占位 ToolMessage
     2) 清理悬空的 ToolMessage（无匹配 tool_call）
     3) 清理有问题的 ToolMessage（content 非字符串 / 过长 / 含 base64）
+
+    Args:
+        messages: 原始消息列表
+        tool_message_chars: ToolMessage 内容安全上限（弱模型下调以更早截断大输出）
+
     返回 (clean_messages, fix_count)
     """
     result: List[Any] = []
     fix_count = 0
+
+    safe_chars = max(1000, int(tool_message_chars or _MAX_SAFE_TOOL_MESSAGE_CHARS))
 
     # 当前 pending 的 tool_call IDs 及其工具名
     pending_call_ids: List[str] = []
@@ -524,7 +547,7 @@ def _build_sanitized_messages(messages: List[Any]) -> tuple[List[Any], int]:
         content = getattr(msg, "content", None)
         if content is None or not isinstance(content, str):
             return True
-        if len(content) > _MAX_SAFE_TOOL_MESSAGE_CHARS:
+        if len(content) > safe_chars:
             return True
         if "data:image/" in content and "base64," in content:
             return True
@@ -585,9 +608,13 @@ async def _sanitize_history_before_model_call(
     agent: Any,
     invoke_config: Dict[str, Any],
     log_prefix: str,
+    tool_message_chars: int = _MAX_SAFE_TOOL_MESSAGE_CHARS,
 ) -> Dict[str, Any]:
     """
     统一历史修复入口：读取状态，构建合法消息列表，若有修复则用 REMOVE_ALL + 完整列表覆写。
+
+    Args:
+        tool_message_chars: ToolMessage 内容安全上限（弱模型下调）
     """
     try:
         current_state = await agent.aget_state(invoke_config)
@@ -604,7 +631,7 @@ async def _sanitize_history_before_model_call(
     if not messages:
         return {"removed_count": 0, "sanitized": False}
 
-    clean_msgs, fix_count = _build_sanitized_messages(messages)
+    clean_msgs, fix_count = _build_sanitized_messages(messages, tool_message_chars)
     if fix_count == 0:
         return {"removed_count": 0, "sanitized": False}
 
@@ -884,6 +911,24 @@ class AgentLoopStreamAPIView(View):
             )
             return
 
+        # 模型能力分层：弱模型缩短循环步数上限并更激进地截断 ToolMessage
+        model_tier = get_model_tier(active_config)
+        is_weak_model = model_tier == "weak"
+        recursion_limit = (
+            _WEAK_MODEL_RECURSION_LIMIT
+            if is_weak_model
+            else _STRONG_MODEL_RECURSION_LIMIT
+        )
+        tool_message_chars = (
+            _WEAK_MODEL_TOOL_MESSAGE_CHARS if is_weak_model else _MAX_SAFE_TOOL_MESSAGE_CHARS
+        )
+        logger.info(
+            "AgentLoopStreamAPI: model_tier=%s, recursion_limit=%d, tool_message_chars=%d",
+            model_tier,
+            recursion_limit,
+            tool_message_chars,
+        )
+
         # 2. 验证多模态支持
         if uploaded_images_base64 and not active_config.supports_vision:
             yield create_sse_data(
@@ -1087,7 +1132,9 @@ class AgentLoopStreamAPIView(View):
                 # 13. 配置调用参数
                 invoke_config = {
                     "configurable": {"thread_id": thread_id},
-                    "recursion_limit": 1000,  # 支持约500次工具调用
+                    # 弱模型下调递归上限（约 recursion_limit/2 次工具调用），
+                    # 避免工具调用准确率低导致长循环撑爆上下文
+                    "recursion_limit": recursion_limit,
                 }
                 input_messages = {"messages": [user_msg]}
 
@@ -1096,6 +1143,7 @@ class AgentLoopStreamAPIView(View):
                     agent=agent,
                     invoke_config=invoke_config,
                     log_prefix="AgentLoopStreamAPI",
+                    tool_message_chars=tool_message_chars,
                 )
 
                 # 14. 步骤跟踪状态
@@ -1289,7 +1337,7 @@ class AgentLoopStreamAPIView(View):
                                                     {
                                                         "type": "step_start",
                                                         "step": step_count,
-                                                        "max_steps": self.MAX_STEPS,
+                                                        "max_steps": recursion_limit // 2,
                                                         "tools": tool_names_in_step,
                                                     }
                                                 )
@@ -1912,6 +1960,26 @@ class AgentLoopResumeAPIView(View):
                     active_config.context_limit, llm, model_name
                 )
 
+                # 模型能力分层：弱模型缩短循环步数上限并更激进地截断 ToolMessage
+                resume_model_tier = get_model_tier(active_config)
+                resume_is_weak = resume_model_tier == "weak"
+                resume_recursion_limit = (
+                    _WEAK_MODEL_RECURSION_LIMIT
+                    if resume_is_weak
+                    else _STRONG_MODEL_RECURSION_LIMIT
+                )
+                resume_tool_message_chars = (
+                    _WEAK_MODEL_TOOL_MESSAGE_CHARS
+                    if resume_is_weak
+                    else _MAX_SAFE_TOOL_MESSAGE_CHARS
+                )
+                logger.info(
+                    "AgentLoopResumeAPI: model_tier=%s, recursion_limit=%d, tool_message_chars=%d",
+                    resume_model_tier,
+                    resume_recursion_limit,
+                    resume_tool_message_chars,
+                )
+
                 # 4. 加载工具
                 tools = []
 
@@ -2021,7 +2089,8 @@ class AgentLoopResumeAPIView(View):
                 )
                 config = {
                     "configurable": {"thread_id": thread_id},
-                    "recursion_limit": 1000,
+                    # 弱模型下调递归上限
+                    "recursion_limit": resume_recursion_limit,
                 }
 
                 # 6.1 恢复执行前，先修复历史消息（配对错误 + 风险工具输出）
@@ -2029,6 +2098,7 @@ class AgentLoopResumeAPIView(View):
                     agent=agent,
                     invoke_config=config,
                     log_prefix="AgentLoopResumeAPI",
+                    tool_message_chars=resume_tool_message_chars,
                 )
 
                 # 7. 构建 Command 来 resume
@@ -2163,7 +2233,7 @@ class AgentLoopResumeAPIView(View):
                                                     {
                                                         "type": "step_start",
                                                         "step": step_count,
-                                                        "max_steps": self.MAX_STEPS,
+                                                        "max_steps": resume_recursion_limit // 2,
                                                         "tools": tool_names_in_step,
                                                     }
                                                 )

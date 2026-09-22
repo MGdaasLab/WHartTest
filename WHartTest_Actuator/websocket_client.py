@@ -128,6 +128,15 @@ class WebSocketClient:
             'headless': headless,
             'viewport_width': getattr(self.config, 'viewport_width', 1280) if self.config else 1280,
             'viewport_height': getattr(self.config, 'viewport_height', 720) if self.config else 720,
+            # HTTPS 客户端证书（供平台编辑弹窗预填）。
+            # ⚠️ 必须上报：平台编辑弹窗用 record.x ?? '' 回填，拿不到值时会提交空串，
+            # 而 views.py 的过滤是「value is not None」（空串放行），会误清执行器上已配置的路径。
+            # 刻意不上报 client_cert_passphrase —— 口令只留在执行器本机。
+            'client_cert_enabled': bool(getattr(self.config, 'client_cert_enabled', False)) if self.config else False,
+            'client_cert_pfx_path': (getattr(self.config, 'client_cert_pfx_path', '') or '') if self.config else '',
+            'client_cert_cert_path': (getattr(self.config, 'client_cert_cert_path', '') or '') if self.config else '',
+            'client_cert_key_path': (getattr(self.config, 'client_cert_key_path', '') or '') if self.config else '',
+            'client_cert_origins': (getattr(self.config, 'client_cert_origins', '') or '') if self.config else '',
             # 容器部署标识（供平台展示；观看模式经画布帧流，容器同样可用）
             'in_container': is_running_in_container(),
         }

@@ -1537,7 +1537,7 @@ const handleTabChange = async (tabId: string) => {
 // 初始化时恢复页签
 onMounted(async () => {
   // 恢复本地存储的页签
-  tabsStore.loadFromLocalStorage(projectStore.currentProjectId)
+  tabsStore.loadFromLocalStorage()
 
   if (projectStore.currentProjectId) {
     await Promise.all([
@@ -1588,7 +1588,7 @@ onMounted(async () => {
 
 // 保存页签到本地存储
 watch(() => tabsStore.tabs, () => {
-  tabsStore.saveToLocalStorage(projectStore.currentProjectId)
+  tabsStore.saveToLocalStorage()
 }, { deep: true })
 </script>
 

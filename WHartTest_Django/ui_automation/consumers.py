@@ -1760,6 +1760,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             'step_interval', 'log_level',
             'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
             'headless', 'viewport_width', 'viewport_height', 'in_container',
+            # HTTPS 客户端证书路径（不含 passphrase：口令只留在执行器本机）。
+            # 必须在此白名单内，否则 list_actuators 取不到值 → 前端以 '' 预填 →
+            # 保存时把执行器上已配置的路径清空。
+            'client_cert_enabled', 'client_cert_pfx_path', 'client_cert_cert_path',
+            'client_cert_key_path', 'client_cert_origins',
         )
         for key in config_keys:
             if key in args and args[key] is not None:

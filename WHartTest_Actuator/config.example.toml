@@ -35,6 +35,34 @@ launch_timeout = 30
 # 操作超时（秒）
 action_timeout = 30
 
+# ---------------------------------------------------------------------------
+# HTTPS 客户端证书
+# 用于访问要求「客户端证书」的 HTTPS 站点（如银行/内网自签名双向 TLS 站点）。
+# 证书文件只从本机路径读取，不会经过平台传输。
+#
+# 生效规则：
+#   1. 证书必须与访问站点精确匹配 origin（https://host[:port]），Playwright 不支持通配；
+#      origin 默认从用例的 base_url / 页面 URL 自动推导，无需手工填写。
+#   2. 访问「同证书的多个域名」时，用 client_cert_origins 补充（逗号分隔）。
+#   3. 不要把 .pfx 口令写在这里 —— 建议用环境变量注入（见下），避免明文落盘。
+# ---------------------------------------------------------------------------
+# 是否启用客户端证书
+client_cert_enabled = false
+# PKCS#12 证书文件（.pfx / .p12）；相对路径以本文件所在目录为基准
+# client_cert_pfx_path = "./certs/client.pfx"
+# PKCS#12 口令。强烈建议改用环境变量注入：
+#   WHARTTEST_ACTUATOR_CLIENT_CERT_PASSPHRASE=你的口令
+# client_cert_passphrase = ""
+# 或改用 PEM 方案（.pem/.crt + .key），与上面的 pfx 二选一（同时配置时优先 pfx）
+# client_cert_cert_path = "./certs/client.crt"
+# client_cert_key_path = "./certs/client.key"
+# 额外的生效 origin（逗号分隔），用于同证书覆盖多个域名
+# client_cert_origins = "https://a.example.com,https://b.example.com:8443"
+# 是否忽略 HTTPS 证书校验错误（服务端证书自签名时通常需要）
+# 留空或写 "auto" = 自动：stealth 开启或已配置客户端证书时启用，否则沿用 Playwright 默认
+# 也可显式写 true / false 强制覆盖
+# ignore_https_errors = "auto"
+
 [execution]
 # 失败重试次数
 retry_count = 3
@@ -66,3 +94,21 @@ level = "INFO"
 [gui]
 # GUI 语言: zh, en
 language = "zh"
+
+[model]
+# AI 模型配置（用于 step_type=10「AI操作」步骤，AI Agent 自主驱动 Playwright）
+# OpenAI 兼容端点（vllm / ollama / OpenAI / Azure 等均兼容）
+api_url = "http://192.168.2.180:3000/v1"
+api_key = "sk-Cra0HlWnPgKnL8VP03Df097eA3B24dBcB1904d32C3812783"
+# 模型名称
+model = "qwen3-coder"
+# 提供者类型（当前仅支持 openai_compatible，预留扩展）
+provider = "openai_compatible"
+# 是否为视觉模型(VLM)：true 时通过截图理解页面；false 时用可访问性树/innerText 文本快照
+supports_vision = false
+# 模型上下文上限(估算 token)，超过阈值会触发历史压缩
+context_limit = 100000
+# AI 单步骤最大工具调用轮数（安全阈值，避免死循环）
+max_steps = 25
+# 采样温度，0 表示尽量确定性
+temperature = 0.0

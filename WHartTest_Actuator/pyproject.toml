@@ -15,6 +15,11 @@ dependencies = [
     "customtkinter>=5.2.2",
     "pyinstaller>=6.18.0",
     "websocket-client>=1.9.0",
+    # AI Agent (step_type=10「AI操作」)：LangChain 接入 + 上下文管理
+    "langchain>=1.0.0",
+    "langchain-openai>=1.0.0",
+    "langgraph>=0.6.0",
+    "tiktoken>=0.7.0",
 ]
 
 [project.optional-dependencies]

@@ -431,6 +431,66 @@ These headers are automatically applied to all requests when using:
 
 **Use case:** Identify automated traffic so your backend can return LLM-optimized responses (e.g., plain text errors instead of styled HTML).
 
+### HTTPS Client Certificates
+
+Sites that require a **client certificate** (mutual TLS) are supported via environment variables.
+Certificates are read from the local filesystem only — they are never uploaded to the platform.
+
+```bash
+# PKCS#12 (.pfx/.p12) — most common
+PW_CLIENT_CERT_ORIGINS=https://internal.example.com
+PW_CLIENT_CERT_PFX=/app/data/certs/client.pfx
+PW_CLIENT_CERT_PASSPHRASE=changeit
+
+# Or PEM (cert + key pair). When both pfx and PEM are set, pfx wins.
+PW_CLIENT_CERT_ORIGINS=https://internal.example.com,https://other.example.com:8443
+PW_CLIENT_CERT_CERT=/app/data/certs/client.crt
+PW_CLIENT_CERT_KEY=/app/data/certs/client.key
+
+# Optional: force TLS verification on/off ('auto' = unset)
+PW_IGNORE_HTTPS_ERRORS=false
+```
+
+| Variable | Required | Meaning |
+|---|---|---|
+| `PW_CLIENT_CERT_ORIGINS` | yes | Comma-separated origins the certificate applies to, e.g. `https://host[:port]` |
+| `PW_CLIENT_CERT_PFX` | either this | PKCS#12 file path (`.pfx` / `.p12`) |
+| `PW_CLIENT_CERT_PASSPHRASE` | no | PKCS#12 passphrase |
+| `PW_CLIENT_CERT_CERT` + `PW_CLIENT_CERT_KEY` | or these | PEM certificate + private key |
+| `PW_IGNORE_HTTPS_ERRORS` | no | `true` / `false` / `auto` (default) |
+
+**Constraints (Playwright behaviour, not ours):**
+- `clientCertificates[].origin` must match **exactly** (`https://host[:port]`). Wildcards are **not** supported, which is why `PW_CLIENT_CERT_ORIGINS` is mandatory.
+- The certificate is only presented when the visited page's origin matches one of the configured origins. A mismatch fails **silently** (no certificate sent, no error) — verify the origin list first when TLS handshakes fail.
+- Certificate files are read when the context is created, so a wrong path throws at `newContext()`.
+
+**Auto behaviour:** when a client certificate is configured and `PW_IGNORE_HTTPS_ERRORS` is unset, TLS
+verification is relaxed automatically (`ignoreHTTPSErrors=true`) because client-certificate sites almost
+always use a self-signed server certificate. A warning is logged. Set `PW_IGNORE_HTTPS_ERRORS=false` to
+force strict verification.
+
+These options are applied automatically by:
+- `helpers.createContext(browser)` — merged into the context options
+- `getContextOptionsWithHeaders(options)` — utility injected by the run.js wrapper
+- `helpers.resolveContextCertOptions()` — returns `{ clientCertificates, ignoreHTTPSErrors }` for manual use
+
+Explicitly passed options always win over the environment variables.
+
+```javascript
+// Manual usage
+const { chromium } = require('playwright');
+const helpers = require('./lib/helpers');
+
+const browser = await chromium.launch();
+const ctx = await browser.newContext(helpers.getContextOptionsWithHeaders({
+  viewport: { width: 1440, height: 900 }
+}));
+await ctx.newPage().then(p => p.goto('https://internal.example.com'));
+```
+
+**macOS + WebKit caveat:** visiting `localhost` with a client certificate is not supported by WebKit on
+macOS; use `local.playwright` instead of `localhost` (documented Playwright limitation).
+
 ## Visual Testing
 
 ### Screenshots

@@ -20,6 +20,7 @@ class LLMConfigSerializer(serializers.ModelSerializer):
             "system_prompt",
             "supports_vision",
             "context_limit",
+            "model_tier",
             "enable_summarization",
             "enable_hitl",
             "enable_streaming",
@@ -72,6 +73,12 @@ class LLMConfigSerializer(serializers.ModelSerializer):
         if not (value.startswith("http://") or value.startswith("https://")):
             raise serializers.ValidationError("API地址必须以http://或https://开头")
 
+        return value
+
+    def validate_model_tier(self, value):
+        """验证模型能力分层"""
+        if value not in ("strong", "weak"):
+            raise serializers.ValidationError("模型能力分层必须为 'strong' 或 'weak'")
         return value
 
     def validate(self, attrs):

@@ -411,6 +411,17 @@
           </a-form-item>
         </template>
 
+        <!-- AI操作 -->
+        <template v-else-if="formData.step_type === 10">
+          <a-form-item field="ope_value.ai_prompt" :label="stepText.aiActionPrompt" required>
+            <a-textarea
+              v-model="aiPromptStr"
+              :placeholder="stepText.aiActionPlaceholder"
+              :auto-size="{ minRows: 4, maxRows: 12 }"
+            />
+          </a-form-item>
+        </template>
+
         <a-form-item field="description" :label="stepText.description">
           <a-input v-model="formData.description" :placeholder="stepText.optionalDescription" />
         </a-form-item>
@@ -653,6 +664,9 @@ const stepText = computed(() => isEnglish.value
       customVariablePlaceholder: 'Variable definition in JSON format',
       conditionConfig: 'Condition Config',
       conditionConfigPlaceholder: 'Condition config in JSON format',
+      aiActionPrompt: 'AI Action Prompt',
+      aiActionPlaceholder:
+        'Describe the UI action in natural language, including multi-step page operations, data handling and assertions. e.g. "Log in with username admin and password 123, then assert the dashboard header shows Welcome."',
       invalidJson: 'JSON config is invalid, please check the format',
       description: 'Description',
       optionalDescription: 'Optional description',
@@ -782,6 +796,9 @@ const stepText = computed(() => isEnglish.value
       customVariablePlaceholder: 'JSON 格式变量定义',
       conditionConfig: '条件配置',
       conditionConfigPlaceholder: 'JSON 格式条件配置',
+      aiActionPrompt: 'AI 操作描述',
+      aiActionPlaceholder:
+        '用自然语言描述本步骤要让 AI 执行的操作，可包含多步页面操作、数据处理与断言。例如：“用用户名 admin、密码 123 登录，然后断言首页标题显示 欢迎您。”',
       invalidJson: 'JSON 配置格式不正确，请检查',
       description: '描述',
       optionalDescription: '可选描述',
@@ -819,6 +836,8 @@ const stepTypeLabels = computed<Record<StepType, string>>(() => isEnglish.value
       2: 'SQL Action',
       3: 'Custom Variable',
       4: 'Condition',
+      5: 'Python Code',
+      10: 'AI Action',
     }
   : STEP_TYPE_LABELS
 )
@@ -976,6 +995,7 @@ const managedFileOptions = ref<any[]>([])
 const sqlExecuteStr = ref('{}')
 const customStr = ref('{}')
 const conditionValueStr = ref('{}')
+const aiPromptStr = ref('')
 
 /** 当前操作方法的参数定义 */
 const currentOpeParams = computed(() => {
@@ -1013,6 +1033,8 @@ const stepTypeColors: Record<StepType, string> = {
   2: 'purple',
   3: 'green',
   4: 'magenta',
+  5: 'gray',
+  10: 'red',
 }
 
 const flattenModules = (modules: UiModule[], level = 0): (UiModule & { __level?: number })[] => {
@@ -1311,6 +1333,7 @@ const resetForm = () => {
   sqlExecuteStr.value = '{}'
   customStr.value = '{}'
   conditionValueStr.value = '{}'
+  aiPromptStr.value = ''
   formRef.value?.clearValidate()
 }
 
@@ -1360,6 +1383,10 @@ const editStep = async (step: UiPageStepsDetailed) => {
   sqlExecuteStr.value = formatSqlConfigForEdit(step.sql_execute)
   customStr.value = JSON.stringify(step.custom || {}, null, 2)
   conditionValueStr.value = JSON.stringify(step.condition_value || {}, null, 2)
+  aiPromptStr.value =
+    (step.ope_value && typeof step.ope_value === 'object' && typeof step.ope_value.ai_prompt === 'string')
+      ? step.ope_value.ai_prompt
+      : ''
   modalVisible.value = true
 }
 
@@ -1549,6 +1576,12 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
       }
     }
   }
+  // AI操作：自然语言描述必填
+  if (formData.step_type === 10 && !aiPromptStr.value.trim()) {
+    Message.warning(stepText.value.aiActionPrompt)
+    done(false)
+    return
+  }
 
   // 预解析 JSON 配置字段：custom / condition_value 必须是合法 JSON，
   // 解析失败时提前提示，避免静默丢弃用户输入（SQL 步骤允许纯 SQL 文本，单独处理）
@@ -1581,7 +1614,9 @@ const handleSubmit = async (done: (closed: boolean) => void) => {
       element: formData.element || null,
       step_sort: isEdit.value && currentStep.value ? currentStep.value.step_sort : stepData.value.length,
       ope_key: formData.ope_key || undefined,
-      ope_value: buildOpeValue(),
+      ope_value: formData.step_type === 10
+        ? (aiPromptStr.value.trim() ? { ai_prompt: aiPromptStr.value } : undefined)
+        : buildOpeValue(),
       sql_execute: formData.step_type === 2 ? parseSqlConfig(sqlExecuteStr.value) : {},
       custom: customValue,
       condition_value: conditionValue,

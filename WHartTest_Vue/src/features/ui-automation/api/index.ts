@@ -281,6 +281,12 @@ export interface ActuatorInfo {
   viewport_height?: number
   // 是否容器（docker）部署
   in_container?: boolean
+  // HTTPS 客户端证书（执行器节点级配置；口令不下发、不回传）
+  client_cert_enabled?: boolean
+  client_cert_pfx_path?: string
+  client_cert_cert_path?: string
+  client_cert_key_path?: string
+  client_cert_origins?: string
 }
 
 /** 执行器可编辑配置 */
@@ -302,6 +308,12 @@ export interface ActuatorConfigPayload {
   headless?: boolean
   viewport_width?: number
   viewport_height?: number
+  // HTTPS 客户端证书（不含 passphrase：口令只留在执行器本机）
+  client_cert_enabled?: boolean
+  client_cert_pfx_path?: string
+  client_cert_cert_path?: string
+  client_cert_key_path?: string
+  client_cert_origins?: string
 }
 
 export interface ActuatorStatus {

@@ -226,6 +226,7 @@ class UiPageStepsDetailed(models.Model):
         (3, _('自定义变量')),
         (4, _('条件判断')),
         (5, _('Python代码')),
+        (10, _('AI操作')),
     ]
 
     page_step = models.ForeignKey(

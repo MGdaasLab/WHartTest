@@ -114,6 +114,14 @@
           </a-form-item>
         </a-col>
         <a-col :span="6">
+          <a-form-item field="model_tier" :label="text.modelTier">
+            <a-select v-model="formData.model_tier" :placeholder="text.modelTierPlaceholder">
+              <a-option value="strong">{{ text.modelTierStrong }}</a-option>
+              <a-option value="weak">{{ text.modelTierWeak }}</a-option>
+            </a-select>
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
           <a-form-item field="supports_vision" :label="text.multimodal">
             <a-space>
               <a-switch v-model="formData.supports_vision" />
@@ -235,6 +243,10 @@ const text = computed(() => (
         systemPrompt: 'System Prompt',
         systemPromptPlaceholder: 'Set the default system prompt for the model (optional)',
         contextLimit: 'Context Limit',
+        modelTier: 'Model Tier',
+        modelTierPlaceholder: 'Select model tier',
+        modelTierStrong: 'Strong (long context)',
+        modelTierWeak: 'Weak (short context)',
         multimodal: 'Multimodal',
         visionShort: 'Vision',
         streamingOutput: 'Streaming',
@@ -285,6 +297,10 @@ const text = computed(() => (
         systemPrompt: '系统提示词',
         systemPromptPlaceholder: '设置模型的默认 System Prompt（可选）',
         contextLimit: '上下文限制',
+        modelTier: '模型能力',
+        modelTierPlaceholder: '请选择模型能力',
+        modelTierStrong: '强（长上下文）',
+        modelTierWeak: '弱（短上下文）',
         multimodal: '多模态',
         visionShort: 'Vision',
         streamingOutput: '流式输出',
@@ -356,6 +372,7 @@ const defaultFormData: CreateLlmConfigRequest = {
   system_prompt: '',
   supports_vision: false,
   context_limit: 128000,
+  model_tier: 'strong',
   enable_summarization: true,
   enable_hitl: false,
   enable_streaming: true,
@@ -461,6 +478,7 @@ watch(
           system_prompt: props.configData.system_prompt || '',
           supports_vision: props.configData.supports_vision || false,
           context_limit: props.configData.context_limit || 128000,
+          model_tier: props.configData.model_tier || 'strong',
           enable_summarization: props.configData.enable_summarization ?? true,
           enable_hitl: props.configData.enable_hitl || false,
           enable_streaming: props.configData.enable_streaming ?? true,
@@ -506,6 +524,9 @@ const handleSubmit = async () => {
     }
     if (formData.value.context_limit !== undefined) {
       partialData.context_limit = formData.value.context_limit;
+    }
+    if (formData.value.model_tier !== undefined) {
+      partialData.model_tier = formData.value.model_tier;
     }
     if (formData.value.enable_summarization !== undefined) {
       partialData.enable_summarization = formData.value.enable_summarization;

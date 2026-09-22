@@ -197,21 +197,61 @@ async function main() {
           return browsers[type || 'chromium'].launch({ headless: false });
         },
         getExtraHeadersFromEnv: () => null,
+        // helpers 缺失时的兜底，保证 getContextOptionsWithHeaders 不报错
+        resolveContextCertOptions: () => ({ clientCertificates: null, ignoreHTTPSErrors: null }),
       };
     }
   }
 
   function getContextOptionsWithHeaders(options = {}) {
-    if (!helpers?.getExtraHeadersFromEnv) return options;
-    const extra = helpers.getExtraHeadersFromEnv();
-    if (!extra) return options;
-    return {
-      ...options,
-      extraHTTPHeaders: {
-        ...(extra || {}),
-        ...(options?.extraHTTPHeaders || {}),
-      },
-    };
+    const merged = { ...(options || {}) };
+
+    if (helpers?.getExtraHeadersFromEnv) {
+      const extra = helpers.getExtraHeadersFromEnv();
+      if (extra) {
+        merged.extraHTTPHeaders = {
+          ...extra,
+          ...(options?.extraHTTPHeaders || {}),
+        };
+      }
+    }
+
+    // HTTPS 客户端证书与 ignoreHTTPSErrors：来自平台注入的 PW_* 环境变量，
+    // 调用方显式传入的选项优先
+    const certOptions = helpers?.resolveContextCertOptions
+      ? helpers.resolveContextCertOptions()
+      : { clientCertificates: null, ignoreHTTPSErrors: null };
+
+    if (certOptions?.clientCertificates && merged.clientCertificates === undefined) {
+      merged.clientCertificates = certOptions.clientCertificates;
+    }
+    if (
+      certOptions?.ignoreHTTPSErrors !== null
+      && certOptions?.ignoreHTTPSErrors !== undefined
+      && merged.ignoreHTTPSErrors === undefined
+    ) {
+      merged.ignoreHTTPSErrors = certOptions.ignoreHTTPSErrors;
+    }
+
+    return merged;
+  }
+
+  // 参与「证书指纹」的环境变量。指纹只用于比较，不写日志（避免口令泄漏）。
+  const CERT_ENV_KEYS = [
+    'PW_CLIENT_CERT_PFX',
+    'PW_CLIENT_CERT_PASSPHRASE',
+    'PW_CLIENT_CERT_CERT',
+    'PW_CLIENT_CERT_KEY',
+    'PW_CLIENT_CERT_ORIGINS',
+    'PW_IGNORE_HTTPS_ERRORS',
+  ];
+  // 创建当前 context 时所用的证书配置指纹
+  let appliedCertFingerprint = null;
+
+  function clientCertFingerprint() {
+    return CERT_ENV_KEYS
+      .map((key) => `${key}=${process.env[key] || ''}`)
+      .join('|');
   }
 
   async function resetBrowserState() {
@@ -224,6 +264,8 @@ async function main() {
     state.page = null;
     state.context = null;
     state.browser = null;
+    // context 已销毁，指纹作废，下次重建时重新记录
+    appliedCertFingerprint = null;
 
     serverLog('[resetBrowserState] closing browser (then context/page fallback)');
     if (browser) {
@@ -290,6 +332,8 @@ async function main() {
 
     if (!state.context) {
       state.context = await state.browser.newContext(getContextOptionsWithHeaders({}));
+      // 记录建这个 context 时用的证书配置，供 exec 分支判断是否需要重建
+      appliedCertFingerprint = clientCertFingerprint();
     }
 
     if (!state.page || (typeof state.page.isClosed === 'function' && state.page.isClosed())) {
@@ -421,6 +465,12 @@ state.page = page;
         }
 
         if (method === 'exec') {
+          // ensureBrowserContextPage 每个 session 只建一次 context，
+          // 证书相关 env 变化时必须先销毁，否则新证书不会生效
+          if (state.context && clientCertFingerprint() !== appliedCertFingerprint) {
+            serverLog('[exec] client certificate env changed; recreating browser context');
+            await resetBrowserState();
+          }
           await ensureBrowserContextPage();
           const code = resolveCodeFromArgs(params.args);
           if (!code) {

@@ -84,6 +84,15 @@ docs/competitive-analysis/
 # Actuator
 WHartTest_Actuator/config.toml
 
+# add develop files
+ISSUE.md
+issue.md
+WHartTest_Actuator/release/browsers/
+WHartTest_Actuator/release/data/
+WHartTest_Actuator/release/WHartTest_Actuator.exe
+!.claude/
+.workbuddy/
+
 # zcode
 .zcode
 ~/.dsh

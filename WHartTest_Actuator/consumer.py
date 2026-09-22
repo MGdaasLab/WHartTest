@@ -23,10 +23,21 @@ from executor import (
     PlaywrightExecutor, StepConfig, PageStepConfig, TestCaseConfig
 )
 from data_processor import reset_data_processor, DataProcessor
-from runtime_env import resolve_runtime_file_path
+from runtime_env import resolve_runtime_file_path, TRUE_VALUES as _TRUE_VALUES
 from frame_stream import FrameStreamer, stream_enabled
 
 logger = logging.getLogger('actuator')
+
+
+def coerce_bool(value: Any) -> bool:
+    """把平台下发的值（可能是 bool、``"true"``、``1``）统一成 bool。"""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUE_VALUES
+    return bool(value)
 
 
 class TaskConsumer:
@@ -71,8 +82,20 @@ class TaskConsumer:
                 'trace_screenshots': getattr(config, 'trace_screenshots', True),
                 'trace_snapshots': getattr(config, 'trace_snapshots', True),
                 'trace_sources': getattr(config, 'trace_sources', False),
+                # HTTPS 客户端证书（节点级）。口令只留在内存，不进平台通道。
+                'client_cert_enabled': getattr(config, 'client_cert_enabled', False),
+                'client_cert_pfx_path': getattr(config, 'client_cert_pfx_path', None),
+                'client_cert_passphrase': getattr(config, 'client_cert_passphrase', None),
+                'client_cert_cert_path': getattr(config, 'client_cert_cert_path', None),
+                'client_cert_key_path': getattr(config, 'client_cert_key_path', None),
+                'client_cert_origins': getattr(config, 'client_cert_origins', None),
+                'client_cert_config_dir': (
+                    str(config.config_dir) if getattr(config, 'config_dir', None) else None
+                ),
+                'ignore_https_errors': getattr(config, 'ignore_https_errors', None),
             }
         self.executor = PlaywrightExecutor(**executor_config)
+        self._inject_model_config(config)
         self.task_queue: asyncio.Queue[QueueModel] = asyncio.Queue()
         self._stop_event = asyncio.Event()
         self._current_user: Optional[str] = None
@@ -121,7 +144,31 @@ class TaskConsumer:
 
         if cleaned_count > 0:
             logger.info(f"已清理 {cleaned_count} 个超过 {max_age_days} 天的过期文件")
-    
+
+    def _inject_model_config(self, config) -> None:
+        """把 config 中的 AI 模型配置注入到执行器（用于 step_type=10「AI操作」）。"""
+        if not config:
+            return
+        try:
+            from agent.models import AgentModelConfig
+            model_cfg = AgentModelConfig(
+                api_url=getattr(config, 'model_api_url', ''),
+                api_key=getattr(config, 'model_api_key', ''),
+                model=getattr(config, 'model_name', 'qwen3-coder'),
+                provider=getattr(config, 'model_provider', 'openai_compatible'),
+                supports_vision=bool(getattr(config, 'model_supports_vision', False)),
+                context_limit=int(getattr(config, 'model_context_limit', 100000)),
+                max_steps=int(getattr(config, 'model_max_steps', 25)),
+                temperature=float(getattr(config, 'model_temperature', 0.0)),
+            )
+            self.executor.model_config = model_cfg
+            logger.info(
+                f"AI 模型已注入: {model_cfg.model} @ {model_cfg.api_url}"
+                f" (vision={model_cfg.supports_vision}, limit={model_cfg.context_limit})"
+            )
+        except Exception as e:
+            logger.warning(f"注入 AI 模型配置失败: {e}")
+
     async def _get_api_token(self) -> Optional[str]:
         """获取API认证token"""
         if self._api_token:
@@ -404,7 +451,32 @@ class TaskConsumer:
         'headless': 'headless',
         'viewport_width': 'viewport_width',
         'viewport_height': 'viewport_height',
+        # HTTPS 客户端证书。刻意不含 client_cert_passphrase：
+        # 口令不下发、不回传、不落盘，只由本机 config.toml / 环境变量提供。
+        'client_cert_enabled': 'client_cert_enabled',
+        'client_cert_pfx_path': 'client_cert_pfx_path',
+        'client_cert_cert_path': 'client_cert_cert_path',
+        'client_cert_key_path': 'client_cert_key_path',
+        'client_cert_origins': 'client_cert_origins',
     }
+
+    # 命中这些关键字（小写包含匹配）的配置项在写日志前会被脱敏
+    _SENSITIVE_KEYWORDS = ('passphrase', 'password', 'api_key', 'secret', 'token')
+
+    @classmethod
+    def _redact(cls, payload: Any) -> Any:
+        """递归脱敏，避免口令类字段被写进日志。"""
+        if isinstance(payload, dict):
+            result = {}
+            for key, value in payload.items():
+                if any(word in str(key).lower() for word in cls._SENSITIVE_KEYWORDS):
+                    result[key] = '***' if value else value
+                else:
+                    result[key] = cls._redact(value)
+            return result
+        if isinstance(payload, list):
+            return [cls._redact(item) for item in payload]
+        return payload
 
     async def apply_config_update(self, args: dict):
         """应用平台下发的执行器配置：更新内存配置 + 写回 config.toml + 实时生效"""
@@ -447,6 +519,22 @@ class TaskConsumer:
             for key in ('trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources'):
                 if key in args:
                     setattr(self.executor, key, bool(args[key]))
+            # HTTPS 客户端证书热更新（口令不在平台通道内，保持本机已配置值不变）
+            cert_keys = (
+                'client_cert_enabled', 'client_cert_pfx_path',
+                'client_cert_cert_path', 'client_cert_key_path', 'client_cert_origins',
+            )
+            if any(key in args for key in cert_keys):
+                self.executor.configure_client_cert(
+                    enabled=(
+                        coerce_bool(args['client_cert_enabled'])
+                        if 'client_cert_enabled' in args else None
+                    ),
+                    pfx_path=args.get('client_cert_pfx_path'),
+                    cert_path=args.get('client_cert_cert_path'),
+                    key_path=args.get('client_cert_key_path'),
+                    origins=args.get('client_cert_origins'),
+                )
 
         # 4. 动态调整日志级别
         if 'log_level' in args and args['log_level']:
@@ -455,7 +543,7 @@ class TaskConsumer:
                 logging.getLogger('actuator').setLevel(getattr(logging, level))
                 logger.info(f"日志级别已更新为: {level}")
 
-        logger.info(f"执行器配置已更新: {args}")
+        logger.info(f"执行器配置已更新: {self._redact(args)}")
 
         # 5. 重新上报能力（browser_type/max_concurrent 等变化需同步给平台）
         try:
@@ -492,6 +580,20 @@ class TaskConsumer:
             actuator['name'] = updates['name']
 
         for key in ('browser_type', 'persistent', 'launch_timeout', 'action_timeout', 'headless', 'viewport_width', 'viewport_height'):
+            if key in updates and updates[key] is not None:
+                browser[key] = updates[key]
+        # 客户端证书（不含 passphrase：从不经平台通道，保持本机原值）
+        for key in (
+            'client_cert_enabled', 'client_cert_pfx_path',
+            'client_cert_cert_path', 'client_cert_key_path', 'client_cert_origins',
+        ):
+            if key in updates and updates[key] is not None:
+                browser[key] = updates[key]
+        # 客户端证书（不含 passphrase：从不经平台通道，保持本机原值）
+        for key in (
+            'client_cert_enabled', 'client_cert_pfx_path',
+            'client_cert_cert_path', 'client_cert_key_path', 'client_cert_origins',
+        ):
             if key in updates and updates[key] is not None:
                 browser[key] = updates[key]
         for key in ('retry_count', 'step_interval', 'max_concurrent', 'fail_fast'):
@@ -1492,21 +1594,25 @@ class TaskConsumer:
             
             # 支持多种格式：{"text": "admin"}, {"value": "xxx"}, {"timeout": 3000}, 或纯字符串/数字
             if isinstance(ope_value, dict):
-                # 按优先级尝试提取常见字段
-                input_value = (
-                    ope_value.get('text') or
-                    ope_value.get('value') or
-                    ope_value.get('timeout') or  # wait 操作使用 timeout
-                    ope_value.get('url') or      # goto 操作可能使用 url
-                    ope_value.get('key') or      # press 操作可能使用 key
-                    ope_value.get('expected') or # 断言使用 expected
-                    ''
-                )
-                # 如果所有已知字段都没有，且字典不为空，取第一个值
-                if not input_value and ope_value:
-                    input_value = next(iter(ope_value.values()), '')
-                # 确保转换为字符串
-                input_value = str(input_value) if input_value else ''
+                # step_type==10「AI操作」：直接取 ai_prompt 作为自然语言输入
+                if step_type == 10:
+                    input_value = str(ope_value.get('ai_prompt', '') or '')
+                else:
+                    # 按优先级尝试提取常见字段
+                    input_value = (
+                        ope_value.get('text') or
+                        ope_value.get('value') or
+                        ope_value.get('timeout') or  # wait 操作使用 timeout
+                        ope_value.get('url') or      # goto 操作可能使用 url
+                        ope_value.get('key') or      # press 操作可能使用 key
+                        ope_value.get('expected') or # 断言使用 expected
+                        ''
+                    )
+                    # 如果所有已知字段都没有，且字典不为空，取第一个值
+                    if not input_value and ope_value:
+                        input_value = next(iter(ope_value.values()), '')
+                    # 确保转换为字符串
+                    input_value = str(input_value) if input_value else ''
             else:
                 input_value = str(ope_value) if ope_value else ''
             # 定位器值也可能包含变量

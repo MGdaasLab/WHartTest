@@ -28,6 +28,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 COPY . /app
 
-RUN mkdir -p /app/data/browser /app/data/screenshots /app/data/traces
+# /app/certs 用于挂载 HTTPS 客户端证书（只读挂载，例如：
+#   -v ./certs:/app/certs:ro -e WHARTTEST_ACTUATOR_CLIENT_CERT_PFX_PATH=/app/certs/client.pfx
+# 证书不会被打进镜像，需由使用者自行提供。
+RUN mkdir -p /app/data/browser /app/data/screenshots /app/data/traces /app/certs
 
 CMD ["python", "main.py"]

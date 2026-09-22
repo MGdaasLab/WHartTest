@@ -212,7 +212,8 @@ def get_testcases(project_id: int, module_id: int):
     try:
         resp = requests.get(url, headers=_headers())
         resp.raise_for_status()
-        data = resp.json().get("data", [])
+        data = resp.json().get("data", {})
+        data = data.get("results", [])
         return [{"case_id": i.get("id"), "case_name": i.get("name")} for i in data]
     except Exception as e:
         return {"error": str(e)}
