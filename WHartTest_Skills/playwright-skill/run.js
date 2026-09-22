@@ -125,21 +125,39 @@ const helpers = require('./lib/helpers');
 // 从环境变量读取额外请求头（如有配置）
 const __extraHeaders = helpers.getExtraHeadersFromEnv();
 
+// 从环境变量读取 HTTPS 客户端证书与 TLS 校验开关（如有配置）。
+// 用 typeof 守卫：即使 helpers 版本较旧（没有这两个函数）也不会整体报错。
+const __certOptions = typeof helpers.resolveContextCertOptions === 'function'
+  ? helpers.resolveContextCertOptions()
+  : { clientCertificates: null, ignoreHTTPSErrors: null };
+
 /**
  * 将环境变量请求头合并到 context 配置。
  * 当直接使用原生 Playwright API 创建 context（而非 helpers.createContext）时使用。
+ * 同时合并环境变量中的客户端证书与 ignoreHTTPSErrors
+ * （仅在调用方未显式指定时才合并，调用方传参优先）。
  * @param {Object} options - Context 配置
- * @returns {Object} 合并了 extraHTTPHeaders 的配置对象
+ * @returns {Object} 合并后的配置对象
  */
 function getContextOptionsWithHeaders(options = {}) {
-  if (!__extraHeaders) return options;
-  return {
-    ...options,
-    extraHTTPHeaders: {
+  const merged = { ...options };
+
+  if (__extraHeaders) {
+    merged.extraHTTPHeaders = {
       ...__extraHeaders,
       ...(options.extraHTTPHeaders || {})
-    }
-  };
+    };
+  }
+
+  if (__certOptions.clientCertificates && merged.clientCertificates === undefined) {
+    merged.clientCertificates = __certOptions.clientCertificates;
+  }
+
+  if (__certOptions.ignoreHTTPSErrors !== null && merged.ignoreHTTPSErrors === undefined) {
+    merged.ignoreHTTPSErrors = __certOptions.ignoreHTTPSErrors;
+  }
+
+  return merged;
 }
 
 (async () => {

@@ -131,6 +131,7 @@ a = Analysis(
         'websocket_client',
         'consumer',
         'executor',
+        'client_cert',
         'models',
         'data_processor',
         'gui',

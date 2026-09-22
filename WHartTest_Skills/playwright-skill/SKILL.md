@@ -179,6 +179,37 @@ node run.js "const dir = process.env.SCREENSHOT_DIR; const browser = await chrom
 5. **console.log()**：用于输出执行进度和结果
 6. **headless: false**：调试时使用可见模式，方便观察
 
+## HTTPS 客户端证书（双向 TLS 站点）
+
+访问需要**客户端证书**的 HTTPS 站点时，无需改代码 —— 平台通过环境变量注入，`helpers.createContext()`
+与 `getContextOptionsWithHeaders()` 会自动带上。
+
+```bash
+# PKCS#12（.pfx/.p12，最常用）
+PW_CLIENT_CERT_ORIGINS=https://internal.example.com
+PW_CLIENT_CERT_PFX=/app/data/certs/client.pfx
+PW_CLIENT_CERT_PASSPHRASE=changeit
+
+# 或 PEM 方案（cert + key）；两者同时配置时优先 pfx
+PW_CLIENT_CERT_CERT=/app/data/certs/client.crt
+PW_CLIENT_CERT_KEY=/app/data/certs/client.key
+
+# 可选：强制开关 HTTPS 证书校验（auto/true/false，默认 auto）
+PW_IGNORE_HTTPS_ERRORS=false
+```
+
+要点：
+
+1. `PW_CLIENT_CERT_ORIGINS` 是**必填**的，且必须是 `https://host[:port]` 形式。Playwright 要求 origin
+   **精确匹配、不支持通配**，所以无法自动推断 —— 需要按实际访问域名填写，多个用逗号分隔。
+2. **origin 不匹配时证书会被静默丢弃**（不报错、也不发证书）。访问双向 TLS 站点报握手失败时，
+   先核对 `PW_CLIENT_CERT_ORIGINS` 与页面实际 origin 是否完全一致（含端口）。
+3. 证书文件在创建 context 时才读取，路径写错会在 `newContext()` 抛 `ENOENT`。
+4. 已启用客户端证书且未显式设置 `PW_IGNORE_HTTPS_ERRORS` 时，会自动放宽 HTTPS 证书校验
+   （这类站点通常同时使用自签名服务端证书），并打印一条告警。需要严格校验时设 `false`。
+5. 若代码里直接调用 `chromium.launch()` + `browser.newContext()`，请用
+   `getContextOptionsWithHeaders({...})` 包裹 options，否则证书不会生效。
+
 ## 持久化会话模式
 
 对于需要**跨多个步骤保持浏览器打开**的场景（如自动化测试用例），使用 `session_id` 参数：

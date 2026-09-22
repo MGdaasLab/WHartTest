@@ -420,6 +420,50 @@ def _resolve_skill_runtime_backend_url() -> str:
     return "http://127.0.0.1:8000"
 
 
+# 客户端证书配置：backend 侧变量名 -> 注入给 skill 子进程的变量名
+_CLIENT_CERT_ENV_MAP = (
+    ("PLAYWRIGHT_CLIENT_CERT_PFX", "PW_CLIENT_CERT_PFX"),
+    ("PLAYWRIGHT_CLIENT_CERT_PASSPHRASE", "PW_CLIENT_CERT_PASSPHRASE"),
+    ("PLAYWRIGHT_CLIENT_CERT_CERT", "PW_CLIENT_CERT_CERT"),
+    ("PLAYWRIGHT_CLIENT_CERT_KEY", "PW_CLIENT_CERT_KEY"),
+    ("PLAYWRIGHT_CLIENT_CERT_ORIGINS", "PW_CLIENT_CERT_ORIGINS"),
+    ("PLAYWRIGHT_IGNORE_HTTPS_ERRORS", "PW_IGNORE_HTTPS_ERRORS"),
+)
+
+# 这些变量在日志中必须脱敏
+_CLIENT_CERT_SECRET_ENV = frozenset({"PW_CLIENT_CERT_PASSPHRASE"})
+
+
+def _resolve_skill_client_cert_env() -> dict:
+    """解析要注入给 skill 子进程的 HTTPS 客户端证书环境变量。
+
+    取值优先级：Django settings -> 进程环境变量。空值不注入（避免用空串覆盖 skill 侧默认）。
+
+    注意：证书路径必须是 **backend 容器内可见的绝对路径** —— Node 子进程的 cwd 是 skill 目录
+    （MEDIA_ROOT 下），相对路径不可预期。
+    """
+    resolved: dict = {}
+    for setting_name, env_name in _CLIENT_CERT_ENV_MAP:
+        value = getattr(settings, setting_name, None)
+        if value is None:
+            value = os.environ.get(setting_name)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text:
+            continue
+        resolved[env_name] = text
+    return resolved
+
+
+def _redact_client_cert_env(cert_env: dict) -> dict:
+    """日志用：口令脱敏，只保留路径与 origin，便于排查配置问题。"""
+    return {
+        key: ("***" if key in _CLIENT_CERT_SECRET_ENV else value)
+        for key, value in cert_env.items()
+    }
+
+
 def get_skill_tools(
     user_id: int,
     project_id: Optional[int] = None,
@@ -535,6 +579,16 @@ def get_skill_tools(
             )
             env["SKILL_OUTPUT_DIR"] = artifacts_dir
             env["ARTIFACT_DIR"] = artifacts_dir
+
+            # HTTPS 客户端证书（可选）：口令只注入，绝不写日志
+            cert_env = _resolve_skill_client_cert_env()
+            if cert_env:
+                env.update(cert_env)
+                logger.info(
+                    "[execute_skill_script] 已注入 HTTPS 客户端证书配置: %s",
+                    _redact_client_cert_env(cert_env),
+                )
+
             artifacts_before = _snapshot_artifact_files(artifacts_dir)
 
             # Windows 兼容：将单引号包裹的参数转换为双引号（用于 cmd.exe）

@@ -20,6 +20,7 @@ from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from models import StepResultModel, CaseResultModel
 from runtime_env import is_running_in_container
+import client_cert
 
 logger = logging.getLogger('actuator')
 
@@ -120,6 +121,14 @@ class PlaywrightExecutor:
         trace_sources: bool = False,
         stealth_enabled: bool = True,
         stealth_user_agent: Optional[str] = None,
+        client_cert_enabled: bool = False,
+        client_cert_pfx_path: Optional[str] = None,
+        client_cert_passphrase: Optional[str] = None,
+        client_cert_cert_path: Optional[str] = None,
+        client_cert_key_path: Optional[str] = None,
+        client_cert_origins: Optional[str] = None,
+        client_cert_config_dir: Optional[str] = None,
+        ignore_https_errors: Optional[bool] = None,
     ):
         self.browser_type = browser_type
         self.headless = headless
@@ -141,6 +150,28 @@ class PlaywrightExecutor:
         self.trace_sources = trace_sources
         self.stealth_enabled = stealth_enabled
         self.stealth_user_agent = stealth_user_agent
+
+        # HTTPS 客户端证书（节点级配置，详见 client_cert.py）
+        # ignore_https_errors 三态：None=auto / True / False
+        self.ignore_https_errors: Optional[bool] = ignore_https_errors
+        self._client_cert_enabled = bool(client_cert_enabled)
+        self._client_cert_pfx_path = client_cert_pfx_path or None
+        self._client_cert_passphrase = client_cert_passphrase or None
+        self._client_cert_cert_path = client_cert_cert_path or None
+        self._client_cert_key_path = client_cert_key_path or None
+        self._client_cert_origins = client_cert_origins or None
+        # 相对证书路径的基准目录（通常为 config.toml 所在目录）
+        self._client_cert_config_dir: Optional[Path] = (
+            Path(client_cert_config_dir) if client_cert_config_dir else None
+        )
+        # 本次任务推导出的 origin（由 set_task_origins 覆盖写入）
+        self._task_cert_origins: list[str] = []
+        # 依赖缺失类告警只提示一次，避免刷日志
+        self._cert_warned: set[str] = set()
+        # 解析后的证书文件绝对路径（惰性计算）
+        self._client_cert_resolved: Optional[dict] = None
+        # 已打印过 info 的证书指纹，避免每次建上下文都刷日志
+        self._client_cert_logged: Optional[tuple] = None
         
         self._playwright: Optional[Playwright] = None
         self._browser: Optional[Browser] = None
@@ -222,6 +253,183 @@ class PlaywrightExecutor:
         self._runtime_viewport = previous.get("_runtime_viewport")
         self._viewport_explicit = previous.get("_viewport_explicit", False)
 
+    # ------------------------------------------------------------------
+    # HTTPS 客户端证书
+    #
+    # Playwright 的 client_certificates 要求 origin 精确匹配
+    # （https://host[:port]，不支持通配），因此这里分两步：
+    #   1. 任务开始时用 set_task_origins() 固定本次任务的 origin 集合
+    #   2. 建上下文时 _build_client_certificates() 把它和证书材料组装成 Playwright 参数
+    # 详细约束见 client_cert.py 顶部说明。
+    # ------------------------------------------------------------------
+
+    def configure_client_cert(
+        self,
+        *,
+        enabled: Optional[bool] = None,
+        pfx_path: Optional[str] = None,
+        passphrase: Optional[str] = None,
+        cert_path: Optional[str] = None,
+        key_path: Optional[str] = None,
+        origins: Optional[str] = None,
+        config_dir: Optional[str] = None,
+    ) -> None:
+        """配置或热更新客户端证书。
+
+        仅更新显式传入（非 None）的字段，因此可安全地用于「平台只下发部分字段」的场景。
+        ``passphrase`` 属敏感信息，只保存在内存中，不写入日志。
+        """
+        if enabled is not None:
+            self._client_cert_enabled = bool(enabled)
+        if pfx_path is not None:
+            self._client_cert_pfx_path = pfx_path or None
+        if passphrase is not None:
+            self._client_cert_passphrase = passphrase or None
+        if cert_path is not None:
+            self._client_cert_cert_path = cert_path or None
+        if key_path is not None:
+            self._client_cert_key_path = key_path or None
+        if origins is not None:
+            self._client_cert_origins = origins or None
+        if config_dir is not None:
+            self._client_cert_config_dir = Path(config_dir) if config_dir else None
+
+        # 证书材料可能有变化，作废缓存与告警去重记录，让下一次建上下文重新评估
+        self._client_cert_resolved = None
+        self._cert_warned = set()
+
+    def _task_origins(self, *configs) -> list[str]:
+        """从任务配置推导出需要匹配的 https origin 集合。
+
+        来源：``env_config['base_url']``、``page_url``（用例级与页面步骤级），
+        再追加配置里的额外 origin 列表（``client_cert_origins``）。
+        非 https 与无法解析的项会被丢弃 —— Playwright 不支持通配，只能精确匹配。
+        """
+        candidates: list[str] = []
+
+        for config in configs:
+            if config is None:
+                continue
+            if isinstance(config, str):
+                candidates.append(config)
+                continue
+
+            env_config = getattr(config, 'env_config', None)
+            if isinstance(env_config, dict):
+                for key in ('base_url', 'page_url'):
+                    value = env_config.get(key)
+                    if value:
+                        candidates.append(str(value))
+
+            page_url = getattr(config, 'page_url', None)
+            if page_url:
+                candidates.append(str(page_url))
+
+            for page_step in getattr(config, 'page_steps', None) or []:
+                step_env = getattr(page_step, 'env_config', None)
+                if isinstance(step_env, dict):
+                    for key in ('base_url', 'page_url'):
+                        value = step_env.get(key)
+                        if value:
+                            candidates.append(str(value))
+                step_url = getattr(page_step, 'page_url', None)
+                if step_url:
+                    candidates.append(str(step_url))
+
+        origins = client_cert.parse_origins(*candidates)
+        for extra in client_cert.parse_origins(self._client_cert_origins):
+            if extra not in origins:
+                origins.append(extra)
+
+        return origins
+
+    def set_task_origins(self, origins) -> None:
+        """覆盖式设置本次任务的 origin 集合。
+
+        覆盖而非合并是刻意的：每个执行入口都会在开头调用本方法，因此不存在
+        「上一个任务的 origin 污染下一个任务」的可能，异常返回路径也无需额外清理。
+        """
+        if not origins:
+            self._task_cert_origins = []
+            return
+        if isinstance(origins, str):
+            origins = [origins]
+        self._task_cert_origins = client_cert.parse_origins(
+            *[str(item) for item in origins if item]
+        )
+
+    def _resolved_cert_files(self) -> dict:
+        """解析证书文件绝对路径（结果缓存，configure_client_cert 时作废）。"""
+        if self._client_cert_resolved is not None:
+            return self._client_cert_resolved
+
+        base_dir = self._client_cert_config_dir
+        self._client_cert_resolved = {
+            'pfx': client_cert.resolve_cert_path(self._client_cert_pfx_path, base_dir),
+            'cert': client_cert.resolve_cert_path(self._client_cert_cert_path, base_dir),
+            'key': client_cert.resolve_cert_path(self._client_cert_key_path, base_dir),
+        }
+        return self._client_cert_resolved
+
+    def _warn_cert_once(self, key: str, message: str) -> None:
+        """同一类证书告警只输出一次，避免每个上下文都刷屏。"""
+        if key in self._cert_warned:
+            return
+        self._cert_warned.add(key)
+        logger.warning(message)
+
+    def _build_client_certificates(self) -> list[dict]:
+        """构造 Playwright ``client_certificates`` 参数；不满足条件时返回 ``[]``。
+
+        注意：日志只输出指纹（证书路径 + origin），**绝不输出 passphrase**。
+        """
+        if not self._client_cert_enabled:
+            return []
+
+        resolved = self._resolved_cert_files()
+        pfx = resolved.get('pfx')
+        cert = resolved.get('cert')
+        key = resolved.get('key')
+
+        if pfx is None and (cert is None or key is None):
+            self._warn_cert_once(
+                'no-material',
+                "客户端证书已启用但未配置完整的证书文件"
+                "（需 client_cert_pfx_path，或 client_cert_cert_path + client_cert_key_path），"
+                "本次执行不启用客户端证书",
+            )
+            return []
+
+        for warning in client_cert.validate_cert_files(pfx_path=pfx, cert_path=cert, key_path=key):
+            self._warn_cert_once(f'file:{warning}', f"客户端证书配置告警：{warning}")
+
+        origins = self._task_cert_origins or client_cert.parse_origins(self._client_cert_origins)
+        if not origins:
+            self._warn_cert_once(
+                'no-origin',
+                "客户端证书已启用但未能推导出 https origin（任务的 base_url / page_url 均非 https，"
+                "且未配置 client_cert_origins）；Playwright 要求 origin 精确匹配且不支持通配，"
+                "本次执行不启用客户端证书",
+            )
+            return []
+
+        fingerprint = (str(pfx), str(cert), str(key), tuple(origins))
+        if fingerprint != self._client_cert_logged:
+            self._client_cert_logged = fingerprint
+            logger.info(
+                "HTTPS 客户端证书已启用，生效 origin：%s（证书文件：%s）",
+                client_cert.summarize_origins(origins),
+                pfx or cert,
+            )
+
+        return client_cert.build_client_certificates(
+            origins,
+            pfx_path=pfx,
+            passphrase=self._client_cert_passphrase,
+            cert_path=cert,
+            key_path=key,
+        )
+
 
     def _build_browser_launch_options(self) -> dict:
         """构建浏览器启动参数，兼容 Docker 无头场景。"""
@@ -261,12 +469,30 @@ class PlaywrightExecutor:
             if runtime_viewport:
                 viewport_explicit = True
 
+        # HTTPS 客户端证书与 ignore_https_errors 必须在 stealth 早退分支之前计算，
+        # 否则 stealth 关闭时既拿不到证书，也失去「容忍自签名服务端证书」的能力
+        # （而自签名恰恰是客户端证书最常见的搭配场景）。
+        client_certs = self._build_client_certificates()
+        if client_certs:
+            context_options["client_certificates"] = client_certs
+
+        # ignore_https_errors 三态：None = auto（跟随 stealth 与证书），True/False = 强制覆盖。
+        # auto 语义刻意与历史行为保持一致，避免对既有 stealth-off 部署造成安全回归：
+        #   stealth 开            -> True（与改动前完全一致）
+        #   stealth 关 + 无证书   -> 不设置（与改动前完全一致）
+        #   stealth 关 + 有证书   -> True（新增，客户端证书场景需要）
+        configured_ignore = getattr(self, "ignore_https_errors", None)
+        if configured_ignore is None:
+            ignore_https_errors = bool(self.stealth_enabled) or bool(client_certs)
+        else:
+            ignore_https_errors = bool(configured_ignore)
+        if ignore_https_errors:
+            context_options["ignore_https_errors"] = True
+
         if not self.stealth_enabled:
             if runtime_viewport:
                 context_options["viewport"] = runtime_viewport
             return context_options
-
-        context_options["ignore_https_errors"] = True
 
         if self.browser_type == "chromium":
             if viewport_explicit and runtime_viewport:
@@ -1170,6 +1396,8 @@ class PlaywrightExecutor:
         trace_name = f"case_{config.case_id}"
         
         try:
+            # 先固定本次任务的 origin，供 HTTPS 客户端证书精确匹配
+            self.set_task_origins(self._task_origins(config))
             # 使用带 trace 的浏览器会话
             async with self.browser_session_with_trace(trace_name) as page:
                 self._page = page
@@ -1338,6 +1566,8 @@ class PlaywrightExecutor:
         step_results = []
         
         try:
+            # 先固定本次任务的 origin，供 HTTPS 客户端证书精确匹配
+            self.set_task_origins(self._task_origins(config))
             async with self.browser_session() as page:
                 logger.info(f"开始执行页面步骤: {config.page_name}")
                 self._page_errors = []
@@ -1624,6 +1854,10 @@ class PlaywrightExecutor:
 
         semaphore = asyncio.Semaphore(max_concurrent)
 
+        # 批量用例共用一个 context 选项，因此这里取全部用例 origin 的并集，
+        # 一次性覆盖所有需要的客户端证书 origin（无需改成 per-case 选项）
+        self.set_task_origins(self._task_origins(*configs))
+
         # 确保浏览器已初始化（非持久化模式）
         if self._playwright is None:
             self._playwright = await async_playwright().start()
@@ -1694,4 +1928,6 @@ class PlaywrightExecutor:
             self._context = None
             self._page = None
             self._page_errors = []
+            # 批次结束，清掉本批次累积的 origin，避免影响后续任务
+            self.set_task_origins([])
             self._release_memory()

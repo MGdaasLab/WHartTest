@@ -2,6 +2,7 @@
 // Playwright 自动化可复用工具函数
 
 const { chromium, firefox, webkit } = require('playwright');
+const clientCert = require('./clientCert');
 
 /**
  * 从环境变量解析额外 HTTP 请求头。
@@ -346,6 +347,9 @@ async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 1000) {
  */
 async function createContext(browser, options = {}) {
   const envHeaders = getExtraHeadersFromEnv();
+  // HTTPS 客户端证书与 ignoreHTTPSErrors 均来自环境变量（由平台注入），
+  // 也可通过 options 显式覆盖（下面的 { ...defaultOptions, ...options } 会优先取 options）
+  const certOptions = clientCert.resolveContextCertOptions();
 
   // 将环境变量请求头与传入配置合并
   const mergedHeaders = {
@@ -363,7 +367,11 @@ async function createContext(browser, options = {}) {
     locale: options.locale || 'en-US',
     timezoneId: options.timezoneId || 'America/New_York',
     // 仅在存在请求头时附加 extraHTTPHeaders
-    ...(Object.keys(mergedHeaders).length > 0 && { extraHTTPHeaders: mergedHeaders })
+    ...(Object.keys(mergedHeaders).length > 0 && { extraHTTPHeaders: mergedHeaders }),
+    // 仅在已配置客户端证书时附加；未配置时不产生该键，保持原有行为
+    ...(certOptions.clientCertificates && { clientCertificates: certOptions.clientCertificates }),
+    // 仅在显式配置或已启用客户端证书时附加；否则沿用 Playwright 默认
+    ...(certOptions.ignoreHTTPSErrors !== null && { ignoreHTTPSErrors: certOptions.ignoreHTTPSErrors })
   };
 
   return await browser.newContext({ ...defaultOptions, ...options });
@@ -546,5 +554,9 @@ module.exports = {
   getExtraHeadersFromEnv,
   getPageText,
   getPageStructure,
-  describePageForAI
+  describePageForAI,
+  // HTTPS 客户端证书（re-export 自 ./clientCert，便于集中从 helpers 取用）
+  getClientCertificatesFromEnv: clientCert.getClientCertificatesFromEnv,
+  getIgnoreHttpsErrorsFromEnv: clientCert.getIgnoreHttpsErrorsFromEnv,
+  resolveContextCertOptions: clientCert.resolveContextCertOptions
 };

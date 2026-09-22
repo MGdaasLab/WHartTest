@@ -938,11 +938,15 @@ class UiEnvironmentConfigViewSet(viewsets.ModelViewSet):
 
 
 # 执行器可编辑配置字段白名单（与执行器 Config 属性一致）
+# 注意：刻意不含 client_cert_passphrase —— 客户端证书口令不下发、不回传、不落盘，
+# 只能由执行器本机的 config.toml / 环境变量提供。
 _ACTUATOR_CONFIG_FIELDS = frozenset({
     'name', 'browser_type', 'persistent', 'launch_timeout', 'action_timeout',
     'retry_count', 'step_interval', 'max_concurrent', 'log_level',
     'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources',
     'headless', 'viewport_width', 'viewport_height',
+    'client_cert_enabled', 'client_cert_pfx_path', 'client_cert_cert_path',
+    'client_cert_key_path', 'client_cert_origins',
 })
 
 
@@ -1001,6 +1005,14 @@ class ActuatorViewSet(viewsets.ViewSet):
                 'viewport_width': raw.get('viewport_width', 1280),
                 'viewport_height': raw.get('viewport_height', 720),
                 'in_container': raw.get('in_container', False),
+                # HTTPS 客户端证书（供编辑弹窗预填）。
+                # 必须回填：前端用 record.x ?? '' 初始化表单，拿不到值时会提交空串，
+                # 而 config 接口的过滤是「value is not None」（空串放行），会误清执行器上已配置的路径。
+                'client_cert_enabled': bool(raw.get('client_cert_enabled', False)),
+                'client_cert_pfx_path': raw.get('client_cert_pfx_path') or '',
+                'client_cert_cert_path': raw.get('client_cert_cert_path') or '',
+                'client_cert_key_path': raw.get('client_cert_key_path') or '',
+                'client_cert_origins': raw.get('client_cert_origins') or '',
             }
             actuators.append(item)
 
@@ -1090,7 +1102,7 @@ class ActuatorViewSet(viewsets.ViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless'):
+        for key in ('persistent', 'trace_enabled', 'trace_screenshots', 'trace_snapshots', 'trace_sources', 'headless', 'client_cert_enabled'):
             if key in normalized:
                 normalized[key] = bool(normalized[key])
 

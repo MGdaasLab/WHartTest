@@ -156,6 +156,52 @@
           </a-col>
         </a-row>
 
+        <a-divider orientation="left" class="section-divider">{{ pageText.clientCertSettings }}</a-divider>
+        <a-alert type="info" class="client-cert-hint">{{ pageText.clientCertHint }}</a-alert>
+        <a-form-item field="client_cert_enabled" :label="pageText.clientCertEnabled">
+          <a-switch v-model="formData.client_cert_enabled" />
+        </a-form-item>
+        <a-row :gutter="16">
+          <a-col :span="24">
+            <a-form-item field="client_cert_pfx_path" :label="pageText.clientCertPfxPath">
+              <a-input
+                v-model="formData.client_cert_pfx_path"
+                :placeholder="pageText.clientCertPfxPlaceholder"
+                :disabled="!formData.client_cert_enabled"
+                allow-clear
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="client_cert_cert_path" :label="pageText.clientCertCertPath">
+              <a-input
+                v-model="formData.client_cert_cert_path"
+                :disabled="!formData.client_cert_enabled"
+                allow-clear
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="client_cert_key_path" :label="pageText.clientCertKeyPath">
+              <a-input
+                v-model="formData.client_cert_key_path"
+                :disabled="!formData.client_cert_enabled"
+                allow-clear
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="24">
+            <a-form-item field="client_cert_origins" :label="pageText.clientCertOrigins">
+              <a-input
+                v-model="formData.client_cert_origins"
+                :placeholder="pageText.clientCertOriginsPlaceholder"
+                :disabled="!formData.client_cert_enabled"
+                allow-clear
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
+
         <a-divider orientation="left" class="section-divider">{{ pageText.executionSettings }}</a-divider>
         <a-row :gutter="16">
           <a-col :span="12">
@@ -258,6 +304,16 @@ const pageText = computed(() => (
         viewportWidthRange: 'Viewport width must be between 320 and 3840',
         viewportHeightRange: 'Viewport height must be between 240 and 2160',
         dockerHeadlessWarn: 'The current actuator is deployed in a Docker environment and cannot enable headed mode',
+        clientCertSettings: 'HTTPS Client Certificate',
+        clientCertEnabled: 'Enable client certificate',
+        clientCertPfxPath: 'PFX/P12 path',
+        clientCertPfxPlaceholder: 'e.g. ./certs/client.pfx (relative to config.toml)',
+        clientCertCertPath: 'PEM cert path',
+        clientCertKeyPath: 'PEM key path',
+        clientCertOrigins: 'Extra origins (comma separated)',
+        clientCertOriginsPlaceholder: 'e.g. https://a.example.com,https://b.example.com:8443',
+        clientCertHint: 'Used for HTTPS sites that require a client certificate. Origins are derived automatically from the case base_url / page URLs; fill extra origins only when one certificate covers multiple domains. The passphrase is NOT managed here — set WHARTTEST_ACTUATOR_CLIENT_CERT_PASSPHRASE on the actuator host.',
+        clientCertMaterialRequired: 'Provide a PFX/P12 path, or both PEM cert and key paths',
       }
     : {
         title: '在线执行器',
@@ -307,6 +363,16 @@ const pageText = computed(() => (
         viewportWidthRange: '视口宽度必须为 320-3840 之间的数',
         viewportHeightRange: '视口高度必须为 240-2160 之间的数',
         dockerHeadlessWarn: '当前执行器使用docker环境部署无法启用有头模式',
+        clientCertSettings: 'HTTPS 客户端证书',
+        clientCertEnabled: '启用客户端证书',
+        clientCertPfxPath: 'PFX/P12 证书路径',
+        clientCertPfxPlaceholder: '例如 ./certs/client.pfx（相对 config.toml 所在目录）',
+        clientCertCertPath: 'PEM 证书路径',
+        clientCertKeyPath: 'PEM 私钥路径',
+        clientCertOrigins: '额外生效 origin（逗号分隔）',
+        clientCertOriginsPlaceholder: '例如 https://a.example.com,https://b.example.com:8443',
+        clientCertHint: '用于访问要求客户端证书的 HTTPS 站点。origin 会从用例的 base_url / 页面地址自动推导，仅当一张证书覆盖多个域名时才需要补充额外 origin。证书口令不在此处管理，请在执行器本机设置环境变量 WHARTTEST_ACTUATOR_CLIENT_CERT_PASSPHRASE。',
+        clientCertMaterialRequired: '请填写 PFX/P12 路径，或同时填写 PEM 证书与私钥路径',
       }
 ))
 
@@ -392,6 +458,12 @@ const formData = reactive<ActuatorConfigPayload>({
   headless: true, // 无头模式默认开启
   viewport_width: 1280,
   viewport_height: 720,
+  // HTTPS 客户端证书（口令不在平台侧）
+  client_cert_enabled: false,
+  client_cert_pfx_path: '',
+  client_cert_cert_path: '',
+  client_cert_key_path: '',
+  client_cert_origins: '',
 })
 
 /** 生成数值范围校验规则：不纠正输入，校验失败时在输入框下方红字提示 */
@@ -410,6 +482,20 @@ const rangeValidator = (min: number, max: number, message: string) => ({
   },
 })
 
+/** 客户端证书材料校验：启用时必须给出 pfx，或同时给出 PEM cert 与 key */
+const clientCertMaterialValidator = {
+  validator: (_value: any, callback: (error?: string) => void) => {
+    if (!formData.client_cert_enabled) {
+      callback()
+      return
+    }
+    const pfx = (formData.client_cert_pfx_path || '').trim()
+    const cert = (formData.client_cert_cert_path || '').trim()
+    const key = (formData.client_cert_key_path || '').trim()
+    callback(pfx || (cert && key) ? undefined : pageText.value.clientCertMaterialRequired)
+  },
+}
+
 const formRules = {
   name: [{ required: true, message: pageText.value.actuatorNameRequired }],
   launch_timeout: [rangeValidator(10, 120, pageText.value.launchTimeoutRange)],
@@ -419,6 +505,9 @@ const formRules = {
   max_concurrent: [rangeValidator(1, 20, pageText.value.maxConcurrentRange)],
   viewport_width: [rangeValidator(320, 3840, pageText.value.viewportWidthRange)],
   viewport_height: [rangeValidator(240, 2160, pageText.value.viewportHeightRange)],
+  client_cert_pfx_path: [clientCertMaterialValidator],
+  client_cert_cert_path: [clientCertMaterialValidator],
+  client_cert_key_path: [clientCertMaterialValidator],
 }
 
 const openEdit = (record: ActuatorInfo) => {
@@ -440,6 +529,12 @@ const openEdit = (record: ActuatorInfo) => {
     headless: record.headless ?? true,
     viewport_width: record.viewport_width ?? 1280,
     viewport_height: record.viewport_height ?? 720,
+    client_cert_enabled: record.client_cert_enabled ?? false,
+    // 用 || '' 而非 ?? ''：后端可能返回 null，统一成空串，避免上一台的残留值串到下一条
+    client_cert_pfx_path: record.client_cert_pfx_path || '',
+    client_cert_cert_path: record.client_cert_cert_path || '',
+    client_cert_key_path: record.client_cert_key_path || '',
+    client_cert_origins: record.client_cert_origins || '',
   })
   formRef.value?.clearValidate()
   editVisible.value = true
@@ -547,5 +642,11 @@ onUnmounted(() => {
 .section-divider {
   margin-top: 4px;
   margin-bottom: 12px;
+}
+
+.client-cert-hint {
+  margin-bottom: 12px;
+  font-size: 12px;
+  line-height: 1.6;
 }
 </style>

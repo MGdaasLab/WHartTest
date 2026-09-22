@@ -69,6 +69,13 @@ services:
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80
       - USER_AGENT=${USER_AGENT:-WHartTest/2.7.2-ce}
+      # HTTPS 客户端证书（可选，供 AI Agent 的 playwright-skill 访问双向 TLS 站点）
+      # 证书文件放到 ./data/certs/ 下即可 —— ./data 已挂载到 /app/data，无需额外挂载。
+      # 路径必须是 backend 容器内可见的绝对路径；留空表示不启用。
+      - PLAYWRIGHT_CLIENT_CERT_PFX=${PLAYWRIGHT_CLIENT_CERT_PFX:-}
+      - PLAYWRIGHT_CLIENT_CERT_PASSPHRASE=${PLAYWRIGHT_CLIENT_CERT_PASSPHRASE:-}
+      - PLAYWRIGHT_CLIENT_CERT_ORIGINS=${PLAYWRIGHT_CLIENT_CERT_ORIGINS:-}
+      - PLAYWRIGHT_IGNORE_HTTPS_ERRORS=${PLAYWRIGHT_IGNORE_HTTPS_ERRORS:-}
       - DJANGO_ADMIN_USERNAME=${DJANGO_ADMIN_USERNAME:-admin}
       - DJANGO_ADMIN_EMAIL=${DJANGO_ADMIN_EMAIL:-admin@example.com}
       - DJANGO_ADMIN_PASSWORD=${DJANGO_ADMIN_PASSWORD:-admin123456}
