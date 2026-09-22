@@ -1,10 +1,10 @@
 # Django Web框架 - BSD许可证 (当前版本: 5.2)
 # https://github.com/django/django/blob/main/LICENSE
-Django==5.2
+Django==5.2.16
 
 # Django REST框架 - BSD许可证 (当前版本: 3.16.0)
 # https://github.com/encode/django-rest-framework/blob/master/LICENSE.md
-djangorestframework==3.16.0
+djangorestframework==3.17.2
 
 # JWT认证支持 - MIT许可证 (当前版本: 5.3.1)
 # https://github.com/jazzband/djangorestframework-simplejwt/blob/master/LICENSE
@@ -22,11 +22,11 @@ django-cors-headers==4.3.1
 # https://github.com/django/channels/blob/main/LICENSE
 channels==4.3.2
 channels-redis==4.3.0
-daphne==4.2.1
+daphne==4.2.2
 
 # 环境变量管理 - BSD许可证 (当前版本: 1.1.1)
 # https://github.com/theskumar/python-dotenv/blob/main/LICENSE
-python-dotenv==1.1.1
+python-dotenv==1.2.2
 
 # OpenAI API客户端 - MIT许可证 (v1.x 重大升级)
 # https://github.com/openai/openai-python/blob/main/LICENSE
@@ -46,7 +46,7 @@ langgraph==1.1.10
 
 # LangChain主库 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langchain/blob/master/LICENSE
-langchain==1.2.17
+langchain==1.3.9
 
 # Deep Agents SDK - MIT许可证
 # https://github.com/langchain-ai/deepagents/blob/main/LICENSE
@@ -54,7 +54,7 @@ deepagents==0.5.7
 
 # LangChain OpenAI集成 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langchain/blob/master/libs/partners/openai/LICENSE
-langchain-openai==1.1.7
+langchain-openai==1.1.14
 
 # LangChain DeepSeek集成 - MIT许可证
 # https://github.com/langchain-ai/langchain/tree/main/libs/partners/deepseek
@@ -80,7 +80,7 @@ langchain-core==1.3.3
 
 # LangGraph检查点 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint/LICENSE
-langgraph-checkpoint==4.0.0
+langgraph-checkpoint==4.1.1
 
 # LangGraph预构建组件 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langgraph/blob/main/libs/prebuilt/LICENSE
@@ -100,7 +100,7 @@ langgraph-checkpoint-sqlite>=3.0.3
 
 # LangGraph PostgreSQL检查点 - MIT许可证 (v1.x 重大升级)
 # https://github.com/langchain-ai/langgraph/blob/main/libs/checkpoint-postgres/LICENSE
-langgraph-checkpoint-postgres==3.0.3
+langgraph-checkpoint-postgres==3.1.1
 
 # PostgreSQL数据库驱动 - LGPL许可证
 # psycopg2-binary: Django ORM 使用
@@ -142,7 +142,7 @@ langchain-community==0.4.1
 
 # 文本分割器 - MIT许可证 (最新稳定版)
 # https://github.com/langchain-ai/langchain/blob/master/libs/text-splitters/LICENSE
-langchain-text-splitters==1.1.0
+langchain-text-splitters==1.1.2
 
 # Qdrant向量数据库 - Apache 2.0许可证 (v1.x 重大升级)
 # https://github.com/qdrant/qdrant-client/blob/master/LICENSE
@@ -210,7 +210,7 @@ beautifulsoup4==4.13.3
 # 文档处理依赖
 # PDF文件处理 - BSD许可证 (当前版本: 5.6.0)
 # https://github.com/py-pdf/pypdf/blob/main/LICENSE
-pypdf==5.6.0
+pypdf==6.16.1
 
 # Word文档处理 - MIT许可证 (当前版本: 1.1.2)
 # https://github.com/python-openxml/python-docx/blob/master/LICENSE
@@ -238,7 +238,7 @@ markdown==3.9
 
 # 非结构化文档处理 - Apache 2.0许可证 (当前版本: 0.17.2)
 # https://github.com/Unstructured-IO/unstructured/blob/main/LICENSE.md
-unstructured==0.17.2
+unstructured==0.18.32
 
 # HuggingFace模型依赖（已弃用 - 现使用CustomAPIEmbeddings通过API调用嵌入模型）
 # 如需使用本地嵌入模型，请取消注释以下依赖包：
