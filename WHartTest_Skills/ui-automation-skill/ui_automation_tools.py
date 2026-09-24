@@ -363,13 +363,21 @@ def create_page_step(project_id: int, page_id: int, module_id: int, name: str, d
     return result
 
 
-def update_page_step(step_id: int, name: str = None, description: str = None):
-    """更新页面步骤"""
+def update_page_step(step_id: int, name: str = None, description: str = None,
+                     auth_state_id: int = None, clear_auth_state: bool = False):
+    """更新页面步骤
+
+    auth_state_id: 绑定登录态（执行时优先注入）；clear_auth_state 传 True 清空绑定
+    """
     data = {}
     if name:
         data["name"] = name
     if description:
         data["description"] = description
+    if auth_state_id is not None:
+        data["auth_state_id"] = auth_state_id
+    elif clear_auth_state:
+        data["auth_state_id"] = None
     result = _request("PATCH", f"page-steps/{step_id}/", data=data)
     if result.get("status") == "success" or result.get("data"):
         return {"status": "success", "message": "页面步骤更新成功", "data": result.get("data", result)}
@@ -551,10 +559,45 @@ def get_execution_record(record_id: int):
 
 
 def get_execution_trace(record_id: int, refresh: bool = False):
-    """获取执行记录的 Trace 数据"""
+    """获取执行记录的 Trace 数据（过滤截图/base64 并截断，防止超长输出）"""
     params = {"refresh": "1"} if refresh else {}
     result = _request("GET", f"execution-records/{record_id}/trace/", params=params)
-    return result
+    data = result.get("data", result)
+    filtered = _filter_images(data)
+    text = json.dumps(filtered, ensure_ascii=False)
+    # Trace 原始数据可达数十 MB（含截图与 DOM 快照），超限截断只保留结构摘要
+    if len(text) > 100_000:
+        summary = _summarize_trace(filtered)
+        head = text[:20_000]
+        return {
+            "status": "truncated",
+            "message": f"Trace 原始数据 {len(text)} 字符，已截断。以下为结构摘要 + 前 20000 字符；"
+                       f"分析步骤失败原因请改用 get_execution_record（已过滤截图）。",
+            "summary": summary,
+            "head": head,
+        }
+    return filtered
+
+
+def _summarize_trace(data, depth: int = 0) -> dict:
+    """提取 trace 的结构摘要：步骤名/状态/错误消息，跳过截图与快照内容。"""
+    if depth > 4 or not isinstance(data, dict):
+        return {}
+    summary = {}
+    for k, v in data.items():
+        if k in ('screenshots', 'screenshot', 'image', 'images', 'base64', 'snapshots',
+                 'network_logs', 'console_logs', 'har_data', 'network_requests', 'source'):
+            continue
+        if k in ('error_message', 'message', 'status', 'name', 'title', 'step_name', 'url'):
+            summary[k] = str(v)[:300]
+        elif isinstance(v, list):
+            summary[k] = [
+                _summarize_trace(item, depth + 1) if isinstance(item, dict) else str(item)[:200]
+                for item in v[:30]
+            ]
+        elif isinstance(v, dict):
+            summary[k] = _summarize_trace(v, depth + 1)
+    return summary
 
 
 def delete_execution_record(record_id: int):
@@ -633,6 +676,53 @@ def delete_env_config(config_id: int):
     """删除环境配置"""
     _request("DELETE", f"env-configs/{config_id}/")
     return {"status": "success", "message": "环境配置删除成功"}
+
+
+# ==================== 环境登录态管理 ====================
+
+def get_auth_states(env_config_id: int):
+    """获取指定环境的登录态列表（仅元数据，不返回 state_json 内容）"""
+    result = _request("GET", "auth-states/", params={
+        "env_config": env_config_id,
+        "is_active": True,
+    })
+    data = result.get("data", result)
+    # 剥离 state_json，避免登录态快照内容进入对话上下文
+    items = data if isinstance(data, list) else (data.get("results") if isinstance(data, dict) else None) or []
+    for item in items:
+        if isinstance(item, dict):
+            item.pop("state_json", None)
+    return data
+
+
+def create_auth_state(env_config_id: int, name: str, state_file: str, description: str = ""):
+    """从 storageState 文件创建环境登录态
+
+    state_file: Playwright storageState JSON 文件路径
+               （playwright-cli state-save 的产物，或 WHARTTEST_UI_AUTH_STATE_FILE 指向的文件）
+    """
+    if not os.path.isfile(state_file):
+        return {"status": "error", "message": f"登录态文件不存在: {state_file}"}
+    try:
+        with open(state_file, "r", encoding="utf-8") as fh:
+            state_json = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return {"status": "error", "message": f"登录态文件读取失败: {exc}"}
+    data = {
+        "env_config": env_config_id,
+        "name": name,
+        "state_json": state_json,
+        "is_active": True,
+    }
+    if description:
+        data["description"] = description
+    result = _request("POST", "auth-states/", data=data)
+    if result.get("status") == "success" or result.get("data"):
+        created = result.get("data", result) or {}
+        if isinstance(created, dict):
+            created.pop("state_json", None)
+        return {"status": "success", "message": "登录态创建成功", "data": created}
+    return result
 
 
 # ==================== 执行器管理 ====================
@@ -892,6 +982,10 @@ def main():
     parser.add_argument("--record_id", type=int, help="执行记录 ID")
     parser.add_argument("--batch_id", type=int, help="批量执行记录 ID")
     parser.add_argument("--config_id", type=int, help="环境配置 ID")
+    parser.add_argument("--env_config_id", type=int, help="环境配置 ID（登录态归属的环境）")
+    parser.add_argument("--state_file", help="storageState JSON 文件路径（创建登录态用）")
+    parser.add_argument("--auth_state_id", type=int, help="登录态 ID（页面步骤绑定登录态用）")
+    parser.add_argument("--clear_auth_state", action="store_true", help="清空页面步骤的登录态绑定")
     parser.add_argument("--status", type=int, help="状态")
     parser.add_argument("--limit", type=int, default=20, help="限制返回数量")
     parser.add_argument("--refresh", action="store_true", help="强制刷新")
@@ -947,7 +1041,11 @@ def main():
         "get_page_steps": lambda: get_page_steps(args.project_id, args.page_id, args.module_id),
         "get_page_step": lambda: get_page_step(args.step_id),
         "create_page_step": lambda: create_page_step(args.project_id, args.page_id, args.module_id, args.name, args.description),
-        "update_page_step": lambda: update_page_step(args.step_id, args.name, args.description),
+        "update_page_step": lambda: update_page_step(
+            args.step_id, args.name, args.description,
+            auth_state_id=args.auth_state_id,
+            clear_auth_state=bool(args.clear_auth_state),
+        ),
         "delete_page_step": lambda: delete_page_step(args.step_id),
         "set_step_details": lambda: set_step_details(args.step_id, json.loads(args.steps)),
         # 测试用例
@@ -983,6 +1081,11 @@ def main():
             timeout=args.timeout, is_default=args.is_default
         ),
         "delete_env_config": lambda: delete_env_config(args.config_id),
+        # 环境登录态
+        "get_auth_states": lambda: get_auth_states(args.env_config_id),
+        "create_auth_state": lambda: create_auth_state(
+            args.env_config_id, args.name, args.state_file, args.description or ""
+        ),
         # 执行器
         "get_actuators": lambda: get_actuators(),
         "get_actuator_status": lambda: get_actuator_status(),

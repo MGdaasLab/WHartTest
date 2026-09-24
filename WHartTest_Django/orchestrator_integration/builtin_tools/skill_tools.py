@@ -420,17 +420,113 @@ def _resolve_skill_runtime_backend_url() -> str:
     return "http://127.0.0.1:8000"
 
 
+def _prepare_ui_auth_state_file(
+    ui_credential_context: dict,
+    user_id: object,
+    chat_session_id: object,
+) -> Optional[str]:
+    """把 UI 生成会话的登录态 storageState 落为 0600 临时文件，返回路径。
+
+    登录态 JSON 不进 LLM 上下文，Skill/持久浏览器进程通过
+    WHARTTEST_UI_AUTH_STATE_FILE 环境变量拿到文件路径后自行注入。
+    """
+    auth_state_id = (ui_credential_context or {}).get("auth_state_id")
+    if not auth_state_id:
+        return None
+
+    try:
+        from ui_automation.models import UiAuthState
+
+        auth_state = (
+            UiAuthState.objects.select_related("env_config")
+            .filter(id=auth_state_id, is_active=True)
+            .first()
+        )
+        if not auth_state or not auth_state.state_json:
+            logger.warning(
+                "[execute_skill_script] UI 生成登录态不存在或为空 auth_state_id=%s",
+                auth_state_id,
+            )
+            return None
+
+        runtime_dir = os.path.join(str(settings.BASE_DIR), "data", "ui-auth-state-tmp")
+        os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
+        session_part = re.sub(r"[^A-Za-z0-9_-]+", "-", str(chat_session_id or "default"))[:40]
+        file_path = os.path.join(runtime_dir, f"u{user_id}_s{session_part}_{auth_state_id}.json")
+        fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(auth_state.state_json, fh, ensure_ascii=False)
+        return file_path
+    except Exception as e:
+        logger.error(
+            "[execute_skill_script] 写入 UI 生成登录态临时文件失败 auth_state_id=%s: %s",
+            auth_state_id,
+            e,
+            exc_info=True,
+        )
+        return None
+
+
+def _apply_ui_credential_env(env: dict, ui_credential_context: Optional[dict], auth_state_file: Optional[str]) -> None:
+    """把 UI 生成凭据写入 Skill 进程环境变量（仅限注入用途）。"""
+    if not ui_credential_context:
+        return
+    username = (ui_credential_context.get("username") or "").strip()
+    password = (ui_credential_context.get("password") or "").strip()
+    if username:
+        env["WHARTTEST_UI_USERNAME"] = username
+    if password:
+        env["WHARTTEST_UI_PASSWORD"] = password
+    if auth_state_file:
+        env["WHARTTEST_UI_AUTH_STATE_FILE"] = auth_state_file
+
+
+# playwright 系技能名（env 凭据注入与截图目录处理对两类命名都生效）
+_PLAYWRIGHT_SKILL_NAMES = frozenset({"playwright-cli", "playwright-skill"})
+
+# 单条 Skill 命令输出上限：超长输出（如含截图 base64 的 trace）会撑爆
+# LLM 上下文与进程内存，统一在此截断为头部 + 提示。
+_SKILL_OUTPUT_MAX_CHARS = 200_000
+
+
+def _truncate_tool_output(text: str, max_chars: int = _SKILL_OUTPUT_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    head = text[:max_chars]
+    return (
+        f"{head}\n\n[输出已截断] 原始输出共 {len(text)} 字符，超出上限 {max_chars}，"
+        "仅保留前段。请改用更精确的查询（如 get_execution_record / get_execution_records），"
+        "禁止直接拉取全量 trace。"
+    )
+
+
 def get_skill_tools(
     user_id: int,
     project_id: Optional[int] = None,
     test_case_id: Optional[int] = None,
     chat_session_id: Optional[str] = None,
+    ui_credential_context: Optional[dict] = None,
 ) -> list[object]:
-    """获取 Skill 工具列表（Skills 全局共享，不限制项目）"""
+    """获取 Skill 工具列表（Skills 全局共享，不限制项目）
+
+    ui_credential_context：UI 一键生成会话的凭据上下文。仅在执行 playwright-cli
+    命令时以环境变量形式注入到 Skill / 持久浏览器会话进程（凭据不进 LLM 上下文）：
+    - WHARTTEST_UI_USERNAME / WHARTTEST_UI_PASSWORD：账号密码
+    - WHARTTEST_UI_AUTH_STATE_FILE：登录态 storageState 临时文件路径（0600）
+    """
     current_user_id = user_id
     current_project_id = project_id if project_id is not None else 0
     current_test_case_id = test_case_id
     current_chat_session_id = chat_session_id
+    current_ui_credential_context = dict(ui_credential_context) if ui_credential_context else None
+    current_ui_auth_state_file: Optional[str] = None
+
+    if current_ui_credential_context:
+        state_file = _prepare_ui_auth_state_file(
+            current_ui_credential_context, current_user_id, current_chat_session_id
+        )
+        if state_file:
+            current_ui_auth_state_file = state_file
 
     @langchain_tool
     def read_skill_content(skill_name: str) -> str:
@@ -537,6 +633,12 @@ def get_skill_tools(
             env["ARTIFACT_DIR"] = artifacts_dir
             artifacts_before = _snapshot_artifact_files(artifacts_dir)
 
+            # UI 一键生成会话：凭据/登录态以环境变量注入（不进 LLM 上下文）。
+            # 运行时技能名可能是 playwright-cli（隔离+持久会话）或 playwright-skill
+            # （node run.js 一次性进程），两类都要注入凭据。
+            if current_ui_credential_context and skill_name in _PLAYWRIGHT_SKILL_NAMES:
+                _apply_ui_credential_env(env, current_ui_credential_context, current_ui_auth_state_file)
+
             # Windows 兼容：将单引号包裹的参数转换为双引号（用于 cmd.exe）
             # 同时处理多行字符串，将换行符转换为单行
             import platform
@@ -571,8 +673,8 @@ def get_skill_tools(
                     logger.info(f"[execute_skill_script] Windows 命令转换完成")
 
             # 持久化 Playwright 会话路径
-            # 仅当 session_id 存在 + skill_name == 'playwright-skill' + 命令是 run.js 调用时启用
-            if session_id and skill_name == "playwright-skill":
+            # 仅当 session_id 存在 + playwright 系技能 + 命令是 run.js 调用时启用
+            if session_id and skill_name in _PLAYWRIGHT_SKILL_NAMES:
                 run_js_args = extract_runjs_args(exec_command)
                 if run_js_args is not None:
                     # 调试日志
@@ -593,15 +695,13 @@ def get_skill_tools(
                             f"[execute_skill_script] 持久化会话执行完成, session_key={session_key}"
                         )
                         cleaned_output = strip_terminal_control_sequences(output)
-                        result_output = (
-                            cleaned_output.strip()
-                            if cleaned_output.strip()
-                            else "(无输出)"
+                        cleaned_output = _truncate_tool_output(
+                            cleaned_output.strip() if cleaned_output.strip() else "(无输出)"
                         )
                         result_output = (
                             f'[PERSISTENT_SESSION] session_id={session_id}\n'
                             f'[SCREENSHOT_DIR] {screenshots_dir}\n'
-                            f'{result_output}\n'
+                            f'{cleaned_output}\n'
                             f'[提示] 后续步骤请继续使用 session_id="{session_id}"；截图已保存在 {screenshots_dir}'
                         )
                         return _finalize_skill_result(
@@ -625,9 +725,11 @@ def get_skill_tools(
             # Windows 编码处理：cmd.exe 默认使用 GBK (cp936)，需要使用系统默认编码
             import locale
 
-            # playwright-cli 在只读的 skill 目录下以相对文件名保存截图会 EACCES，
+            # playwright 系技能在只读的 skill 目录下以相对文件名保存截图会 EACCES，
             # 改在可写的截图目录执行，使截图默认落入 SCREENSHOT_DIR
-            exec_cwd = screenshots_dir if skill_name == "playwright-cli" else skill_dir
+            exec_cwd = (
+                screenshots_dir if skill_name in _PLAYWRIGHT_SKILL_NAMES else skill_dir
+            )
 
             if platform.system() == "Windows":
                 # Windows cmd 默认使用 GBK 编码，使用 None 让 subprocess 自动检测
@@ -683,6 +785,7 @@ def get_skill_tools(
             if output:
                 logger.debug(f"[execute_skill_script] output: {output[:500]}")
             result_output = output.strip() if output.strip() else "(无输出)"
+            result_output = _truncate_tool_output(result_output)
 
             # 如果是 playwright-skill 的 run.js 调用但没有使用 session_id，提醒 LLM
             if (

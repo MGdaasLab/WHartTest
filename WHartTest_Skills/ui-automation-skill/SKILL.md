@@ -183,7 +183,7 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 | `get_page_steps` | 获取页面步骤列表 | `--project_id` | `--page_id`, `--module_id` |
 | `get_page_step` | 获取页面步骤详情 | `--step_id` | - |
 | `create_page_step` | 创建页面步骤 | `--project_id`, `--page_id`, `--module_id`, `--name` | `--description` |
-| `update_page_step` | 更新页面步骤 | `--step_id` | `--name`, `--description` |
+| `update_page_step` | 更新页面步骤 | `--step_id` | `--name`, `--description`, `--auth_state_id`（绑定登录态，执行时优先注入）, `--clear_auth_state`（清空绑定） |
 | `delete_page_step` | 删除页面步骤 | `--step_id` | - |
 | `set_step_details` | 设置步骤详情（批量） | `--step_id`, `--steps` (JSON) | - |
 
@@ -281,7 +281,33 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 - `--wait_result` - 是否等待执行结果（默认否，传此参数则等待）
 - `--exec_timeout` - 等待超时时间（秒，默认 120）
 
-**注意：** 执行前需确保有执行器在线（通过 `get_actuators` 查询）
+**执行通道选择：**
+- `--actuator_id recorder-browser` 走**录制器浏览器**（后端本机启动无头浏览器执行，无远程执行器网络延迟，适合 AI 生成后的试跑验证）。登录态按"用例第一个页面步骤绑定的登录态"注入，可用 `update_page_step --auth_state_id` 预先绑定。
+- `--actuator_id <执行器ID>` 或不传走远程执行器（执行前需确保有执行器在线，通过 `get_actuators` 查询）。
+
+### 环境登录态管理
+
+| Action | 描述 | 必填参数 | 可选参数 |
+|--------|------|----------|----------|
+| `get_auth_states` | 获取指定环境的登录态列表（仅元数据，不含登录态内容） | `--env_config_id` | - |
+| `create_auth_state` | 从 storageState 文件创建登录态 | `--env_config_id`, `--name`, `--state_file` | `--description` |
+
+**登录态说明：**
+- `--state_file` 传 Playwright storageState JSON 文件路径（`playwright-cli state-save` 的产物）
+- 列表动作不返回 state_json 内容，避免登录态快照进入对话上下文
+- AI 一键生成会话中，账密登录成功后应调用 `create_auth_state` 沉淀登录态（state 文件路径可从环境变量 `WHARTTEST_UI_AUTH_STATE_FILE` 获取，账号密码从 `WHARTTEST_UI_USERNAME` / `WHARTTEST_UI_PASSWORD` 获取，禁止在任何输出中复述凭据内容）
+
+示例：
+
+```bash
+# 账密登录成功后保存登录态
+playwright-cli state-save my-auth-state.json
+python ui_automation_tools.py --action create_auth_state \
+  --env_config_id 1 \
+  --name "生成会话登录态" \
+  --state_file my-auth-state.json \
+  --description "AI 生成会话自动沉淀"
+```
 
 ---
 

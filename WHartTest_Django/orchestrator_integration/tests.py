@@ -350,3 +350,108 @@ class TerminalOutputSanitizerTests(SimpleTestCase):
         raw = "\x1b[32m✓\x1b[0m Browser closed"
 
         self.assertEqual(strip_terminal_control_sequences(raw), "✓ Browser closed")
+class GenerationModeGuardTests(SimpleTestCase):
+    """UI/接口一键生成模式检测与守护中间件行为。"""
+
+    def test_detect_generation_mode(self):
+        from .generation_guard import (
+            GENERATION_MODE_INTERFACE_CASE,
+            GENERATION_MODE_UI_CASE,
+            detect_generation_mode,
+        )
+
+        self.assertIsNone(detect_generation_mode(None))
+        self.assertIsNone(detect_generation_mode('普通消息'))
+        self.assertEqual(
+            detect_generation_mode('<!-- wharttest:generation_mode=interface_case --> msg'),
+            GENERATION_MODE_INTERFACE_CASE,
+        )
+        self.assertEqual(
+            detect_generation_mode('<!-- wharttest:generation_mode=ui_case --> msg'),
+            GENERATION_MODE_UI_CASE,
+        )
+        # interface_case 标记优先，保持历史行为
+        self.assertEqual(
+            detect_generation_mode('wharttest:generation_mode=ui_case wharttest:generation_mode=interface_case'),
+            GENERATION_MODE_INTERFACE_CASE,
+        )
+
+    def test_should_guard_generation_prompt_backward_compatible(self):
+        from .generation_guard import should_guard_generation_prompt
+
+        self.assertTrue(should_guard_generation_prompt('x wharttest:generation_mode=interface_case y'))
+        self.assertFalse(should_guard_generation_prompt('x wharttest:generation_mode=ui_case y'))
+
+    @staticmethod
+    def _make_tool_request(action: str, payload: dict | None = None):
+        from types import SimpleNamespace
+
+        args = {'command': f'python ui_automation_tools.py --action {action}'}
+        if payload is not None:
+            import json
+
+            args['command'] += f" --payload '{json.dumps(payload, ensure_ascii=False)}'"
+        return SimpleNamespace(tool_call={'name': 'execute_skill_script', 'args': args, 'id': 'call_1'})
+
+    def test_ui_case_guard_blocks_api_case_tools(self):
+        from .generation_guard import GenerationUiCaseGuardMiddleware
+
+        middleware = GenerationUiCaseGuardMiddleware()
+        for action in ('create_interface_case', 'run_interface_case', 'update_interface_case'):
+            handled = []
+
+            def handler(request):
+                handled.append(request)
+                return 'passed'
+
+            result = middleware.wrap_tool_call(self._make_tool_request(action), handler)
+            self.assertEqual(result.status, 'error')
+            self.assertIn('UI 自动化用例生成', str(result.content))
+            self.assertFalse(handled)
+        self.assertEqual(middleware.drift_count, 3)
+
+    def test_ui_case_guard_allows_ui_tools(self):
+        from .generation_guard import GenerationUiCaseGuardMiddleware
+
+        middleware = GenerationUiCaseGuardMiddleware()
+        for action in ('create_ui_page', 'create_element', 'create_page_step', 'create_testcase'):
+            result = middleware.wrap_tool_call(
+                self._make_tool_request(action), lambda request: 'passed'
+            )
+            self.assertEqual(result, 'passed')
+        self.assertEqual(middleware.drift_count, 0)
+
+    def test_interface_case_guard_still_blocks_scenario_tools(self):
+        from .generation_guard import GenerationInterfaceCaseGuardMiddleware
+
+        middleware = GenerationInterfaceCaseGuardMiddleware()
+        result = middleware.wrap_tool_call(
+            self._make_tool_request('create_testcase'), lambda request: 'passed'
+        )
+        self.assertEqual(result.status, 'error')
+
+    def test_parse_ui_generation_context(self):
+        from .agent_loop_view import _parse_ui_generation_context
+
+        self.assertIsNone(_parse_ui_generation_context(None))
+        self.assertIsNone(_parse_ui_generation_context('bad'))
+        self.assertIsNone(_parse_ui_generation_context({'start_url': 'https://x.com'}))
+        context = _parse_ui_generation_context(
+            {
+                'auth_state_id': '7',
+                'env_config_id': 3,
+                'username': ' admin ',
+                'password': 'p',
+                'start_url': 'https://x.com',
+            }
+        )
+        self.assertEqual(
+            context,
+            {
+                'auth_state_id': 7,
+                'env_config_id': 3,
+                'username': 'admin',
+                'password': 'p',
+                'start_url': 'https://x.com',
+            },
+        )

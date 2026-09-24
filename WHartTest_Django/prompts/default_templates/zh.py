@@ -2,6 +2,11 @@
 
 from textwrap import dedent
 
+from orchestrator_integration.ui_generation_instructions import (
+    UI_CASE_GENERATION_INSTRUCTION,
+    UI_CASE_GENERATION_PROMPT_DESCRIPTION,
+    UI_CASE_GENERATION_PROMPT_NAME,
+)
 from prompts.models import PromptType
 
 DEFAULT_PROMPTS = [
@@ -994,5 +999,14 @@ $steps
         'description': 'AI图表生成助手，使用Tool Calling创建和编辑draw.io图表',
         'prompt_type': PromptType.DIAGRAM_GENERATION,
         'is_default': False
+    },
+    {
+        # UI 自动化一键生成规范：内容与 orchestrator_integration.ui_generation_instructions
+        # 保持同源（agent-loop 运行时按 ui_case 标记追加同一常量），避免双份内容漂移
+        'name': UI_CASE_GENERATION_PROMPT_NAME,
+        'description': UI_CASE_GENERATION_PROMPT_DESCRIPTION,
+        'prompt_type': PromptType.GENERAL,
+        'is_default': False,
+        'content': UI_CASE_GENERATION_INSTRUCTION,
     },
 ]

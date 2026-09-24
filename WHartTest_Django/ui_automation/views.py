@@ -1924,20 +1924,43 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
 
         name = str(request.data.get('name') or '').strip() or f"录制登录态-{env_config.name}"
         description = str(request.data.get('description') or '').strip()
-        auth_state = UiAuthState.objects.create(
-            name=name,
-            env_config=env_config,
-            state_json=storage_state,
-            description=description,
-            creator=request.user,
-        )
+
+        # 覆盖模式：指定 auth_state_id 时仅刷新原记录的快照（id 不变，
+        # 已绑定该登录态的平台步骤/用例自动生效，无需逐个重新绑定）
+        auth_state = None
+        target_id = request.data.get('auth_state_id')
+        if target_id not in (None, ''):
+            try:
+                target_id = int(target_id)
+            except (TypeError, ValueError):
+                return Response({'detail': 'auth_state_id 参数无效'}, status=status.HTTP_400_BAD_REQUEST)
+            auth_state = UiAuthState.objects.filter(id=target_id, env_config=env_config).first()
+            if auth_state is None:
+                return Response(
+                    {'detail': '要更新的登录态不存在或不属于当前环境配置'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            auth_state.state_json = storage_state
+            auth_state.save()
+        else:
+            auth_state = UiAuthState.objects.create(
+                name=name,
+                env_config=env_config,
+                state_json=storage_state,
+                description=description,
+                creator=request.user,
+            )
         # 录制过程中重新保存的登录态：作为会话当前生效绑定，本步骤及以下步骤继承
         meta.auth_state_id = auth_state.id
+        if target_id:
+            message = '登录态「%s」已更新，绑定该登录态的步骤将自动生效' % auth_state.name
+        else:
+            message = '登录态已保存到环境「%s」' % env_config.name
         return Response({
-            'message': '登录态已保存到环境「%s」' % env_config.name,
+            'message': message,
             'auth_state_id': auth_state.id,
             'name': auth_state.name,
             'env_config_id': env_config.id,
             'cookies': len(cookies),
             'local_storage_keys': ls_total,
-        }, status=status.HTTP_201_CREATED)
+        }, status=status.HTTP_200_OK if target_id else status.HTTP_201_CREATED)

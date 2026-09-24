@@ -23,6 +23,14 @@ export interface ChatRequest {
   // Playwright 脚本生成参数
   generate_playwright_script?: boolean; // 是否在任务完成后自动生成 Playwright 脚本
   test_case_id?: number; // 关联的测试用例ID，生成脚本时必需
+
+  // UI 一键生成上下文（凭据/登录态，仅平台侧 env 注入用，不进 LLM 上下文）
+  ui_generation?: {
+    env_config_id?: number; // 环境配置 ID
+    auth_state_id?: number; // 登录态 ID（与账号密码二选一）
+    username?: string; // 账号（未选登录态时使用）
+    password?: string; // 密码（未选登录态时使用）
+  };
 }
 
 /**

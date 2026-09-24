@@ -8,8 +8,10 @@
 - 禁用工具直接返回错误消息（模型收到后可立即自愈改用正确工具）；
 - 参数漂移静默剥除后放行（无需打断模型）。
 
-标记来源：前端在 message 头部注入 ``wharttest:generation_mode=interface_case``，
-agent_loop_view 检测后通过 should_guard_generation_prompt 判定并挂载本中间件。
+- 标记来源：前端在 message 头部注入 ``wharttest:generation_mode=interface_case``，
+agent_loop_view 检测后通过 detect_generation_mode 判定模式并挂载对应中间件。
+UI 模式（``wharttest:generation_mode=ui_case``）挂载 GenerationUiCaseGuardMiddleware，
+拦截模型把 UI 用例误存到接口自动化的工具漂移。
 """
 from __future__ import annotations
 
@@ -22,6 +24,11 @@ logger = logging.getLogger(__name__)
 
 # 前端注入的生成模式标记
 GENERATION_MODE_MARKER = "wharttest:generation_mode=interface_case"
+UI_CASE_GENERATION_MARKER = "wharttest:generation_mode=ui_case"
+
+# 生成模式检测结果
+GENERATION_MODE_INTERFACE_CASE = "interface_case"
+GENERATION_MODE_UI_CASE = "ui_case"
 
 # 单接口生成会话中禁用的场景用例工具（工具名 -> 提示改用的正确工具）
 FORBIDDEN_TOOL_ALTERNATIVES = {
@@ -42,6 +49,21 @@ def should_guard_generation_prompt(message_text: str | None) -> bool:
     if not message_text:
         return False
     return GENERATION_MODE_MARKER in str(message_text)
+
+
+def detect_generation_mode(message_text: str | None) -> str | None:
+    """检测 message 携带的生成模式标记，返回模式名或 None。
+
+    同时携带多个标记时按 interface_case 优先处理（历史行为保持不变）。
+    """
+    if not message_text:
+        return None
+    text = str(message_text)
+    if GENERATION_MODE_MARKER in text:
+        return GENERATION_MODE_INTERFACE_CASE
+    if UI_CASE_GENERATION_MARKER in text:
+        return GENERATION_MODE_UI_CASE
+    return None
 
 
 def _extract_action_and_payload(request: Any) -> tuple[str, dict[str, Any]]:
@@ -105,7 +127,7 @@ class GenerationInterfaceCaseGuardMiddleware(AgentMiddleware):
                 action,
             )
             tool_name = getattr(getattr(request, "tool_call", None), "get", lambda *_: "")("name") or "tool"
-            return self._build_error_tool_message(
+            return _build_error_tool_message(
                 request,
                 tool_name,
                 (
@@ -159,7 +181,7 @@ class GenerationInterfaceCaseGuardMiddleware(AgentMiddleware):
                 action,
             )
             tool_name = getattr(getattr(request, "tool_call", None), "get", lambda *_: "")("name") or "tool"
-            return self._build_error_tool_message(
+            return _build_error_tool_message(
                 request,
                 tool_name,
                 (
@@ -195,11 +217,71 @@ class GenerationInterfaceCaseGuardMiddleware(AgentMiddleware):
 
         return await handler(request)
 
-    @staticmethod
-    def _build_error_tool_message(request: Any, tool_name: str, text: str) -> Any:
-        """构造工具错误消息（ToolMessage 兼容结构），让模型收到后自愈。"""
-        from langchain_core.messages import ToolMessage
+def _build_error_tool_message(request: Any, tool_name: str, text: str) -> Any:
+    """构造工具错误消息（ToolMessage 兼容结构），让模型收到后自愈。"""
+    from langchain_core.messages import ToolMessage
 
+    tool_call = getattr(request, "tool_call", None) or {}
+    call_id = tool_call.get("id") or ""
+    return ToolMessage(content=text, tool_call_id=call_id, name=tool_name or "tool", status="error")
+
+
+# UI 用例生成会话中禁用的接口自动化工具（工具名 -> 引导提示）
+UI_CASE_FORBIDDEN_TOOL_HINTS = {
+    "create_interface_case": "UI 用例禁止调用 create_interface_case，页面步骤/用例请用 create_page_step / create_testcase 保存",
+    "update_interface_case": "UI 用例禁止调用 update_interface_case，请用 update_element / update_page_step / update_testcase 修改 UI 对象",
+    "run_interface_case": "UI 用例禁止调用 run_interface_case，试跑请用当前浏览器会话回放用例步骤",
+    "copy_interface_case": "UI 用例禁止调用 copy_interface_case",
+    "delete_interface_case": "UI 用例禁止调用 delete_interface_case，且本会话禁止删除任何已保存对象",
+}
+
+
+class GenerationUiCaseGuardMiddleware(AgentMiddleware):
+    """UI 用例一键生成会话的工具守护：拦截接口自动化工具漂移。
+
+    ui_case 会话中模型可能把 UI 用例误存到接口自动化（create_interface_case /
+    run_interface_case 等），此处直接返回可自愈的错误消息引导模型改用
+    ui-automation-skill 工具。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._drift_count = 0
+
+    @property
+    def drift_count(self) -> int:
+        return self._drift_count
+
+    def _check(self, request: Any) -> tuple[bool, str]:
+        """判定是否拦截。返回 (是否放行, 拦截提示文本)。"""
+        action, _ = _extract_action_and_payload(request)
+        hint = UI_CASE_FORBIDDEN_TOOL_HINTS.get(action)
+        if not hint:
+            return True, ""
+        self._drift_count += 1
+        logger.warning("[GenerationGuard] 拦截 UI 生成会话工具漂移: %s", action)
         tool_call = getattr(request, "tool_call", None) or {}
-        call_id = tool_call.get("id") or ""
-        return ToolMessage(content=text, tool_call_id=call_id, name=tool_name or "tool", status="error")
+        tool_name = tool_call.get("name") or "tool"
+        return False, f"当前会话是【UI 自动化用例生成】任务，{hint}。"
+
+    def wrap_tool_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Any],
+    ) -> Any:
+        allowed, text = self._check(request)
+        if allowed:
+            return handler(request)
+        tool_call = getattr(request, "tool_call", None) or {}
+        return _build_error_tool_message(request, tool_call.get("name") or "tool", text)
+
+    async def awrap_tool_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Any],
+    ) -> Any:
+        allowed, text = self._check(request)
+        if allowed:
+            return await handler(request)
+        tool_call = getattr(request, "tool_call", None) or {}
+        return _build_error_tool_message(request, tool_call.get("name") or "tool", text)
