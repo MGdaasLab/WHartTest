@@ -92,7 +92,7 @@ const text = computed(() => {
         title: updating ? 'Update Login State' : 'Record Login State',
         hint: updating
           ? 'Log in to the system in the view. After logging in, click "Save Login State" to overwrite the snapshot of this login state. Its name stays unchanged; change it via the Edit button.'
-          : 'Log in to the system in the view. After logging in, click "Save Login State" to capture cookies/localStorage for this environment.',
+          : 'Log in to the system in the view. After logging in, click "Save Login State" to capture cookies/localStorage/sessionStorage for this environment.',
         saveLoginState: 'Save Login State',
         waiting: 'Waiting for browser…',
         close: 'Close',
@@ -109,7 +109,7 @@ const text = computed(() => {
         title: updating ? '更新登录态' : '录制登录态',
         hint: updating
           ? '在画面中完成目标系统登录，登录成功后点击「保存登录态」，最新凭据将覆盖原登录态（名称保持不变，如需改名请用编辑按钮）。绑定该登录态的步骤执行时自动使用新凭据。'
-          : '在画面中完成目标系统登录，登录成功后点击「保存登录态」，捕获该环境的 cookies/localStorage 供执行时自动注入。',
+          : '在画面中完成目标系统登录，登录成功后点击「保存登录态」，捕获该环境的 cookies/localStorage/sessionStorage 供执行时自动注入。',
         saveLoginState: '保存登录态',
         waiting: '等待浏览器…',
         close: '关闭',

@@ -437,7 +437,8 @@ class UiEnvironmentConfigSerializer(serializers.ModelSerializer):
 
 
 class UiAuthStateSerializer(serializers.ModelSerializer):
-    """环境登录态序列化器（state_json 为执行器使用的 storageState 快照）"""
+    """环境登录态序列化器（state_json 为执行器使用的 storageState 快照，
+    可含扩展字段 session_storage：采集的 sessionStorage 快照）"""
     creator_name = serializers.CharField(source='creator.username', read_only=True)
     env_name = serializers.CharField(source='env_config.name', read_only=True)
     project_id = serializers.IntegerField(source='env_config.project_id', read_only=True)

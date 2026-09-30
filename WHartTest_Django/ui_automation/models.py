@@ -498,12 +498,14 @@ class UiEnvironmentConfig(models.Model):
 
 
 class UiAuthState(models.Model):
-    """环境登录态快照（Playwright storageState：cookies + localStorage）。
+    """环境登录态快照（Playwright storageState：cookies + localStorage + sessionStorage）。
 
     绑定到环境配置：平台 UI 自动化执行均以环境为运行单元，执行时按
     env_config 自动查找启用中的登录态注入浏览器上下文。一套快照同时
-    覆盖两类认证系统 —— Cookie/Session 会话（cookies）与 JWT/token
-    现代系统（localStorage），无需关心目标系统认证类型。
+    覆盖三类认证系统 —— Cookie/Session 会话（cookies）、JWT/token
+    现代系统（localStorage）与 sessionStorage 系（如 RuoYi 系脚手架，
+    经扩展字段 session_storage 采集，Playwright storageState 原生不含
+    sessionStorage），无需关心目标系统认证类型。
     """
 
     name = models.CharField(_('名称'), max_length=128)

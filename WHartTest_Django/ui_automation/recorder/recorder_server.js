@@ -1335,13 +1335,93 @@ async function ensureInjection() {
   }
 }
 
-/** 构建浏览器上下文参数：视口 + 可选登录态快照（storageState） */
+/** 按页面 origin 采集 sessionStorage（Playwright storageState 不含 sessionStorage，
+ * 而部分系统（如 RuoYi 系）登录凭据存于 sessionStorage，快照缺失会导致复用失败）。
+ * 返回 [{ origin, sessionStorage: [{ name, value }] }]，context 无页面时返回 []。 */
+async function captureSessionStorage(context) {
+  const pages = (context && context.pages()) || [];
+  const byOrigin = new Map();
+  for (const page of pages) {
+    for (const frame of page.frames()) {
+      let origin;
+      let items;
+      try {
+        const r = await frame.evaluate(() => {
+          const o = {};
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const k = sessionStorage.key(i);
+            o[k] = sessionStorage.getItem(k);
+          }
+          return o;
+        });
+        origin = new URL(frame.url()).origin;
+        items = r;
+      } catch (_) {
+        continue; // about:blank / 已跳转销毁的 frame，跳过
+      }
+      if (!items || !Object.keys(items).length) continue;
+      const bucket = byOrigin.get(origin) || new Map();
+      for (const [name, value] of Object.entries(items)) {
+        if (value !== null && value !== undefined) bucket.set(name, String(value));
+      }
+      byOrigin.set(origin, bucket);
+    }
+  }
+  return Array.from(byOrigin.entries())
+    .filter(([, bucket]) => bucket.size > 0)
+    .map(([origin, bucket]) => ({
+      origin,
+      sessionStorage: Array.from(bucket.entries()).map(([name, value]) => ({ name, value })),
+    }));
+}
+
+/** 构建浏览器上下文参数：视口 + 可选登录态快照（storageState）。
+ * 快照中的自定义扩展字段 session_storage 不是 Playwright 合法参数，
+ * 传入 newContext 前剥离，另以 init script 在页面加载前回放。 */
 function buildContextOptions(viewport, storageState) {
   const opts = { viewport };
   if (storageState) {
-    opts.storageState = storageState;
+    let pure = storageState;
+    if (typeof pure === 'string') {
+      try { pure = JSON.parse(pure); } catch (_) { pure = null; }
+    }
+    if (pure && typeof pure === 'object' && !Array.isArray(pure)) {
+      const { session_storage: sessionStorage, ...rest } = pure;
+      opts.storageState = rest;
+      if (sessionStorage && Array.isArray(sessionStorage) && sessionStorage.length) {
+        opts.__sessionStorageScript = buildSessionStorageInitScript(sessionStorage);
+      }
+    } else {
+      opts.storageState = storageState;
+    }
   }
   return opts;
+}
+
+/** 生成按 origin 匹配的 sessionStorage 回放 init script（与执行器行为一致）。 */
+function buildSessionStorageInitScript(sessionStorageOrigins) {
+  const valid = (sessionStorageOrigins || []).filter((o) => o && typeof o.origin === 'string'
+    && Array.isArray(o.sessionStorage) && o.sessionStorage.length);
+  if (!valid.length) return '';
+  try {
+    const payload = JSON.stringify(valid);
+    return `(() => { try { const list = ${payload};`
+      + `for (const item of list) { if (location.origin === item.origin) {`
+      + `for (const kv of item.sessionStorage) { try { sessionStorage.setItem(kv.name, kv.value); } catch (_) {} }`
+      + `} } } catch (_) {} })();`;
+  } catch (_) {
+    return '';
+  }
+}
+
+/** 给 context 挂 sessionStorage 回放 init script（存在时）。 */
+async function applySessionStorageScript(context, contextOptions) {
+  const script = contextOptions && contextOptions.__sessionStorageScript;
+  if (!script) return;
+  delete contextOptions.__sessionStorageScript;
+  try {
+    await context.addInitScript(script);
+  } catch (_) {}
 }
 
 async function cmdStart(params) {
@@ -1372,12 +1452,17 @@ async function cmdStart(params) {
   };
   try {
     state.browser = await chromium.launch(launchOptions);
-    state.context = await state.browser.newContext(buildContextOptions(viewport, params.storage_state));
+    const contextOptions = buildContextOptions(viewport, params.storage_state);
+    const sessionStorageScript = contextOptions.__sessionStorageScript;
+    state.context = await state.browser.newContext(contextOptions);
     await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
     try {
       await state.context.addInitScript(INIT_SCRIPT);
     } catch (_) {
       // 个别环境下 context 级注入失败，改用页面级 + 兜底补注
+    }
+    if (sessionStorageScript) {
+      try { await state.context.addInitScript(sessionStorageScript); } catch (_) {}
     }
     state.page = await state.context.newPage();
     try {
@@ -2005,9 +2090,14 @@ async function cmdSwitchContext(params) {
     if (state.context) {
       try { await state.context.close(); } catch (_) {}
     }
-    state.context = await state.browser.newContext(buildContextOptions(state.viewport, storageState));
+    const switchOptions = buildContextOptions(state.viewport, storageState);
+    const switchSessionScript = switchOptions.__sessionStorageScript;
+    state.context = await state.browser.newContext(switchOptions);
     await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
     try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
+    if (switchSessionScript) {
+      try { await state.context.addInitScript(switchSessionScript); } catch (_) {}
+    }
     state.page = await state.context.newPage();
     try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
     await attachFreezeAnimation(state.context, state.page);
@@ -2291,14 +2381,19 @@ async function cmdFinish() {
 }
 
 async function cmdSaveLoginState(params) {
-  // 保存当前浏览器上下文登录态（storageState：cookies + localStorage）。
-  // 一套快照同时覆盖 Cookie/Session 会话系统与 JWT(localStorage) 现代系统，
+  // 保存当前浏览器上下文登录态（storageState：cookies + localStorage + sessionStorage）。
+  // 一套快照同时覆盖 Cookie/Session 会话系统与 JWT(localStorage/sessionStorage) 现代系统，
   // 由平台绑定到当前录制会话所属的环境配置，执行时自动注入复用。
+  // sessionStorage 不在 Playwright storageState 里，需按页面 origin 单独采集。
   if (!state.context) {
     return { ok: false, error: '录制会话未启动或已结束' };
   }
   try {
     const snap = await state.context.storageState();
+    const sessionOrigins = await captureSessionStorage(state.context);
+    if (sessionOrigins.length) {
+      snap.session_storage = sessionOrigins;
+    }
     return { ok: true, state: { storage_state: snap } };
   } catch (e) {
     return { ok: false, error: '保存登录态失败: ' + (e && e.message ? e.message : String(e)) };

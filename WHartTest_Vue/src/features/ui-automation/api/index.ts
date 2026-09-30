@@ -361,6 +361,7 @@ export interface RecorderSaveLoginStateResult {
   env_config_id: number
   cookies: number
   local_storage_keys: number
+  session_storage_keys: number
 }
 
 export const recorderApi = {

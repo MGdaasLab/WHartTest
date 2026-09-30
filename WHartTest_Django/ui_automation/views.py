@@ -1915,9 +1915,12 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
         cookies = storage_state.get('cookies') or []
         origins = storage_state.get('origins') or []
         ls_total = sum(len(o.get('localStorage') or []) for o in origins)
-        if not cookies and ls_total == 0:
+        # sessionStorage 扩展字段（Playwright storageState 不含 sessionStorage，录制器单独采集）
+        ss_origins = storage_state.get('session_storage') or []
+        ss_total = sum(len(o.get('sessionStorage') or []) for o in ss_origins if isinstance(o, dict))
+        if not cookies and ls_total == 0 and ss_total == 0:
             return Response(
-                {'detail': '当前浏览器没有捕获到任何登录凭据（cookies/localStorage），'
+                {'detail': '当前浏览器没有捕获到任何登录凭据（cookies/localStorage/sessionStorage），'
                            '请先在录制画布中完成目标系统登录后再保存登录态'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
@@ -1963,4 +1966,5 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
             'env_config_id': env_config.id,
             'cookies': len(cookies),
             'local_storage_keys': ls_total,
+            'session_storage_keys': ss_total,
         }, status=status.HTTP_200_OK if target_id else status.HTTP_201_CREATED)

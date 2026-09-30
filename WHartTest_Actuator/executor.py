@@ -53,6 +53,8 @@ class LoginStateError(RuntimeError):
 #   storage_state: 登录态快照。Playwright storageState 格式：文件路径(str) 或
 #                  {"cookies": [...], "origins": [...]} JSON。同时覆盖两类系统：
 #                  JWT 系（token 在 localStorage）与 Cookie/Session 系（会话 cookie）。
+#                  允许携带平台扩展字段 session_storage（采集的 sessionStorage 快照，
+#                  Playwright storageState 不含该维度），执行时按 origin 以 init script 回放。
 #   headers:       可选。注入到上下文所有请求的请求头，如 {"Authorization": "Bearer xxx"}。
 #   local_storage: 可选。页面加载前写入 localStorage 的键值（用于 SPA 前端路由守卫校验）。
 #   login_check:   可选。登录失效检测：{"url_pattern": "login|signin", "selector": "#login-form"}。
@@ -290,7 +292,9 @@ class PlaywrightExecutor:
         if auth.get("storage_state"):
             # 登录态快照：文件路径(str) 或 storageState JSON(dict)。
             # Playwright new_context 原生支持，Cookie/Session 与 JWT(localStorage) 一并恢复。
-            context_options["storage_state"] = auth["storage_state"]
+            # 扩展字段 session_storage（本平台采集的 sessionStorage 快照）不是
+            # Playwright 合法入参，需剥离后改由 init script 在页面加载前回放。
+            context_options["storage_state"] = self._strip_session_storage(auth["storage_state"])
         if auth.get("headers"):
             # 注入到上下文全部请求（含页面导航）的请求头，JWT Bearer 双保险
             context_options["extra_http_headers"] = auth["headers"]
@@ -359,11 +363,66 @@ class PlaywrightExecutor:
             "})();"
         )
 
+    @staticmethod
+    def _build_session_storage_init_script(session_origins: list) -> str:
+        """生成按 origin 匹配的 sessionStorage 初始化脚本。
+
+        Playwright storageState 不含 sessionStorage，而部分系统（如 RuoYi 系）
+        登录凭据存于 sessionStorage；sessionStorage 属标签页维度，无法像 cookie
+        一样在 context 层预置，改在每个页面文档创建前写入，导航后即时可用。
+        """
+        entries = []
+        for origin in session_origins or []:
+            if not isinstance(origin, dict):
+                continue
+            items = origin.get("sessionStorage") or []
+            kv = {
+                str(item.get("name")): str(item.get("value"))
+                for item in items
+                if item.get("name") is not None
+            }
+            if kv:
+                entries.append((origin.get("origin", ""), kv))
+        if not entries:
+            return ""
+        try:
+            payload = json.dumps([{"origin": o, "kv": kv} for o, kv in entries], ensure_ascii=False)
+        except (TypeError, ValueError):
+            return ""
+        return (
+            "(() => {"
+            "try { const list = " + payload + ";"
+            "for (const item of list) { if (location.origin === item.origin) {"
+            "for (const k in item.kv) { try { sessionStorage.setItem(k, item.kv[k]); } catch (_) {} }"
+            "} } } catch (_) {}"
+            "})();"
+        )
+
+    @staticmethod
+    def _session_storage_from_state(state: Any) -> list:
+        """读取快照中的 sessionStorage 扩展字段（旧快照无此字段返回 []）。"""
+        if not isinstance(state, dict):
+            return []
+        ss = state.get("session_storage")
+        return ss if isinstance(ss, list) else []
+
+    @staticmethod
+    def _strip_session_storage(state: Any) -> Any:
+        """剥离快照中的 session_storage 扩展字段（new_context storage_state 仅接受原生格式）。
+
+        文件路径原样返回（加载文件后由 _apply_storage_state 统一处理）；
+        dict 快照返回剥离后的浅拷贝，不影响原对象。
+        """
+        if isinstance(state, dict) and "session_storage" in state:
+            return {k: v for k, v in state.items() if k != "session_storage"}
+        return state
+
     async def _apply_storage_state(self, context: BrowserContext, state: Any) -> None:
-        """手动应用登录态快照（持久化上下文不支持 storage_state 参数，需手动注入）。
+        """手动应用登录态快照的原生字段（持久化上下文不支持 storage_state 参数）。
 
         cookies 用 add_cookies 注入；localStorage 用按 origin 匹配的初始化脚本写入，
-        与浏览器原生 storage_state 复用的行为一致，覆盖 Cookie/Session 与 JWT 两类系统。
+        与浏览器原生 storage_state 复用的行为一致。快照扩展字段 session_storage
+        的回放由 _apply_context_init_scripts 统一处理（两条 context 路径共用）。
         """
         if isinstance(state, (str, os.PathLike)):
             try:
@@ -395,6 +454,24 @@ class PlaywrightExecutor:
             await context.add_init_script(STEALTH_INIT_SCRIPT)
 
         auth = getattr(self, "_auth_config", None) or {}
+        # sessionStorage 快照回放：storageState 不含 sessionStorage，本平台采集的
+        # 扩展字段 session_storage 在每个页面文档创建前按 origin 写入。
+        # 从 _auth_config 读原始快照（context_options 里的 storage_state 已被剥离），
+        # 文件路径需加载后判断。两条 context 创建路径（原生/持久化）都经过这里。
+        storage_state = auth.get("storage_state")
+        if isinstance(storage_state, (str, os.PathLike)):
+            try:
+                with open(os.fspath(storage_state), 'r', encoding='utf-8') as f:
+                    storage_state = json.load(f)
+            except Exception:
+                storage_state = None
+        if isinstance(storage_state, dict):
+            session_script = self._build_session_storage_init_script(
+                self._session_storage_from_state(storage_state)
+            )
+            if session_script:
+                await context.add_init_script(session_script)
+
         local_storage = auth.get("local_storage")
         if isinstance(local_storage, dict) and local_storage:
             # 手动配置的 localStorage 键值：在任意页面加载前写入（通常为同源应用）
@@ -537,7 +614,12 @@ class PlaywrightExecutor:
                 len(o.get("localStorage") or [])
                 for o in (ss.get("origins") or [])
             )
-            logger.info(f"已注入登录态: cookies={cookies}, localStorage_keys={ls_keys}, login_check={'on' if auth.get('login_check') else 'off'}")
+            ss_keys = sum(
+                len(o.get("sessionStorage") or [])
+                for o in (ss.get("session_storage") or [])
+            ) if isinstance(ss.get("session_storage"), list) else 0
+            session_part = f", sessionStorage_keys={ss_keys}" if ss_keys else ""
+            logger.info(f"已注入登录态: cookies={cookies}, localStorage_keys={ls_keys}{session_part}, login_check={'on' if auth.get('login_check') else 'off'}")
         elif ss:
             logger.info(f"已注入登录态: storage_state 文件={ss}, login_check={'on' if auth.get('login_check') else 'off'}")
         if auth.get("headers"):
