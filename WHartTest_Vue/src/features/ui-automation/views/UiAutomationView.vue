@@ -8,12 +8,6 @@
           <icon-fullscreen v-else />
         </button>
       </a-tooltip>
-      <div class="ai-generate-entry">
-        <a-button type="primary" size="small" :loading="isSubmittingGeneration" @click="showGenerateModal = true">
-          <template #icon><icon-robot /></template>
-          {{ tl('AI 生成用例') }}
-        </a-button>
-      </div>
       <a-tabs
         :key="`ui-automation-tabs-${locale}`"
         v-model:active-key="activeTab"
@@ -27,7 +21,11 @@
           <PageStepList ref="pageStepListRef" :selected-module-id="selectedModuleId" />
         </a-tab-pane>
         <a-tab-pane key="testcases" :title="tl('测试用例')">
-          <TestCaseList ref="testCaseListRef" :selected-module-id="selectedModuleId" />
+          <TestCaseList
+            ref="testCaseListRef"
+            :selected-module-id="selectedModuleId"
+            @generate-case="showGenerateModal = true"
+          />
         </a-tab-pane>
         <a-tab-pane key="execution-records" :title="tl('执行记录')">
           <ExecutionRecordList ref="executionRecordListRef" />
@@ -55,7 +53,7 @@
 
 <script setup lang="ts">
 import { nextTick, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { IconFullscreen, IconFullscreenExit, IconRobot } from '@arco-design/web-vue/es/icon'
+import { IconFullscreen, IconFullscreenExit } from '@arco-design/web-vue/es/icon'
 import { Notification } from '@arco-design/web-vue'
 import { useRouter } from 'vue-router'
 import { useAppI18n } from '@/composables/useAppI18n'
@@ -297,14 +295,6 @@ const onModuleUpdated = async () => {
   border-radius: 8px;
   box-shadow: 4px 0 10px rgba(0, 0, 0, 0.2), 0 4px 10px rgba(0, 0, 0, 0.2), 0 0 10px rgba(0, 0, 0, 0.15);
   padding: 20px;
-}
-
-/* AI 生成用例入口按钮（右上角，与全屏按钮错开） */
-.ai-generate-entry {
-  position: absolute;
-  top: 20px;
-  right: 60px;
-  z-index: 10;
 }
 
 /* 页签导航右侧预留全屏按钮宽度（28px 按钮 + 8px 间距），避免最右侧页签被按钮遮挡 */

@@ -86,6 +86,10 @@
             {{ batchDeleteLabel }}
           </a-button>
         </a-popconfirm>
+        <a-button type="primary" @click="emit('generate-case')">
+          <template #icon><icon-robot /></template>
+          {{ pageText.generateCase }}
+        </a-button>
         <a-button type="primary" @click="showAddModal">
           <template #icon><icon-plus /></template>
           {{ pageText.addCase }}
@@ -225,7 +229,7 @@ import FileAttachmentPicker from '@/features/file-management/components/FileAtta
 import ExecutionScreenModal from '../components/ExecutionScreenModal.vue'
 import { ref, reactive, computed, onMounted, watch, onUnmounted } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconOrderedList, IconPlayArrow, IconThunderbolt, IconCopy } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconEdit, IconDelete, IconOrderedList, IconPlayArrow, IconThunderbolt, IconCopy, IconRobot } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { testCaseApi, moduleApi, actuatorApi, envConfigApi, type ActuatorInfo } from '../api'
@@ -236,6 +240,10 @@ import CaseStepList from './CaseStepList.vue'
 
 const props = defineProps<{
   selectedModuleId?: number
+}>()
+
+const emit = defineEmits<{
+  (e: 'generate-case'): void
 }>()
 
 const projectStore = useProjectStore()
@@ -259,6 +267,7 @@ const pageText = computed(() => (
         batchDelete: 'Batch delete',
         batchDeleteConfirm: 'Delete the selected cases? This action cannot be undone.',
         addCase: 'Create case',
+        generateCase: 'Generate cases',
         steps: 'Steps',
         run: 'Run',
         running: 'Running',
@@ -329,6 +338,7 @@ const pageText = computed(() => (
         batchDelete: '批量删除',
         batchDeleteConfirm: '确定要删除选中的用例吗？此操作不可恢复。',
         addCase: '新增用例',
+        generateCase: '生成用例',
         steps: '步骤',
         run: '执行',
         running: '执行中',

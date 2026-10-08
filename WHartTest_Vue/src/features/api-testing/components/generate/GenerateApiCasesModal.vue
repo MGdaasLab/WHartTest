@@ -12,7 +12,7 @@
         <span class="form-row-label">{{ pageText.currentProject }}</span>
         <a-input :model-value="currentProjectName" disabled style="width: 200px;" />
       </div>
-      <div class="form-row">
+      <div v-if="!presetCaseType" class="form-row">
         <span class="form-row-label">{{ pageText.caseType }}</span>
         <a-radio-group v-model="formState.caseType" type="button" @change="handleCaseTypeChange">
           <a-radio value="interface_case">{{ pageText.interfaceCase }}</a-radio>
@@ -214,7 +214,10 @@ import type { ApiTestCaseGroup } from '../../types/testcase';
 import type { ApiInterface } from '../../types/interface';
 import type { GenerationFormData } from '../../services/apiCaseGeneration';
 
-const props = defineProps<{ visible: boolean }>();
+const props = defineProps<{
+  visible: boolean;
+  presetCaseType?: 'interface_case' | 'scenario';
+}>();
 const emit = defineEmits<{
   (e: 'update:visible', value: boolean): void;
   (e: 'submit', payload: GenerationFormData): void;
@@ -683,6 +686,11 @@ watch(() => props.visible, (visible) => {
     formState.value.selectedInterfaceIds = [];
     interfaceSearch.value = '';
     dbCheckWarning.value = '';
+    if (props.presetCaseType) {
+      formState.value.caseType = props.presetCaseType;
+      formState.value.caseLimit = props.presetCaseType === 'scenario' ? 6 : 12;
+      formState.value.useKnowledgeBase = props.presetCaseType === 'scenario';
+    }
     fetchData();
   }
 });

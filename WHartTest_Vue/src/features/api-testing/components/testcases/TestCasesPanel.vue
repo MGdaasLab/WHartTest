@@ -13,6 +13,8 @@ import TestCaseTable from './TestCaseTable.vue'
 import ReferencedInterfacesDialog from './ReferencedInterfacesDialog.vue'
 import { showExtractPersistenceNotice } from '../../utils/extractPersistence'
 import { useAppI18n } from '@/composables/useAppI18n'
+import GenerateApiCasesModal from '../generate/GenerateApiCasesModal.vue'
+import { useApiCaseGeneration } from '../../composables/useApiCaseGeneration'
 
 const projectStore = useProjectStore()
 const environmentStore = useEnvironmentStore()
@@ -128,6 +130,8 @@ const updateSearchParams = (data: Pick<QueryParams, 'name' | 'description'>) => 
 const updateFilterParams = (data: Pick<QueryParams, 'priority' | 'group' | 'tags'>) => {
   Object.assign(queryParams, data)
 }
+
+const { showGenerateModal, modalRef, handleGenerateSubmit } = useApiCaseGeneration()
 
 const handleCreate = () => {
   router.push({ name: 'ApiTestCaseCreate', query: TEST_CASES_TAB_QUERY })
@@ -337,6 +341,9 @@ fetchTestCases()
           <a-button class="custom-reset-button" @click="handleReset">
             {{ tl('重置') }}
           </a-button>
+          <a-button type="primary" class="custom-add-button" @click="showGenerateModal = true">
+            {{ tl('生成用例') }}
+          </a-button>
           <a-button type="primary" class="custom-add-button" @click="handleCreate">
             {{ tl('新增用例') }}
           </a-button>
@@ -384,6 +391,13 @@ fetchTestCases()
       :testcase-id="currentTestcase?.id || 0"
       :testcase-name="currentTestcase?.name || ''"
       @close="handleReferencedInterfacesClose"
+    />
+    <GenerateApiCasesModal
+      ref="modalRef"
+      :visible="showGenerateModal"
+      preset-case-type="scenario"
+      @update:visible="showGenerateModal = $event"
+      @submit="handleGenerateSubmit"
     />
   </div>
 </template>
