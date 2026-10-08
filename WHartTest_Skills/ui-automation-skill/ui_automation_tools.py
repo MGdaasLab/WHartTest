@@ -1032,6 +1032,7 @@ def main():
             args.element_id,
             name=args.name, locator_type=args.locator_type, locator_value=args.locator_value,
             locator_type_2=args.locator_type_2, locator_value_2=args.locator_value_2,
+            locator_type_3=args.locator_type_3, locator_value_3=args.locator_value_3,
             wait_time=args.wait_time, is_iframe=args.is_iframe, iframe_locator=args.iframe_locator,
             description=args.description
         ),
