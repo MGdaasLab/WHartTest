@@ -12,6 +12,8 @@
 agent_loop_view 检测后通过 detect_generation_mode 判定模式并挂载对应中间件。
 UI 模式（``wharttest:generation_mode=ui_case``）挂载 GenerationUiCaseGuardMiddleware，
 拦截模型把 UI 用例误存到接口自动化的工具漂移。
+自愈模式（``wharttest:generation_mode=self_heal``）挂载 SelfHealGuardMiddleware，
+约束自愈会话只能做查询与最小化修复编辑，禁止删除与结构级变更。
 """
 from __future__ import annotations
 
@@ -25,10 +27,12 @@ logger = logging.getLogger(__name__)
 # 前端注入的生成模式标记
 GENERATION_MODE_MARKER = "wharttest:generation_mode=interface_case"
 UI_CASE_GENERATION_MARKER = "wharttest:generation_mode=ui_case"
+SELF_HEAL_MARKER = "wharttest:generation_mode=self_heal"
 
 # 生成模式检测结果
 GENERATION_MODE_INTERFACE_CASE = "interface_case"
 GENERATION_MODE_UI_CASE = "ui_case"
+GENERATION_MODE_SELF_HEAL = "self_heal"
 
 # 单接口生成会话中禁用的场景用例工具（工具名 -> 提示改用的正确工具）
 FORBIDDEN_TOOL_ALTERNATIVES = {
@@ -63,6 +67,8 @@ def detect_generation_mode(message_text: str | None) -> str | None:
         return GENERATION_MODE_INTERFACE_CASE
     if UI_CASE_GENERATION_MARKER in text:
         return GENERATION_MODE_UI_CASE
+    if SELF_HEAL_MARKER in text:
+        return GENERATION_MODE_SELF_HEAL
     return None
 
 
@@ -263,6 +269,85 @@ class GenerationUiCaseGuardMiddleware(AgentMiddleware):
         tool_call = getattr(request, "tool_call", None) or {}
         tool_name = tool_call.get("name") or "tool"
         return False, f"当前会话是【UI 自动化用例生成】任务，{hint}。"
+
+    def wrap_tool_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Any],
+    ) -> Any:
+        allowed, text = self._check(request)
+        if allowed:
+            return handler(request)
+        tool_call = getattr(request, "tool_call", None) or {}
+        return _build_error_tool_message(request, tool_call.get("name") or "tool", text)
+
+    async def awrap_tool_call(
+        self,
+        request: Any,
+        handler: Callable[[Any], Any],
+    ) -> Any:
+        allowed, text = self._check(request)
+        if allowed:
+            return await handler(request)
+        tool_call = getattr(request, "tool_call", None) or {}
+        return _build_error_tool_message(request, tool_call.get("name") or "tool", text)
+
+
+# 自愈会话中禁止的动作（execute_skill_script 的 --action / 接口自动化 MCP 工具名 -> 引导提示）
+SELF_HEAL_FORBIDDEN_TOOL_HINTS = {
+    # 删除类：自愈会话禁止删除任何对象
+    "delete_element": "自愈会话禁止删除元素，修正定位请用 update_element",
+    "batch_delete_elements": "自愈会话禁止删除元素，修正定位请用 update_element",
+    "delete_page": "自愈会话禁止删除页面",
+    "batch_delete_pages": "自愈会话禁止删除页面",
+    "delete_page_step": "自愈会话禁止删除页面步骤，修正内容请用 update_page_step / set_step_details",
+    "delete_testcase": "自愈会话禁止删除测试用例",
+    "batch_delete_testcases": "自愈会话禁止删除测试用例",
+    "delete_case_step": "自愈会话禁止删除用例步骤，请用 set_case_steps 调整",
+    "delete_interface_case": "自愈会话禁止调用接口自动化删除工具",
+    # 结构级创建：自愈只做最小化修复，禁止扩充用例范围
+    "create_testcase": "自愈会话禁止新建测试用例，仅修复目标用例现有资产",
+    "create_page_step": "自愈会话禁止新建页面步骤，仅修复目标用例现有步骤",
+    "create_page": "自愈会话禁止新建页面",
+    "set_case_steps": "自愈会话禁止重组用例步骤编排，仅修复现有步骤的元素绑定与参数",
+    "copy_testcase": "自愈会话禁止复制用例",
+    "batch_create_elements": "自愈会话禁止批量创建元素，缺元素时用 create_element 单个创建",
+    # 接口自动化工具漂移
+    "create_interface_case": "自愈会话禁止调用接口自动化工具",
+    "update_interface_case": "自愈会话禁止调用接口自动化工具",
+    "run_interface_case": "自愈会话禁止调用接口自动化工具，复测请用 execute_testcase",
+    "copy_interface_case": "自愈会话禁止调用接口自动化工具",
+}
+
+
+class SelfHealGuardMiddleware(AgentMiddleware):
+    """UI 用例自愈会话的工具守护：拦截删除/结构级创建/工具漂移。
+
+    自愈会话的目标是最小化修复目标用例资产并复测验证，删除类与结构级
+    变更一律返回可自愈的错误消息引导模型改用修复类工具。
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._drift_count = 0
+
+    @property
+    def drift_count(self) -> int:
+        return self._drift_count
+
+    def _check(self, request: Any) -> tuple[bool, str]:
+        """判定是否拦截。返回 (是否放行, 拦截提示文本)。"""
+        action, _ = _extract_action_and_payload(request)
+        if not action:
+            return True, ""
+        hint = SELF_HEAL_FORBIDDEN_TOOL_HINTS.get(action)
+        if not hint:
+            return True, ""
+        self._drift_count += 1
+        logger.warning("[GenerationGuard] 拦截自愈会话工具漂移: %s", action)
+        tool_call = getattr(request, "tool_call", None) or {}
+        tool_name = tool_call.get("name") or "tool"
+        return False, f"当前会话是【UI 自动化用例自愈】任务，{hint}。"
 
     def wrap_tool_call(
         self,

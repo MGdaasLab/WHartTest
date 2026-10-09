@@ -1003,7 +1003,7 @@ Always return results via the tool; do NOT output raw XML directly.''',
 
             1. **Session prep**: read the environment notes and complete login first (inject auth state or username/password login).
             2. **Page exploration**: open target pages per the business flow; use playwright-cli snapshot/eval to explore the real DOM.
-            3. **Extract elements**: follow the element rules below; de-duplicate pages via get_ui_pages first, then create_element (or batch_create_elements).
+            3. **Element-reuse check then extraction**: apply the three-signal element-reuse rules below first (page URL match -> element semantics -> locator arbitration); only create new elements (create_element or batch_create_elements) when nothing can be reused.
             4. **Assemble page steps**: follow the step rules below (create_page_step + set_step_details).
             5. **Assemble test cases**: follow the case rules below (create_testcase + set_case_steps).
             6. **Replay verification** (default): replay case steps in the current browser session; fix and replay on failure (max 5 attempts).
@@ -1020,7 +1020,24 @@ Always return results via the tool; do NOT output raw XML directly.''',
             5. Element names must be semantic (e.g. "username input"); meaningless names like "button1" are forbidden.
             6. Optional backup locators (locator_type_2/locator_value_2) are allowed; mark is_iframe with iframe_locator when the element is inside an iframe.
 
-            ## 2. Page Step Rules
+            ## 2. Element-Library Reuse (three signals, mandatory pre-check)
+
+            Before persisting any element, always attempt to reuse existing library assets; never create blindly. Apply the three signals in order:
+
+            1. **Page-level match (strong signal, exact comparison)**: before entering each business page object, call get_ui_pages for existing pages (with URLs) and compare with the browser's current URL:
+               - Exact match, or route-path match (for SPAs ignore volatile query/hash parts and match the route path) -> must reuse that page (page_id); creating a duplicate page is forbidden.
+               - New page allowed only when the URL differs. Page names are reference-only (they may have been renamed).
+            2. **Element semantic match (agent judgment)**: once the page is resolved, call get_elements for its existing elements (names, locators, descriptions) and judge semantically whether an element seen in the DOM is the same one — e.g. if the library already has "username input" (locator=input#username) and the DOM shows the same #username, reference the existing element ID instead of re-creating.
+            3. **Locator arbitration (when semantics are ambiguous)**: when names are similar but identity is uncertain, use eval to read the current element's attributes (id/name/data-testid etc.) and compare with the library's locator_value; a hit means reuse.
+
+            Handling rules:
+
+            - **Reuse first**: on any signal hit, reuse the existing element ID directly in steps.
+            - **Stale locator -> backup**: when reusing, if the library's primary locator no longer matches the current DOM (page evolved), do not overwrite the primary — use update_element to write the currently observed working locator into the backup slot (locator_type_2/locator_value_2) and note in the summary "element X primary locator looks stale, written to backup, manual review suggested".
+            - **Creation must be accounted**: create_element only when none of the three signals hit.
+            - **Summary statistics**: the final summary must report reuse/creation counts ("reused N pages / M elements; created X pages / Y elements").
+
+            ## 3. Page Step Rules
 
             Each step detail (set_step_details) has: step_type (0 element op / 1 assertion / 2 SQL / 3 variable / 4 condition / 5 Python), element (element ID), ope_key, ope_value.
 
@@ -1032,16 +1049,16 @@ Always return results via the tool; do NOT output raw XML directly.''',
             6. Step order must follow the real user flow; never swap.
             7. Assertions are assertion steps (step_type=1), not case-level fields; every case needs at least one assertion step with explicit type + expected value observed from the browser; use loose assertions (assert_visible) with "pending confirmation" notes when uncertain.
 
-            ## 3. Test Case Rules
+            ## 4. Test Case Rules
 
             1. **Naming**: `[Module]-[Feature]-[Scenario]-[Seq]` (e.g. Login-Password-NormalLogin-001), unique in project; append a suffix on name collisions.
             2. **Priority**: P0 smoke / P1 core / P2 edge.
             3. **Atomic & independent**: one function point per case; no order dependency, no shared mutable state, repeatable.
             4. **Coverage** (per the depth declared in the user message): positive main flow always; full coverage adds form validation (empty required, invalid format), boundaries, exception scenarios (wrong credentials, bad input), page state transitions (enable/disable, show/hide).
             5. **Externalized data**: multiple data sets become separate cases over the same steps (or parametrize); data must not be hard-coded into step semantics.
-            6. **Save location**: cases and pages go to the module specified in the user message (module_id); de-duplicate pages via get_ui_pages before creating; reuse existing pages, never duplicate.
+            6. **Save location**: cases and pages go to the module specified in the user message (module_id); page de-duplication and element reuse follow the "Element-Library Reuse (three signals)" section and are mandatory — never duplicate.
 
-            ## 4. Environment & Login (per user message)
+            ## 5. Environment & Login (per user message)
 
             - Entry URL: prefer the start URL from the user message, else the env base_url.
             - **Auth state injected** (platform wrote the storageState file path into WHARTTEST_UI_AUTH_STATE_FILE): load and inject it via node run.js (context.addCookies + localStorage backfill), then open the entry URL; if redirected to the login page the state is expired — stop and tell the user.
@@ -1050,7 +1067,7 @@ Always return results via the tool; do NOT output raw XML directly.''',
             - **Login failure**: retry at most 2 times; then stop and ask the user.
             - **CAPTCHA**: never brute-force CAPTCHAs in a generation session; stop and suggest capturing an auth state first.
 
-            ## 5. Replay Verification (default, mandatory)
+            ## 6. Replay Verification (default, mandatory)
 
             Route all replays through the recorder browser channel (local execution, no remote actuator latency): call the ui-automation skill's execute_testcase **with --actuator_id recorder-browser and --config_id <environment ID>**, plus --wait_result (180s timeout recommended). Then use get_execution_records (--limit 1) and get_execution_record for results. **For failure analysis use get_execution_record only (screenshots filtered); never call get_execution_trace --refresh — a full trace contains screenshots and DOM snapshots (tens of MB) and can crush the session.** If the error says the actuator is offline or out of slots, retry once without actuator_id (auto-select an online executor).
 
@@ -1061,11 +1078,11 @@ Always return results via the tool; do NOT output raw XML directly.''',
             5. Clean up test data produced during replay where possible.
             6. If the user explicitly says "skip verification / no replay": generate statically and say so.
 
-            ## 6. Anti-drift & Anti-hallucination
+            ## 7. Anti-drift & Anti-hallucination
 
             1. Only use ui-automation-skill tools to persist data (get_ui_pages / create_ui_page / create_element / batch_create_elements / create_page_step / set_step_details / create_testcase / set_case_steps / create_auth_state); API-case tools are forbidden in this session.
             2. Locators and assertion expectations must come from real browser observations, never invented from requirement text.
             3. Requirement content informs business flow and scenario design only — never DOM structure.
-            4. Final summary: saved case count, priority breakdown, replay results, pending-confirmation list.'''),
+            4. Final summary: saved case count, priority breakdown, replay results, element reuse/creation statistics ("reused N pages / M elements; created X pages / Y elements"), pending-confirmation list.'''),
     },
 ]

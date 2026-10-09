@@ -49,11 +49,14 @@ from .middleware_config import (
 )
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .ui_generation_instructions import UI_CASE_GENERATION_INSTRUCTION
+from .self_heal_instructions import SELF_HEAL_INSTRUCTION
 from .generation_guard import (
     GENERATION_MODE_INTERFACE_CASE,
+    GENERATION_MODE_SELF_HEAL,
     GENERATION_MODE_UI_CASE,
     GenerationInterfaceCaseGuardMiddleware,
     GenerationUiCaseGuardMiddleware,
+    SelfHealGuardMiddleware,
     detect_generation_mode,
 )
 from .stop_signal import clear_stop_signal, should_stop
@@ -1087,6 +1090,13 @@ class AgentLoopStreamAPIView(View):
                 )
                 logger.info("AgentLoopStreamAPI: 已追加 UI 用例生成规范指令")
 
+            # 8.3 UI 用例自愈会话：追加自愈规范指令（与 default_templates 模板同源）
+            if generation_mode == GENERATION_MODE_SELF_HEAL:
+                effective_prompt = (
+                    (effective_prompt or "") + "\n\n" + SELF_HEAL_INSTRUCTION
+                )
+                logger.info("AgentLoopStreamAPI: 已追加 UI 用例自愈规范指令")
+
             # 9. 构建用户消息（支持多模态：上传图片 + HTTP(S) 图片 + 需求文档图片）
             user_message_for_llm = user_message
             if llm_attachment_context:
@@ -1140,6 +1150,8 @@ class AgentLoopStreamAPIView(View):
                     middleware = list(middleware) + [GenerationUiCaseGuardMiddleware()]
                 elif generation_mode == GENERATION_MODE_INTERFACE_CASE:
                     middleware = list(middleware) + [GenerationInterfaceCaseGuardMiddleware()]
+                elif generation_mode == GENERATION_MODE_SELF_HEAL:
+                    middleware = list(middleware) + [SelfHealGuardMiddleware()]
 
                 agent = create_agent(
                     llm,
@@ -2085,6 +2097,8 @@ class AgentLoopResumeAPIView(View):
                     middleware = list(middleware) + [GenerationUiCaseGuardMiddleware()]
                 elif generation_mode == GENERATION_MODE_INTERFACE_CASE:
                     middleware = list(middleware) + [GenerationInterfaceCaseGuardMiddleware()]
+                elif generation_mode == GENERATION_MODE_SELF_HEAL:
+                    middleware = list(middleware) + [SelfHealGuardMiddleware()]
 
                 # 6. 创建 agent
                 agent = create_agent(

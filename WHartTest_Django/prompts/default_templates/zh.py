@@ -7,6 +7,11 @@ from orchestrator_integration.ui_generation_instructions import (
     UI_CASE_GENERATION_PROMPT_DESCRIPTION,
     UI_CASE_GENERATION_PROMPT_NAME,
 )
+from orchestrator_integration.self_heal_instructions import (
+    SELF_HEAL_INSTRUCTION,
+    SELF_HEAL_PROMPT_DESCRIPTION,
+    SELF_HEAL_PROMPT_NAME,
+)
 from prompts.models import PromptType
 
 DEFAULT_PROMPTS = [
@@ -1008,5 +1013,14 @@ $steps
         'prompt_type': PromptType.GENERAL,
         'is_default': False,
         'content': UI_CASE_GENERATION_INSTRUCTION,
+    },
+    {
+        # UI 自动化用例自愈规范：内容与 orchestrator_integration.self_heal_instructions
+        # 保持同源（agent-loop 运行时按 self_heal 标记追加同一常量），避免双份内容漂移
+        'name': SELF_HEAL_PROMPT_NAME,
+        'description': SELF_HEAL_PROMPT_DESCRIPTION,
+        'prompt_type': PromptType.GENERAL,
+        'is_default': False,
+        'content': SELF_HEAL_INSTRUCTION,
     },
 ]
