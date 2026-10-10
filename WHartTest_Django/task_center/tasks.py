@@ -54,8 +54,16 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
             from rest_framework_simplejwt.tokens import RefreshToken
             from django.conf import settings as django_settings
 
-            # 使用任务创建者身份获取 token
-            token = str(RefreshToken.for_user(task.creator).access_token)
+            # 使用任务创建者身份获取 token。必须携带当前 session_version：
+            # SingleDeviceJWTAuthentication 会校验 token 与用户最新会话版本，
+            # RefreshToken.for_user 默认不写入该声明（按 0 处理），
+            # 创建者只要登录过就会被判为旧会话而 401。
+            from accounts.models import UserLoginState
+
+            token = RefreshToken.for_user(task.creator).access_token
+            state, _ = UserLoginState.objects.get_or_create(user=task.creator)
+            token["session_version"] = state.session_version
+            token = str(token)
             resp = requests.post(
                 f"{django_settings.BASE_URL}/api/ui-automation/trigger-batch/",
                 json={
