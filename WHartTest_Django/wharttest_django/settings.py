@@ -733,9 +733,10 @@ DOCX_EDITOR_SERVICE_KEY = os.environ.get("DOCX_EDITOR_SERVICE_KEY", "").strip()
 
 # Skill 商店配置
 # 默认商店源 base URL，必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包
+# 官方源：Gitee 仓库 mgdaas-lab/wharttest 的 master 分支 WHartTest_Skills 目录
 SKILL_STORE_DEFAULT_SOURCE = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE",
-    "https://raw.githubusercontent.com/MGdaasLab/WHartTest/master/WHartTest_Skills/",
+    "https://gitee.com/mgdaas-lab/wharttest/raw/master/WHartTest_Skills/",
 )
 SKILL_STORE_DEFAULT_SOURCE_NAME = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE_NAME",
