@@ -244,16 +244,6 @@ export function buildGenerationMessage(options: {
   }
 
   lines.push('');
-  lines.push('## 试跑验证（默认行为，必须执行）');
-  lines.push('每条用例保存成功后，先调用 list_environments 查询项目执行环境；仅一个环境时直接使用，多个环境时逐个列出让用户选择确认后再继续（不要自行猜测环境）。');
-  lines.push('环境确认后必须调用 run_interface_case（payload 传所选 environment_id）真实执行验证：');
-  lines.push('1. 执行通过 → 该条完成，继续下一条。');
-  lines.push('2. 执行失败 → 分析失败原因（断言预期不符 / 参数错误 / 变量链断裂 / 环境问题），修订用例（update_interface_case，需传完整 interface_data）后重新执行验证。失败修复上限 5 次。');
-  lines.push('3. 修复 5 次仍失败 → 保留用例，在 description 追加"试跑失败原因：xxx（已修复 5 次）"，登记到待确认清单，继续下一条。禁止删除已保存的用例。');
-  lines.push('4. 执行失败若属"预期数据依赖缺失"（如需要上传 multipart 文件、需要预置专属数据），不消耗修复次数：保留骨架用例 + description 登记依赖说明，登记到待补充清单。');
-  lines.push('5. 每条用例的试跑结果（通过/修复后通过/仍失败）计入最终总结。');
-  lines.push('6. 写操作用例（新增/修改/删除）试跑后必须清理测试数据（或确保用例自带自清理步骤），避免污染环境。');
-  lines.push('7. 用户在对话中明确表示"跳过验证/不要试跑"时：本条及后续用例仅静态生成并说明。');
 
   if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
     lines.push('');

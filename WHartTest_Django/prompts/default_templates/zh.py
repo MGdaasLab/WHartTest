@@ -2,6 +2,11 @@
 
 from textwrap import dedent
 
+from orchestrator_integration.interface_case_instructions import (
+    INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION,
+    INTERFACE_CASE_LIVE_VERIFICATION_PROMPT_DESCRIPTION,
+    INTERFACE_CASE_LIVE_VERIFICATION_PROMPT_NAME,
+)
 from orchestrator_integration.ui_generation_instructions import (
     UI_CASE_GENERATION_INSTRUCTION,
     UI_CASE_GENERATION_PROMPT_DESCRIPTION,
@@ -756,19 +761,12 @@ $steps
       - **SQL 类型接口**：跳过 D2/D3，仅生成 D1 基线与用户规则相关的 D4 用例。SQL 步骤参数（sql_params）的验证语义与 HTTP 参数不同，不做参数验证类用例。
       - **无任何约束清单时**：D2 自动收缩为"必填缺失 + 类型错误"，边界值维度跳过。
 
-      ## 试跑验证（默认行为，必须执行）
+      ## 试跑验证
 
-      每条用例保存成功后，先调用 list_environments 查询项目执行环境：仅一个环境时直接使用；多个环境时逐个列出让用户选择确认后再继续，禁止自行猜测。然后必须调用 run_interface_case（payload 传所选 environment_id）真实执行验证，按以下规则处理：
-
-      1. **执行通过**：该条完成，继续下一条。
-      2. **执行失败**：分析失败原因（断言预期不符 / 参数错误 / 变量链断裂 / 环境问题），修订用例（update_interface_case，注意需传完整 interface_data）后重新执行验证。**失败修复上限 5 次**。试跑的目的是验证用例质量，不是追求通过率——参数验证类用例（预期 4xx/业务错误码）执行结果不符是正常修复过程，**禁止为了通过率改生成其他类型的用例（如用免鉴权 401 用例顶替 D2 参数验证），维度覆盖要求优先于试跑通过率**。
-      3. **修复 5 次仍失败**：保留用例，在 description 追加"试跑失败原因：xxx（已修复 5 次）"，登记到待确认清单，继续下一条。**禁止删除已保存的用例**。
-      4. **预期数据依赖缺失**（如需要上传 multipart 文件、需要预置专属数据）：不消耗修复次数——保留骨架用例 + description 登记依赖说明，登记到待补充清单。
-      5. 每条用例的试跑结果（通过 / 修复后通过 / 仍失败）计入最终总结。
-      6. **写操作用例（新增/修改/删除）试跑后必须清理测试数据**（用例自带自清理步骤的除外），避免污染环境。
-      7. 试跑发现接口实际行为与文档/约束不一致时（如必填字段与文档不符、响应结构与文档不同），以实际行为为准修正用例断言，并把差异登记到待确认清单。
-
-      用户在对话中明确表示"跳过验证 / 不要试跑"时：当前及后续用例仅静态生成并向用户说明。
+      本会话已注入《接口用例试跑验证规范》（见系统提示词），必须严格执行；规则概要：每条用例
+      保存后确认执行环境并真实试跑，失败修复上限 5 次，仍失败保留用例并登记待确认清单，
+      预期数据依赖缺失保留骨架登记待补充，写操作用例须自清理测试数据。用户明确表示跳过验证时
+      转为静态生成。
 
       ---
 
@@ -849,19 +847,12 @@ $steps
       - priority 仅 P0/P1/P2 三级。group 填用户消息指定的分组 ID（未指定则不传）。
       - 逐条调用 create_testcase 保存。
 
-      ## 试跑验证（默认行为，必须执行）
+      ## 试跑验证
 
-      每条场景用例保存成功后，先调用 list_environments 查询项目执行环境：仅一个环境时直接使用；多个环境时逐个列出让用户选择确认后再继续，禁止自行猜测。然后必须调用 run_testcase（payload 传所选 environment_id）真实执行验证，按以下规则处理：
-
-      1. **执行通过**：该条完成，继续下一条。
-      2. **执行失败**：分析失败步骤与原因（断言预期不符 / 参数错误 / 变量链断裂 / 环境问题），修订用例后重新执行验证。**失败修复上限 5 次**。试跑的目的是验证用例质量而非追求通过率，**禁止为通过率改生成其他类型的场景，原型覆盖要求优先于试跑通过率**。
-      3. **修复 5 次仍失败**：保留用例，在 description 追加"试跑失败原因：xxx（已修复 5 次）"，登记到待确认清单，继续下一条。**禁止删除已保存的用例**。
-      4. **预期数据依赖缺失**：不消耗修复次数——保留骨架用例 + description 登记依赖说明，登记到待补充清单。
-      5. 每条用例试跑结果计入最终总结。
-      6. **含写操作的用例试跑后必须清理测试数据**（用例自带自清理步骤的除外）。
-      7. 试跑发现接口实际行为与文档/业务理解不一致时，以实际行为为准修正断言，并把差异登记到待确认清单。
-
-      用户在对话中明确表示"跳过验证 / 不要试跑"时：当前及后续用例仅静态生成并向用户说明。
+      本会话已注入《接口用例试跑验证规范》（见系统提示词），必须严格执行；规则概要：每条场景用例
+      保存后确认执行环境并真实试跑（run_testcase），失败修复上限 5 次，仍失败保留用例并登记待确认
+      清单，预期数据依赖缺失保留骨架登记待补充，含写操作的用例须自清理测试数据。用户明确表示跳过
+      验证时转为静态生成。
 
       ---
 
@@ -1022,5 +1013,14 @@ $steps
         'prompt_type': PromptType.GENERAL,
         'is_default': False,
         'content': SELF_HEAL_INSTRUCTION,
+    },
+    {
+        # 接口用例试跑验证规范：内容与 orchestrator_integration.interface_case_instructions
+        # 保持同源（agent-loop 运行时按 generation_guard 标记追加同一常量），避免双份内容漂移
+        'name': INTERFACE_CASE_LIVE_VERIFICATION_PROMPT_NAME,
+        'description': INTERFACE_CASE_LIVE_VERIFICATION_PROMPT_DESCRIPTION,
+        'prompt_type': PromptType.GENERAL,
+        'is_default': False,
+        'content': INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION,
     },
 ]

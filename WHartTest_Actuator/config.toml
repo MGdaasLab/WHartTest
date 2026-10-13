@@ -7,7 +7,7 @@ api_username = "admin"
 api_password = "admin123456"
 
 [actuator]
-name = "Actuator"
+name = "本地"
 
 [browser]
 browser_type = "chromium"
@@ -23,7 +23,7 @@ viewport_height = 720
 retry_count = 3
 step_interval = 100
 screenshot_dir = "./data/screenshots"
-max_concurrent = 2
+max_concurrent = 3
 fail_fast = false
 
 [trace]

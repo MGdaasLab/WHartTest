@@ -13,37 +13,26 @@
         <a-input :model-value="currentProjectName" disabled style="width: 200px;" />
       </div>
 
-      <!-- 需求模块（文档级联单选） -->
+      <!-- 功能用例选择（生成依据） -->
       <div class="form-row">
-        <span class="form-row-label required">{{ pageText.requirementModule }}</span>
-        <div class="cascade-area">
-          <a-select
-            v-model="formState.requirementDocumentId"
-            :placeholder="pageText.selectDocument"
-            :loading="isDocsLoading"
-            allow-search
-            style="width: 100%;"
-            @change="handleDocumentChange"
-          >
-            <a-option v-for="doc in requirementDocuments" :key="doc.id" :value="doc.id">
-              {{ doc.title }}
-            </a-option>
-          </a-select>
-          <a-select
-            v-model="formState.requirementModuleId"
-            :placeholder="pageText.selectModule"
-            :loading="isModulesLoading"
-            :disabled="!formState.requirementDocumentId"
-            allow-search
-            style="width: 100%; margin-top: 8px;"
-          >
-            <a-option v-for="mod in requirementModules" :key="mod.id" :value="mod.id">
-              {{ mod.title }}
-            </a-option>
-          </a-select>
-          <div class="field-hint">{{ pageText.requirementModuleHint }}</div>
+        <span class="form-row-label required">{{ pageText.functionalCases }}</span>
+        <div class="case-select-area">
+          <a-button type="outline" size="small" @click="isSelectorVisible = true">
+            {{ pageText.selectCasesButton }}
+          </a-button>
+          <span v-if="formState.selectedFunctionalCaseIds.length" class="selected-count-inline">
+            {{ pageText.selectedCount.replace('{count}', String(formState.selectedFunctionalCaseIds.length)) }}
+          </span>
+          <div class="field-hint">{{ pageText.casesHint }}</div>
         </div>
       </div>
+
+      <!-- 功能用例选择子弹窗 -->
+      <SelectFunctionalCasesModal
+        v-model:visible="isSelectorVisible"
+        :selected-ids="formState.selectedFunctionalCaseIds"
+        @confirm="handleCasesConfirmed"
+      />
 
       <!-- 保存目标模块 -->
       <div class="form-row">
@@ -117,27 +106,6 @@
         </div>
       </div>
 
-      <!-- 生成深度 + 条数上限 -->
-      <div class="form-row">
-        <span class="form-row-label required">{{ pageText.depth }}</span>
-        <a-radio-group v-model="formState.depth">
-          <a-radio value="positive">
-            {{ pageText.depthPositive }}
-            <a-tooltip :content="pageText.depthPositiveTip" position="top">
-              <icon-question-circle class="depth-tip-icon" />
-            </a-tooltip>
-          </a-radio>
-          <a-radio value="full">
-            {{ pageText.depthFull }}
-            <a-tooltip :content="pageText.depthFullTip" position="top">
-              <icon-question-circle class="depth-tip-icon" />
-            </a-tooltip>
-          </a-radio>
-        </a-radio-group>
-        <span class="form-row-label" style="margin-left: 24px;">{{ pageText.caseLimit }}</span>
-        <a-input-number v-model="formState.caseLimit" :min="1" :max="30" style="width: 110px;" />
-      </div>
-
       <!-- 知识库 -->
       <div class="form-row">
         <span class="form-row-label">{{ pageText.knowledgeBase }}</span>
@@ -179,14 +147,11 @@ import { computed, ref, watch } from 'vue';
 import { Message } from '@arco-design/web-vue';
 import { useProjectStore } from '@/store/projectStore';
 import { useAppI18n } from '@/composables/useAppI18n';
-import { moduleApi } from '../../api';
 import { KnowledgeService } from '@/features/knowledge/services/knowledgeService';
 import type { KnowledgeBase } from '@/features/knowledge/types/knowledge';
 import type { UiModule, UiEnvironmentConfig, UiAuthState } from '../../types';
-import type { DocumentModule } from '@/features/requirements/types';
+import SelectFunctionalCasesModal from './SelectFunctionalCasesModal.vue';
 import {
-  fetchRequirementDocuments,
-  fetchRequirementModules,
   fetchEnvConfigs,
   fetchAuthStates,
   fetchModuleTree,
@@ -206,10 +171,10 @@ const { isEnglish } = useAppI18n();
 const pageText = computed(() => isEnglish.value ? {
   modalTitle: 'AI Generate UI Test Cases',
   currentProject: 'Project',
-  requirementModule: 'Requirement Module',
-  selectDocument: 'Select requirement document (module-split)',
-  selectModule: 'Select requirement module',
-  requirementModuleHint: 'Single module per generation to keep the business scope focused.',
+  functionalCases: 'Functional Cases',
+  selectCasesButton: 'Select functional cases',
+  selectedCount: '{count} case(s) selected',
+  casesHint: 'Cases already bound to a UI case are disabled. Each selected case generates one UI case, replay-verified, then bound back.',
   targetModule: 'Save to Module',
   selectModuleTree: 'Select target module',
   envConfig: 'Environment',
@@ -223,12 +188,6 @@ const pageText = computed(() => isEnglish.value ? {
   username: 'Username',
   password: 'Password',
   credentialsHint: 'Credentials are injected platform-side via environment variables; never shown in conversation.',
-  depth: 'Coverage',
-  depthPositive: 'Positive main flow',
-  depthPositiveTip: 'Only end-to-end normal flows that verify the module works as expected.',
-  depthFull: 'Full coverage',
-  depthFullTip: 'Adds form validation, boundaries, exceptions and page state transitions on top of the main flows.',
-  caseLimit: 'Case Limit',
   knowledgeBase: 'Knowledge Base',
   useKnowledgeBase: 'Search knowledge base for business flows',
   selectPlaceholder: 'Select',
@@ -237,10 +196,10 @@ const pageText = computed(() => isEnglish.value ? {
 } : {
   modalTitle: 'AI 生成 UI 自动化测试用例',
   currentProject: '当前项目',
-  requirementModule: '需求模块',
-  selectDocument: '请选择需求文档（已拆分模块）',
-  selectModule: '请选择需求模块',
-  requirementModuleHint: '每次仅选择一个模块，避免一次生成跨过多业务面。',
+  functionalCases: '功能用例',
+  selectCasesButton: '选择功能用例',
+  selectedCount: '已选 {count} 条用例',
+  casesHint: '已绑定 UI 用例的功能用例不可选；每条选中用例生成一条 UI 用例，试跑通过后自动回写绑定。',
   targetModule: '保存模块',
   selectModuleTree: '请选择保存目标模块',
   envConfig: '环境配置',
@@ -254,12 +213,6 @@ const pageText = computed(() => isEnglish.value ? {
   username: '账号',
   password: '密码',
   credentialsHint: '账密由平台侧通过环境变量注入，对话中不会显示明文。',
-  depth: '生成深度',
-  depthPositive: '正向主流程',
-  depthPositiveTip: '仅生成验证业务正常走通的端到端主流程用例。',
-  depthFull: '完整覆盖',
-  depthFullTip: '在正向主流程之上，追加表单校验、边界条件、异常场景与页面状态流转用例。',
-  caseLimit: '条数上限',
   knowledgeBase: '知识库',
   useKnowledgeBase: '检索知识库补充业务流程',
   selectPlaceholder: '请选择',
@@ -271,50 +224,46 @@ const currentProjectName = computed(() => projectStore.currentProject?.name || '
 const projectId = computed(() => projectStore.currentProjectId ?? 0);
 
 interface FormState {
-  requirementDocumentId: string | null;
-  requirementModuleId: string | null;
+  selectedFunctionalCaseIds: number[];
   targetModuleId: number | null;
   envConfigId: number | null;
   authMode: 'auth_state' | 'credentials' | 'none';
   authStateId: number | null;
   username: string;
   password: string;
-  depth: 'positive' | 'full';
-  caseLimit: number;
   useKnowledgeBase: boolean;
   knowledgeBaseId: string | null;
   businessNotes: string;
 }
 
 const formState = ref<FormState>({
-  requirementDocumentId: null,
-  requirementModuleId: null,
+  selectedFunctionalCaseIds: [],
   targetModuleId: null,
   envConfigId: null,
   authMode: 'auth_state',
   authStateId: null,
   username: '',
   password: '',
-  depth: 'positive',
-  caseLimit: 6,
   useKnowledgeBase: false,
   knowledgeBaseId: null,
   businessNotes: '',
 });
 
 const isSubmitting = ref(false);
-const requirementDocuments = ref<Array<{ id: string; title: string }>>([]);
-const requirementModules = ref<DocumentModule[]>([]);
+const isSelectorVisible = ref(false);
 const moduleTree = ref<UiModule[]>([]);
 const envConfigs = ref<UiEnvironmentConfig[]>([]);
 const authStates = ref<UiAuthState[]>([]);
 const knowledgeBases = ref<KnowledgeBase[]>([]);
-const isDocsLoading = ref(false);
-const isModulesLoading = ref(false);
+const isCasesLoading = ref(false);
 const isModuleTreeLoading = ref(false);
 const isEnvLoading = ref(false);
 const isAuthStateLoading = ref(false);
 const isKbLoading = ref(false);
+
+const handleCasesConfirmed = (ids: number[]) => {
+  formState.value.selectedFunctionalCaseIds = ids;
+};
 
 const moduleTreeData = computed(() =>
   flattenModuleTree(moduleTree.value).map((item) => ({ key: item.id, title: item.label }))
@@ -323,32 +272,6 @@ const moduleTreeData = computed(() =>
 const selectedEnvBaseUrl = computed(() =>
   envConfigs.value.find((env) => env.id === formState.value.envConfigId)?.base_url || ''
 );
-
-const loadRequirementDocuments = async () => {
-  if (!projectId.value) return;
-  isDocsLoading.value = true;
-  try {
-    requirementDocuments.value = await fetchRequirementDocuments(projectId.value);
-  } catch {
-    requirementDocuments.value = [];
-  } finally {
-    isDocsLoading.value = false;
-  }
-};
-
-const handleDocumentChange = async (documentId: string | number | boolean | Record<string, any> | (string | number | boolean | Record<string, any>)[] | undefined) => {
-  formState.value.requirementModuleId = null;
-  requirementModules.value = [];
-  if (!documentId || typeof documentId !== 'string') return;
-  isModulesLoading.value = true;
-  try {
-    requirementModules.value = await fetchRequirementModules(documentId);
-  } catch {
-    requirementModules.value = [];
-  } finally {
-    isModulesLoading.value = false;
-  }
-};
 
 const loadModuleTree = async () => {
   if (!projectId.value) return;
@@ -424,8 +347,8 @@ const loadKnowledgeBases = async () => {
 };
 
 const validate = (): string => {
-  if (!formState.value.requirementModuleId) {
-    return isEnglish.value ? 'Select a requirement module.' : '请选择需求模块。';
+  if (!formState.value.selectedFunctionalCaseIds.length) {
+    return isEnglish.value ? 'Select at least one functional case.' : '请至少选择一条功能用例。';
   }
   if (!formState.value.targetModuleId) {
     return isEnglish.value ? 'Select a target module.' : '请选择保存目标模块。';
@@ -454,16 +377,13 @@ const handleSubmit = () => {
   isSubmitting.value = true;
   try {
     emit('submit', {
-      requirementDocumentId: formState.value.requirementDocumentId,
-      requirementModuleId: formState.value.requirementModuleId,
+      selectedFunctionalCaseIds: [...formState.value.selectedFunctionalCaseIds],
       targetModuleId: formState.value.targetModuleId,
       envConfigId: formState.value.envConfigId,
       authMode: formState.value.authMode,
       authStateId: formState.value.authMode === 'auth_state' ? formState.value.authStateId : null,
       username: formState.value.authMode === 'credentials' ? formState.value.username.trim() : '',
       password: formState.value.authMode === 'credentials' ? formState.value.password : '',
-      depth: formState.value.depth,
-      caseLimit: formState.value.caseLimit,
       useKnowledgeBase: formState.value.useKnowledgeBase,
       knowledgeBaseId: formState.value.useKnowledgeBase ? formState.value.knowledgeBaseId : null,
       businessNotes: formState.value.businessNotes.trim(),
@@ -480,15 +400,12 @@ const handleCancel = () => {
 
 watch(() => props.visible, (visible) => {
   if (visible) {
-    formState.value.requirementDocumentId = null;
-    formState.value.requirementModuleId = null;
+    formState.value.selectedFunctionalCaseIds = [];
     formState.value.targetModuleId = null;
     formState.value.authStateId = null;
     formState.value.username = '';
     formState.value.password = '';
     formState.value.businessNotes = '';
-    requirementModules.value = [];
-    loadRequirementDocuments();
     loadModuleTree();
     loadEnvConfigs();
     loadKnowledgeBases();
@@ -517,7 +434,7 @@ watch(() => props.visible, (visible) => {
   color: rgb(var(--red-6));
 }
 
-.cascade-area,
+.case-select-area,
 .env-area,
 .auth-area,
 .kb-area {
@@ -525,15 +442,16 @@ watch(() => props.visible, (visible) => {
   max-width: 520px;
 }
 
+.selected-count-inline {
+  margin-left: 10px;
+  font-size: 13px;
+  color: var(--color-text-2);
+}
+
+
 .field-hint {
   margin-top: 4px;
   font-size: 12px;
   color: var(--color-text-3);
-}
-
-.depth-tip-icon {
-  margin-left: 2px;
-  color: var(--color-text-3);
-  cursor: help;
 }
 </style>

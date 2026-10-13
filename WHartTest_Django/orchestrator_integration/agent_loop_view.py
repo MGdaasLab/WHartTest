@@ -50,6 +50,7 @@ from .middleware_config import (
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
 from .ui_generation_instructions import UI_CASE_GENERATION_INSTRUCTION
 from .self_heal_instructions import SELF_HEAL_INSTRUCTION
+from .interface_case_instructions import INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
 from .generation_guard import (
     GENERATION_MODE_INTERFACE_CASE,
     GENERATION_MODE_SELF_HEAL,
@@ -1096,6 +1097,13 @@ class AgentLoopStreamAPIView(View):
                     (effective_prompt or "") + "\n\n" + SELF_HEAL_INSTRUCTION
                 )
                 logger.info("AgentLoopStreamAPI: 已追加 UI 用例自愈规范指令")
+
+            # 8.4 接口用例生成会话：追加试跑验证规范（与 default_templates 模板同源）
+            if generation_guard_enabled:
+                effective_prompt = (
+                    (effective_prompt or "") + "\n\n" + INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
+                )
+                logger.info("AgentLoopStreamAPI: 已追加接口用例试跑验证规范")
 
             # 9. 构建用户消息（支持多模态：上传图片 + HTTP(S) 图片 + 需求文档图片）
             user_message_for_llm = user_message

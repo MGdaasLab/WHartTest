@@ -75,7 +75,7 @@ import {
   buildUiGenerationMessage,
   collectExistingUiObjects,
   fetchEnvConfigs,
-  fetchRequirementModules,
+  fetchFunctionalCases,
   type UiGenerationFormData,
 } from '../services/uiCaseGeneration'
 
@@ -110,18 +110,16 @@ const handleGenerateSubmit = async (formData: UiGenerationFormData) => {
   }
   isSubmittingGeneration.value = true
   try {
-    // 并行收集上下文：需求模块正文、环境信息、已有对象（查重）
-    const [requirementModules, envConfigs, existing] = await Promise.all([
-      formData.requirementModuleId && formData.requirementDocumentId
-        ? fetchRequirementModules(formData.requirementDocumentId).catch(() => [])
-        : Promise.resolve([]),
+    // 并行收集上下文：所选功能用例详情、环境信息、已有对象（查重）
+    const [functionalCases, envConfigs, existing] = await Promise.all([
+      fetchFunctionalCases(projectId).catch(() => []),
       fetchEnvConfigs(projectId).catch(() => []),
       collectExistingUiObjects(projectId).catch(() => ({ pageNames: [], pageUrls: [], caseNames: [] })),
     ])
-    const requirementModule = requirementModules.find((m) => m.id === formData.requirementModuleId) || null
+    const selectedCases = functionalCases.filter((c) => formData.selectedFunctionalCaseIds.includes(c.id))
     const envConfig = envConfigs.find((env) => env.id === formData.envConfigId) || null
 
-    const message = buildUiGenerationMessage({ formData, projectId, requirementModule, envConfig, existing })
+    const message = buildUiGenerationMessage({ formData, projectId, functionalCases: selectedCases, envConfig, existing })
 
     const requestData: ChatRequest = {
       message,

@@ -1,63 +1,30 @@
 /**
  * AI 一键生成 UI 自动化测试用例：编排服务。
- * 负责需求模块/环境/登录态/已有对象收集，以及生成指令（message）拼装。
+ * 负责功能用例/环境/登录态/已有对象收集，以及生成指令（message）拼装。
  */
-import axiosInstance from '@/utils/request';
 import { useProjectStore } from '@/store/projectStore';
 import { moduleApi, pageApi, testCaseApi, envConfigApi, authStateApi } from '../api';
 import type { UiModule, UiPage, UiTestCase, UiEnvironmentConfig, UiAuthState } from '../types';
-import type { DocumentModule } from '@/features/requirements/types';
-
-const base = (projectId: number) => `/projects/${projectId}`;
-
-export type UiGenerationDepth = 'positive' | 'full';
+import { getTestCaseList, type TestCase } from '@/services/testcaseService';
 
 export interface UiGenerationFormData {
-  requirementDocumentId: string | null;
-  requirementModuleId: string | null;
+  selectedFunctionalCaseIds: number[];
   targetModuleId: number | null;
   envConfigId: number | null;
   authMode: 'auth_state' | 'credentials' | 'none';
   authStateId: number | null;
   username: string;
   password: string;
-  depth: UiGenerationDepth;
-  caseLimit: number;
   useKnowledgeBase: boolean;
   knowledgeBaseId: string | null;
   businessNotes: string;
 }
 
-export interface UiGenerationRequirementModule extends DocumentModule {
-  document_id: string;
-  document_title?: string;
-}
-
-/** 获取项目下已拆分模块的需求文档列表（用于级联选择需求模块） */
-export async function fetchRequirementDocuments(projectId: number): Promise<Array<{ id: string; title: string }>> {
-  const response = await axiosInstance({
-    url: `/requirements/documents/`,
-    method: 'GET',
-    params: { project: projectId, page_size: 100 },
-  });
-  const payload = (response.data as any)?.data ?? response.data;
-  const list = Array.isArray(payload) ? payload : payload?.results || [];
-  // 仅取已完成模块拆分的文档，未拆分文档没有可选模块
-  return list
-    .filter((item: any) => ['module_split', 'user_reviewing', 'ready_for_review', 'reviewing', 'review_completed'].includes(item.status))
-    .map((item: any) => ({ id: item.id, title: item.title || item.id }));
-}
-
-/** 获取需求文档下已拆分的模块列表 */
-export async function fetchRequirementModules(documentId: string): Promise<DocumentModule[]> {
-  const response = await axiosInstance({
-    url: `/requirements/modules/`,
-    method: 'GET',
-    params: { document: documentId, page_size: 200 },
-  });
-  const payload = (response.data as any)?.data ?? response.data;
-  const list = Array.isArray(payload) ? payload : payload?.results || [];
-  return list as DocumentModule[];
+/** 获取项目功能用例列表（含绑定状态，用于多选与置灰已绑定项） */
+export async function fetchFunctionalCases(projectId: number): Promise<TestCase[]> {
+  const response = await getTestCaseList(projectId, { page: 1, pageSize: 1000 });
+  if (!response.success) return [];
+  return response.data || [];
 }
 
 /** 获取项目环境配置列表 */
@@ -115,31 +82,23 @@ export async function collectExistingUiObjects(projectId: number): Promise<{
   };
 }
 
-const promptRequirementModule = (module: DocumentModule): string => {
-  const lines = [`### ${module.title || '未命名模块'}`];
-  if (module.content) {
-    lines.push(module.content);
-  }
-  return lines.join('\n');
-};
-
 /**
  * 拼装发送给 Agent 的 UI 生成指令。
  */
 export function buildUiGenerationMessage(options: {
   formData: UiGenerationFormData;
   projectId: number;
-  requirementModule: DocumentModule | null;
+  functionalCases: TestCase[];
   envConfig: UiEnvironmentConfig | null;
   existing: { pageNames: string[]; pageUrls: string[]; caseNames: string[] };
 }): string {
-  const { formData, projectId, requirementModule, envConfig, existing } = options;
+  const { formData, projectId, functionalCases, envConfig, existing } = options;
 
   const lines: string[] = [];
   // 会话守护标记：后端检测后挂载 UI 守护中间件 + 追加 UI 生成规范指令 + 注入凭据 env
   lines.push('<!-- wharttest:generation_mode=ui_case -->');
   lines.push('');
-  lines.push('请基于以下信息一键生成 UI 自动化测试用例（页面元素、页面步骤、测试用例全部落库）。');
+  lines.push('请基于以下选中的功能测试用例，逐条生成对应的 UI 自动化测试用例（页面元素、页面步骤、测试用例全部落库，试跑通过后回写绑定关系）。');
   lines.push('');
   lines.push('## 任务类型：UI 自动化用例（UiPage / UiElement / UiPageSteps / UiTestCase）');
   lines.push(`项目 ID：${projectId}`);
@@ -155,7 +114,7 @@ export function buildUiGenerationMessage(options: {
   if (envConfig?.base_url) {
     lines.push(`起始 URL：${envConfig.base_url}（环境 base_url）`);
   } else {
-    lines.push('起始 URL：未提供，请根据需求模块内容与用户确认入口页面。');
+    lines.push('起始 URL：未提供，请根据功能用例步骤与用户确认入口页面。');
   }
   if (formData.authMode === 'auth_state' && formData.authStateId) {
     lines.push(`登录方式：平台已注入登录态（auth_state_id=${formData.authStateId}），storageState 文件路径在环境变量 WHARTTEST_UI_AUTH_STATE_FILE，先注入登录态再访问起始 URL。`);
@@ -165,28 +124,27 @@ export function buildUiGenerationMessage(options: {
     lines.push('登录方式：无鉴权，直接访问起始 URL 开始生成。');
   }
 
-  // 生成深度与数量
+  // 生成范围：忠实翻译所选功能用例
   lines.push('');
   lines.push('## 生成范围');
-  lines.push(`生成深度：${formData.depth === 'full' ? '完整覆盖（正向主流程 + 表单校验 + 边界条件 + 异常场景 + 页面状态流转）' : '正向主流程（核心业务路径端到端）'}`);
-  lines.push(`用例数量上限：${formData.caseLimit} 条（超出时按 P0 > P1 > P2 裁剪，被裁剪场景登记到待补充清单）`);
+  lines.push('生成方式：忠实翻译所选功能用例，生成数量与所选用例一一对应；不自行扩展场景。');
 
-  // 需求模块内容（业务流程最高优先级依据）
+  // 功能用例清单（生成依据，Agent 用 get_testcase_detail 按 ID 自取详情）
   lines.push('');
-  lines.push('## 需求模块内容（业务流程与场景设计的最高优先级依据）');
-  if (requirementModule) {
-    lines.push(promptRequirementModule(requirementModule));
-  } else {
-    lines.push('（未选择需求模块，仅按用户业务描述生成）');
+  lines.push('## 生成依据：选中的功能测试用例（逐条串行处理，一条完整闭环后再处理下一条）');
+  for (const tc of functionalCases) {
+    const bound = tc.ui_test_case ? `，已绑定 UI 用例 ${tc.ui_test_case}` : '';
+    lines.push(`- 功能用例 ID：${tc.id}｜名称：${tc.name}｜等级：${tc.level || 'P1'}${bound}`);
   }
+  lines.push('处理方式：用 wharttest 技能 get_testcase_detail（--case_id）读取每条用例的步骤与预期结果，按规范转换为 UI 自动化用例；全部处理完后逐条试跑验证，试跑通过才回写绑定关系（edit_testcase --ui_test_case_id）。');
 
   // 知识库
   if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
     lines.push('');
-    lines.push('## 知识库：已启用，请围绕选中需求模块的内容检索业务流程补充用例设计依据；检索结果与业务关联模糊时跳过相关场景并登记，禁止编造。');
+    lines.push('## 知识库：已启用，可检索业务流程作为功能用例描述的补充上下文（如步骤指代不明时帮助消歧）；检索结果与业务关联模糊时跳过并登记，禁止编造。');
   } else {
     lines.push('');
-    lines.push('## 知识库：未启用（仅基于需求模块内容与业务描述生成）。');
+    lines.push('## 知识库：未启用（仅基于功能用例步骤与业务描述生成）。');
   }
 
   // 业务描述
@@ -212,7 +170,7 @@ export function buildUiGenerationMessage(options: {
   }
 
   lines.push('');
-  lines.push('生成完成后按规范输出总结（保存数量、优先级统计、试跑结果、待确认清单）。');
+  lines.push('生成完成后按规范输出总结（功能用例处理数、UI 用例保存数、试跑通过/失败统计、绑定成功统计、元素复用/新增统计、待确认清单）。');
 
   return lines.join('\n');
 }
