@@ -87,12 +87,8 @@ if ALLOWED_HOSTS_ENV:
     # 解析逗号分隔主机并去除空白。
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(",")]
 elif DEBUG:
-    # Django 测试客户端默认会使用 testserver 主机名。
-    ALLOWED_HOSTS = [
-        "localhost",
-        "127.0.0.1",
-        "testserver",
-    ]
+    # 开发环境允许局域网及所有主机访问
+    ALLOWED_HOSTS = ["*"]
 else:
     # 生产环境必须通过 DJANGO_ALLOWED_HOSTS 显式配置允许主机。
     ALLOWED_HOSTS = [
@@ -735,7 +731,7 @@ DOCX_EDITOR_SERVICE_KEY = os.environ.get("DOCX_EDITOR_SERVICE_KEY", "").strip()
 # 默认商店源 base URL，必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包
 SKILL_STORE_DEFAULT_SOURCE = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE",
-    "https://raw.githubusercontent.com/MGdaasLab/WHartTest/master/WHartTest_Skills/",
+    "https://skillhub.mgdaas.com/",
 )
 SKILL_STORE_DEFAULT_SOURCE_NAME = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE_NAME",

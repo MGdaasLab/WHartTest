@@ -8,6 +8,10 @@
           <template #icon><icon-storage /></template>
           {{ text.skillStore }}
         </a-button>
+        <a-button href="https://skillhub.mgdaas.com/" target="_blank">
+          <template #icon><icon-link /></template>
+          {{ text.visitSkillHub }}
+        </a-button>
         <a-button @click="showGitImportModal = true">
           <template #icon><icon-github /></template>
           {{ text.importFromGit }}
@@ -181,6 +185,7 @@ const text = computed(() => (
     ? {
         title: 'Skills Management',
         skillStore: 'Skill Hub',
+        visitSkillHub: 'SkillHub Website',
         importFromGit: 'Import from Git',
         uploadSkill: 'Upload Skill',
         emptyState: 'No Skills yet. Click the button above to upload',
@@ -213,6 +218,7 @@ const text = computed(() => (
     : {
         title: 'Skills 管理',
         skillStore: 'Skill 中心',
+        visitSkillHub: 'Skill 网站',
         importFromGit: '从 Git 导入',
         uploadSkill: '上传 Skill',
         emptyState: '暂无 Skills，点击上方按钮上传',

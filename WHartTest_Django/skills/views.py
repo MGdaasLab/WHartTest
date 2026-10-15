@@ -327,12 +327,155 @@ class SkillViewSet(BaseModelViewSet):
         请求：?url=https://.../manifest.json
         """
         import json
+        from urllib.parse import urlparse
 
         url = (request.query_params.get('url') or '').strip()
         if not url:
             return Response({
                 'code': 400, 'message': '缺少 url 参数', 'data': None
             }, status=status.HTTP_400_BAD_REQUEST)
+
+        # 适配专属 SkillHub 网站 (如 https://skillhub.mgdaas.com/)
+        try:
+            parsed = urlparse(url)
+            if parsed.netloc == 'skillhub.mgdaas.com' or 'skillhub' in parsed.netloc:
+                api_base = f"{parsed.scheme}://{parsed.netloc}/api/v1/skills?limit=100"
+                Skill._validate_remote_url(api_base)
+                import httpx
+                all_items = []
+                cursor = None
+                while True:
+                    page_url = api_base if cursor is None else f"{api_base}&cursor={cursor}"
+                    resp = httpx.get(page_url, timeout=15.0, follow_redirects=True)
+                    if resp.status_code != 200:
+                        break
+                    page_data = resp.json()
+                    items = page_data.get('items', [])
+                    all_items.extend(items)
+                    cursor = page_data.get('nextCursor')
+                    if not cursor or not items:
+                        break
+
+                from concurrent.futures import ThreadPoolExecutor
+
+                # 提取所有分类标识并并发拉取分类详细元数据
+                unique_cats = set()
+                for item in all_items:
+                    slug = item.get('slug') or ''
+                    if '--' in slug:
+                        cat, _ = slug.split('--', 1)
+                        unique_cats.add(cat)
+
+                fallback_names = {
+                    'test': ('智能测试', 'Intelligence Test'),
+                    'dev': ('研发工程', 'Engineering'),
+                    'office': ('办公文档', 'Office & Docs'),
+                    'ai-agent': ('AI 与 Agent', 'AI & Agent'),
+                    'security': ('安全合规', 'Security & Compliance'),
+                    'data': ('数据分析', 'Data & Analytics'),
+                    'content': ('内容创作', 'Content & Creative'),
+                }
+
+                def fetch_namespace_meta(cat_slug):
+                    try:
+                        ns_url = f"{parsed.scheme}://{parsed.netloc}/api/v1/namespaces/{cat_slug}"
+                        r = httpx.get(ns_url, timeout=3.0, follow_redirects=True)
+                        if r.status_code == 200:
+                            d = r.json().get('data') or {}
+                            return cat_slug, {
+                                'slug': cat_slug,
+                                'name': d.get('displayName') or fallback_names.get(cat_slug, (cat_slug, cat_slug))[0],
+                                'name_en': d.get('displayNameEn') or fallback_names.get(cat_slug, (cat_slug, cat_slug))[1],
+                                'description': d.get('description') or '',
+                            }
+                    except Exception as err:
+                        logger.debug('拉取分类元数据失败 %s: %s', cat_slug, err)
+                    fb = fallback_names.get(cat_slug, (cat_slug, cat_slug))
+                    return cat_slug, {
+                        'slug': cat_slug,
+                        'name': fb[0],
+                        'name_en': fb[1],
+                        'description': '',
+                    }
+
+                cat_metadata_map = {}
+                if unique_cats:
+                    with ThreadPoolExecutor(max_workers=min(len(unique_cats), 10)) as executor:
+                        cat_metadata_map = dict(executor.map(fetch_namespace_meta, list(unique_cats)))
+
+                category_counts = {}
+                skills = []
+                for item in all_items:
+                    slug = item.get('slug') or ''
+                    if '--' in slug:
+                        cat, name = slug.split('--', 1)
+                        zip_path = f"api/v1/skills/{cat}/{name}/download"
+                    else:
+                        cat = 'other'
+                        name = slug
+                        zip_path = f"api/v1/skills/{slug}/download"
+
+                    category_counts[cat] = category_counts.get(cat, 0) + 1
+                    meta = cat_metadata_map.get(cat, {
+                        'name': fallback_names.get(cat, (cat, cat))[0],
+                        'name_en': fallback_names.get(cat, (cat, cat))[1],
+                    })
+
+                    tags = []
+                    raw_tags = item.get('tags')
+                    if isinstance(raw_tags, dict):
+                        tags = list(raw_tags.keys())
+                    elif isinstance(raw_tags, list):
+                        tags = raw_tags
+
+                    if not tags and meta.get('name'):
+                        tags = [meta['name']]
+
+                    skills.append({
+                        'id': slug,
+                        'name': item.get('displayName') or name,
+                        'description': item.get('summary') or '',
+                        'version': (item.get('latestVersion') or {}).get('version', '1.0.0'),
+                        'author': item.get('ownerDisplayName') or 'MGdaas-Lab',
+                        'category': cat,
+                        'category_name': meta.get('name') or cat,
+                        'category_name_en': meta.get('name_en') or cat,
+                        'tags': tags,
+                        'zip_path': zip_path,
+                    })
+
+                categories = [
+                    {
+                        'slug': 'all',
+                        'name': '全部',
+                        'name_en': 'All',
+                        'skill_count': len(skills),
+                    }
+                ]
+                for cat in sorted(unique_cats, key=lambda c: category_counts.get(c, 0), reverse=True):
+                    meta = cat_metadata_map.get(cat, {})
+                    categories.append({
+                        'slug': cat,
+                        'name': meta.get('name') or cat,
+                        'name_en': meta.get('name_en') or cat,
+                        'description': meta.get('description') or '',
+                        'skill_count': category_counts.get(cat, 0),
+                    })
+
+                return Response({
+                    'code': 200,
+                    'message': '获取成功',
+                    'data': {
+                        'version': '1',
+                        'categories': categories,
+                        'skills': skills,
+                    }
+                })
+        except ValidationError as e:
+            msg = e.messages[0] if hasattr(e, 'messages') and e.messages else str(e)
+            return Response({'code': 400, 'message': msg, 'data': None}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.warning('SkillHub API 请求异常，回退标准代理拉取: %s', e)
 
         try:
             text = self._proxy_fetch_text(url, max_size=1 * 1024 * 1024)

@@ -71,6 +71,14 @@ export interface SkillStoreSource {
   isDefault?: boolean
 }
 
+export interface SkillStoreCategory {
+  slug: string
+  name: string
+  name_en?: string
+  description?: string
+  skill_count?: number
+}
+
 export interface ManifestSkill {
   id: string
   name: string
@@ -79,6 +87,9 @@ export interface ManifestSkill {
   description_en?: string
   version?: string
   author?: string
+  category?: string
+  category_name?: string
+  category_name_en?: string
   tags?: string[]
   zip_path: string
   readme_path?: string
@@ -88,6 +99,7 @@ export interface ManifestSkill {
 export interface SkillStoreManifest {
   version: string
   updated_at?: string
+  categories?: SkillStoreCategory[]
   skills: ManifestSkill[]
 }
 
