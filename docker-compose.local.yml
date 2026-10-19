@@ -112,7 +112,7 @@ services:
       # Skill 执行模式：runner（默认，第 2 层独立沙箱）或 inprocess（第 1 层进程内加固，
       # 文件系统/业务网段不做隔离，仅建议本地开发）
       - SKILL_EXEC_MODE=${SKILL_EXEC_MODE:-runner}
-      - SKILL_RUNNER_URL=${SKILL_RUNNER_URL:-http://skill-runner:8010}
+      - SKILL_RUNNER_URL=${SKILL_RUNNER_URL:-http://skill-runner:8923}
       - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
       - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
     depends_on:
@@ -284,7 +284,7 @@ services:
     environment:
       - HOME=/tmp
       - SKILL_RUNNER_HOST=0.0.0.0
-      - SKILL_RUNNER_PORT=8010
+      - SKILL_RUNNER_PORT=8923
       - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
       - SKILL_RUNNER_SKILLS_ROOT=/app/data/media
       - SKILL_RUNNER_WORKSPACE_ROOT=/tmp
@@ -315,7 +315,7 @@ services:
       - skill-runner-net
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/health')" ]
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8923/health')" ]
       interval: 30s
       timeout: 10s
       retries: 3

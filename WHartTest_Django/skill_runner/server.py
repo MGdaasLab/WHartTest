@@ -180,7 +180,7 @@ def main() -> int:
     )
 
     host = os.environ.get("SKILL_RUNNER_HOST", "0.0.0.0")
-    port = int(os.environ.get("SKILL_RUNNER_PORT", "8010"))
+    port = int(os.environ.get("SKILL_RUNNER_PORT", "8923"))
     token = (os.environ.get("SKILL_RUNNER_TOKEN", "") or "").strip()
 
     if not token:
