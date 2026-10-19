@@ -54,6 +54,8 @@ RUN set -eux; \
 
 # 复制requirements并安装依赖到虚拟环境
 COPY requirements.txt .
+# Skill 沙箱专属基础依赖（backend 与 skill-runner 共用镜像，两种执行模式都需要）
+COPY skill_runner/requirements.txt ./skill_runner-requirements.txt
 
 # 使用 uv 直接安装到虚拟环境（主镜像失败时自动切换到后备源）
 RUN set -eux; \
@@ -64,7 +66,8 @@ RUN set -eux; \
         echo "uv pip install via $index"; \
         if uv pip install --python /opt/venv/bin/python --no-cache \
           --default-index "$index" \
-          -r requirements.txt; then \
+          -r requirements.txt \
+          -r skill_runner-requirements.txt; then \
           return 0; \
         fi; \
         echo "uv pip install failed via $index, trying next index..." >&2; \
