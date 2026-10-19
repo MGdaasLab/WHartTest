@@ -87,12 +87,8 @@ if ALLOWED_HOSTS_ENV:
     # 解析逗号分隔主机并去除空白。
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(",")]
 elif DEBUG:
-    # Django 测试客户端默认会使用 testserver 主机名。
-    ALLOWED_HOSTS = [
-        "localhost",
-        "127.0.0.1",
-        "testserver",
-    ]
+    # 开发环境允许局域网及所有主机访问
+    ALLOWED_HOSTS = ["*"]
 else:
     # 生产环境必须通过 DJANGO_ALLOWED_HOSTS 显式配置允许主机。
     ALLOWED_HOSTS = [
@@ -732,11 +728,14 @@ DOCX_EDITOR_PUBLIC_BASE_URL = os.environ.get("DOCX_EDITOR_PUBLIC_BASE_URL", "").
 DOCX_EDITOR_SERVICE_KEY = os.environ.get("DOCX_EDITOR_SERVICE_KEY", "").strip()
 
 # Skill 商店配置
-# 默认商店源 base URL，必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包
-# 官方源：Gitee 仓库 mgdaas-lab/wharttest 的 master 分支 WHartTest_Skills 目录
+# 默认商店源：SkillHub 网站地址，或自建/镜像 base URL
+# base URL 必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包
+# 官方源：SkillHub 网站（https://skillhub.mgdaas.com/）
+# 内网/离线现场可改用 Gitee 镜像：
+# https://gitee.com/mgdaas-lab/wharttest/raw/master/WHartTest_Skills/
 SKILL_STORE_DEFAULT_SOURCE = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE",
-    "https://gitee.com/mgdaas-lab/wharttest/raw/master/WHartTest_Skills/",
+    "https://skillhub.mgdaas.com/",
 )
 SKILL_STORE_DEFAULT_SOURCE_NAME = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE_NAME",
