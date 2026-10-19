@@ -63,6 +63,15 @@ python api_automation_tools.py --action list_interfaces --project_id 1 --params 
 
 ### 接口类型与方法
 
+### 接口参数约束
+
+接口导入/更新文档时，平台会解析每个 HTTP 接口的参数约束（path/query/header 参数、body 字段的类型/必填/枚举/范围/长度/format、响应结构与成功码）并固化存库。用 `get_interface_constraints`（`--interface_ids` 传逗号分隔的接口 ID）按需查询：
+
+- 返回 `constraints` 数组，每项含 `interface_id` 与 `constraints`（结构：`params.{path,query,header}`、`body_fields`（含 `name/type/required/constraints/default/description`，嵌套字段用点路径；所有参数逐行保留，无约束的字段 constraints 为空对象）、`body_required`、`response`（含 `success_code/fields`）、`notes`）。每个接口的快照自包含：与其他接口共享同一 schema 时也完整展开全部 body 字段，无需跳转其他接口查看。
+- `missing` 数组列出没有约束快照的接口 ID（未通过文档导入或文档中未匹配到），对应约束按"未知"处理，禁止臆造。
+- 生成接口用例时应按当前处理的接口分批调用本工具获取约束，而不是把全部接口约束一次性读入上下文。
+
+- 接口类型：`http`、`sql`
 - 接口类型：`http`、`sql`
 - HTTP 方法：`GET`、`POST`、`PUT`、`DELETE`、`PATCH`
 - SQL 方法：`fetchone`、`fetchmany`、`fetchall`、`insert`、`update`、`delete`
@@ -137,9 +146,9 @@ python api_automation_tools.py --action list_interfaces --project_id 1 --params 
 |---|---|
 | `list_interfaces` / `get_interface` | 查询接口 |
 | `create_interface` / `update_interface` / `delete_interface` | 维护接口 |
+| `duplicate_interface` | 复制接口定义 |
+| `get_interface_constraints` | 查询接口参数约束快照（导入文档时固化的类型/必填/枚举/范围/长度等，按 interface_ids 批量查询） |
 | `run_interface` | 执行已保存接口 |
-| `quick_debug_interface` | 不落库快速调试接口 |
-| `list_interface_results` / `get_interface_result` | 查询接口调试/运行结果 |
 
 ### 用例标签、分组、用例与报告
 

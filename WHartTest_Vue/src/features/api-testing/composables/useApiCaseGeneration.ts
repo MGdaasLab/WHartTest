@@ -10,12 +10,9 @@ import { sendChatMessageStream } from '@/features/langgraph/services/chatService
 import type { ChatRequest } from '@/features/langgraph/types/chat';
 import { getInterfaces } from '../services/interfaceService';
 import {
-  extractConstraints,
   collectExistingInterfaceCaseNames,
-  collectExistingScenarioCaseNames,
   buildGenerationMessage,
   type GenerationFormData,
-  type ConstraintExtractResult,
   type GenerationInterfaceInfo,
 } from '../services/apiCaseGeneration';
 import type { ApiInterface } from '../types/interface';
@@ -34,9 +31,25 @@ export function useApiCaseGeneration() {
   const fetchSelectedInterfaces = async (ids: number[]): Promise<GenerationInterfaceInfo[]> => {
     const idSet = new Set(ids);
     // getInterfaces 返回 { data: { results, count }, status } 形状（无 success 字段），与弹窗 fetchData 一致的读取方式
-    const response: any = await getInterfaces({ page_size: 200 });
+    // 按 count 全量拉取（与生成弹窗 fetchAllInterfaces 同策略）：大文档导入后接口数常超单页上限
+    const response: any = await getInterfaces({ page_size: 500 });
     const payload: any = response?.data;
+    const total: number = payload?.count ?? 0;
     const list: ApiInterface[] = Array.isArray(payload) ? payload : payload?.results || [];
+    if (total && list.length < total) {
+      const pageSize = list.length || 500;
+      const totalPages = Math.ceil(total / pageSize);
+      const pageRequests = [];
+      for (let page = 2; page <= totalPages; page += 1) {
+        pageRequests.push(getInterfaces({ page_size: pageSize, page }));
+      }
+      const pages = await Promise.all(pageRequests);
+      for (const pageRes of pages) {
+        const pagePayload: any = pageRes?.data;
+        const pageList: ApiInterface[] = Array.isArray(pagePayload) ? pagePayload : pagePayload?.results || [];
+        list.push(...pageList);
+      }
+    }
     return list.filter(item => idSet.has(item.id)) as GenerationInterfaceInfo[];
   };
 
@@ -88,37 +101,21 @@ export function useApiCaseGeneration() {
         return;
       }
 
-      // 2. 约束提取（有文档时）：弹窗关闭前直接从组件实例取用户上传的文件
-      let constraints: ConstraintExtractResult | null = null;
-      let documentName = '';
-      const file = modalRef.value?.getDocumentFile() || null;
-      if (file) {
-        try {
-          constraints = await extractConstraints(file, formData.interfaceIds);
-          documentName = file.name;
-        } catch {
-          Notification.warning({
-            title: tl('约束提取失败'),
-            content: tl('接口文档解析失败，将按无约束模式生成'),
-            duration: 5000,
-          });
-        }
-      }
-
-      // 3. 已有用例名清单
+      // 2. 已有用例名清单（仅单接口模式；场景为命中制生成，不做名称查重）
+      // 约束不再由前端上传文档提取：导入接口文档时平台已固化约束快照，
+      // 模型生成时通过 api-automation 技能的 get_interface_constraints 按接口读取
       const existingNames = formData.caseType === 'scenario'
-        ? await collectExistingScenarioCaseNames().catch(() => [])
+        ? []
         : await collectExistingInterfaceCaseNames(formData.interfaceIds).catch(() => []);
 
-      // 4. 拼装指令并发送
+      // 3. 拼装指令并发送
       const message = buildGenerationMessage({
         formData,
         interfaces,
         projectId: projectId.value,
         existingNames,
-        constraints,
-        documentName,
         loginInterface,
+        functionalCaseRefs: formData.functionalCaseRefs,
       });
 
       const requestData: ChatRequest = {

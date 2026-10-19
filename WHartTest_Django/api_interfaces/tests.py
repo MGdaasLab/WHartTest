@@ -4,7 +4,7 @@ from unittest.mock import patch, MagicMock
 from urllib.error import URLError
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.contrib.auth.models import User, Permission
 from django.contrib.contenttypes.models import ContentType
 from rest_framework.test import APIClient
@@ -12,7 +12,7 @@ from rest_framework import status
 
 from projects.models import Project, ProjectMember
 from api_modules.models import ApiModule
-from .models import ApiInterface, ApiInterfaceResult
+from .models import ApiInterface, ApiInterfaceConstraint, ApiInterfaceResult
 from .serializers import ApiInterfaceSerializer
 from api_environments.models import ApiEnvironment, ApiEnvironmentVariable
 from .exchange import fetch_api_document
@@ -3646,14 +3646,17 @@ class ConstraintExtractorServiceTest(TestCase):
             },
         }
         result = self._extract(document, [{'interface_id': 1, 'name': '新增', 'method': 'POST', 'url': '/api/plants'}])
-        names = [item['name'] for item in result['interfaces'][0]['body_fields']]
+        fields = {item['name']: item for item in result['interfaces'][0]['body_fields']}
+        names = list(fields)
         self.assertIn('crop', names)
         self.assertIn('tags', names)
-        # 无约束叶子字段（crop_id/name）折叠进子级摘要行
-        crop_summary = next(item for item in result['interfaces'][0]['body_fields'] if item['name'] == 'crop.(无约束字段)')
-        self.assertIn('crop_id', crop_summary['description'])
-        tags_summary = next(item for item in result['interfaces'][0]['body_fields'] if item['name'] == 'tags[](无约束字段)')
-        self.assertIn('name', tags_summary['description'])
+        # 无约束叶子字段（crop_id/name）逐行保留，约束列留空
+        self.assertIn('crop.crop_id', names)
+        self.assertIn('tags[]name', names)
+        self.assertEqual(fields['crop.crop_id']['type'], 'string')
+        self.assertEqual(fields['crop.crop_id']['constraints'], {})
+        self.assertFalse(fields['crop.crop_id']['required'])
+        self.assertEqual(fields['tags[]name']['type'], 'string')
 
     def test_extract_query_path_params(self):
         """提取 path/query 参数及 required 标记"""
@@ -3711,10 +3714,11 @@ class ConstraintExtractorServiceTest(TestCase):
         result = self._extract(document, [{'interface_id': 1, 'name': '登录', 'method': 'POST', 'url': '/api/login'}])
         response = result['interfaces'][0]['response']
         self.assertEqual(response['success_code'], 200)
-        names = [item['name'] for item in response['fields']]
-        # data 对象存在（token 无约束折叠进子级摘要）
-        self.assertIn('data', names)
-        self.assertTrue(any('token' in (item.get('description') or '') for item in response['fields'] if item['name'] == 'data.(无约束字段)'))
+        fields = {item['name']: item for item in response['fields']}
+        # data 对象与其叶子 token 均逐行保留（token 无约束，约束列留空）
+        self.assertIn('data', fields)
+        self.assertIn('data.token', fields)
+        self.assertEqual(fields['data.token']['type'], 'string')
 
     def test_unmatched_interface_reported(self):
         """文档中不存在的接口进入 unmatched 清单"""
@@ -3779,14 +3783,16 @@ class ConstraintExtractorServiceTest(TestCase):
         result = self._extract(document, [{'interface_id': 1, 'name': '上传', 'method': 'POST', 'url': '/api/uploads'}])
         interface = result['interfaces'][0]
         body_fields = interface['body_fields']
-        # title 无约束声明 → 折叠进摘要（schema 内含 required 但 title 不在其中）
-        summary = next((f for f in body_fields if f['name'] == '(无约束字段)'), None)
-        self.assertIsNotNone(summary)
-        self.assertIn('title', summary['description'])
+        # title 无约束声明 → 逐行保留（mode 为 formData 参数带 required 标记）
+        title = next(f for f in body_fields if f['name'] == 'title')
+        self.assertEqual(title['type'], 'string')
+        self.assertEqual(title['constraints'], {})
+        self.assertFalse(title['required'])
+        self.assertIn('mode', [f['name'] for f in body_fields])
 
 
-    def test_shared_schema_deduplicated_across_interfaces(self):
-        """多个接口共享同一 requestBody schema 时，只在首个接口展开，其余引用"""
+    def test_shared_schema_expanded_for_every_interface(self):
+        """多个接口共享同一 requestBody schema 时，每个接口的快照都完整展开（自包含）"""
         document = {
             'openapi': '3.0.0',
             'info': {'title': 'Demo', 'version': '1.0'},
@@ -3812,8 +3818,9 @@ class ConstraintExtractorServiceTest(TestCase):
         ])
         first, second = result['interfaces']
         self.assertTrue(any(f['name'] == 'email' for f in first['body_fields']))
-        self.assertEqual(second['body_fields'], [])
-        self.assertTrue(any('共享 schema' in n and '接口 [1]' in n for n in second['notes']))
+        # 第二个接口同样完整展开，不引用首个接口
+        self.assertTrue(any(f['name'] == 'email' for f in second['body_fields']))
+        self.assertFalse(any('共享 schema' in n for n in second['notes']))
 
     def test_deep_self_reference_collapsed(self):
         """自引用树形 schema（dept.children.children...）展开到限制层数后折叠"""
@@ -3844,8 +3851,8 @@ class ConstraintExtractorServiceTest(TestCase):
         self.assertFalse(any(name.startswith('children[]children[]') for name in names))
         self.assertTrue(any('折叠' in n for n in result['interfaces'][0]['notes']))
 
-    def test_constraint_free_leaf_fields_aggregated(self):
-        """无约束叶子字段聚合为一行摘要，有约束字段保留"""
+    def test_constraint_free_leaf_fields_kept(self):
+        """无约束叶子字段逐行保留（名称/类型/必填恒有，约束列留空），有约束字段正常提取"""
         document = {
             'openapi': '3.0.0',
             'info': {'title': 'Demo', 'version': '1.0'},
@@ -3866,14 +3873,18 @@ class ConstraintExtractorServiceTest(TestCase):
             },
         }
         result = self._extract(document, [{'interface_id': 1, 'name': 'n', 'method': 'POST', 'url': '/system/user'}])
-        fields = result['interfaces'][0]['body_fields']
-        names = [f['name'] for f in fields]
-        self.assertIn('email', names)
-        summary = next(f for f in fields if f['name'] == '(无约束字段)')
-        self.assertIn('sex', summary['description'])
-        self.assertIn('avatar', summary['description'])
-        self.assertIn('status', summary['description'])
-        self.assertNotIn('sex', names)
+        fields = {f['name']: f for f in result['interfaces'][0]['body_fields']}
+        names = list(fields)
+        # 全部字段逐行保留，包括无约束的 sex/avatar/status
+        for key in ('email', 'sex', 'avatar', 'status'):
+            self.assertIn(key, names)
+        self.assertEqual(fields['email']['constraints'], {'format': 'email'})
+        self.assertTrue(fields['email']['required'])
+        for key in ('sex', 'avatar', 'status'):
+            self.assertEqual(fields[key]['constraints'], {})
+            self.assertFalse(fields[key]['required'])
+        # 不再产出聚合摘要行
+        self.assertNotIn('(无约束字段)', names)
 
 
 class ExtractConstraintsAPITest(TestCase):
@@ -3984,3 +3995,146 @@ class ExtractConstraintsAPITest(TestCase):
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+
+@override_settings(LICENSE_MODE='off')
+class ConstraintStoreTest(TestCase):
+    """导入/提取时固化参数约束快照 + constraints 查询端点"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='store_user', password='testpass')
+        self.project = Project.objects.create(name='Store Project', creator=self.user)
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        _grant_interface_perms(self.user)
+        self.client.force_authenticate(user=self.user)
+        self.base_url = f'/api/projects/{self.project.pk}/api-interfaces/'
+        self.document = {
+            'openapi': '3.0.0',
+            'info': {'title': 'Demo', 'version': '1.0'},
+            'paths': {
+                '/api/orders': {
+                    'post': {
+                        'requestBody': {
+                            'content': {
+                                'application/json': {
+                                    'schema': {
+                                        'type': 'object',
+                                        'required': ['amount'],
+                                        'properties': {
+                                            'amount': {'type': 'integer', 'minimum': 1, 'maximum': 99},
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                        'responses': {'200': {'description': 'ok'}},
+                    },
+                },
+            },
+        }
+
+    def _import_document(self):
+        uploaded = SimpleUploadedFile(
+            'openapi.json',
+            json.dumps(self.document).encode('utf-8'),
+            content_type='application/json',
+        )
+        return self.client.post(f'{self.base_url}import-openapi/', {'file': uploaded}, format='multipart')
+
+    def test_import_persists_constraints(self):
+        """导入接口文档时自动解析并固化参数约束"""
+        response = self._import_document()
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data.get('stored_constraints'), 1)
+
+        interface = ApiInterface.objects.get(project=self.project, method='POST', url='/api/orders')
+        constraint = interface.constraint
+        self.assertTrue(constraint.matched)
+        self.assertEqual(constraint.document_format, 'openapi')
+        self.assertEqual(constraint.document_name, 'openapi.json')
+        amount = next(f for f in constraint.constraints['body_fields'] if f['name'] == 'amount')
+        self.assertEqual(amount['constraints']['maximum'], 99)
+
+    def test_reimport_updates_constraints(self):
+        """重复导入时更新既有约束快照而不是新增"""
+        self._import_document()
+        self.document['paths']['/api/orders']['post']['requestBody']['content']['application/json']['schema']['properties']['amount']['maximum'] = 100
+        second = self._import_document()
+        self.assertEqual(second.status_code, status.HTTP_200_OK)
+        interface = ApiInterface.objects.get(project=self.project, method='POST', url='/api/orders')
+        self.assertEqual(ApiInterfaceConstraint.objects.filter(interface=interface).count(), 1)
+        amount = next(f for f in interface.constraint.constraints['body_fields'] if f['name'] == 'amount')
+        self.assertEqual(amount['constraints']['maximum'], 100)
+
+    def test_constraints_endpoint_returns_snapshot(self):
+        """constraints 端点返回固化的约束快照与缺失清单"""
+        self._import_document()
+        interface = ApiInterface.objects.get(project=self.project, method='POST', url='/api/orders')
+
+        response = self.client.get(
+            f'{self.base_url}constraints/',
+            {'interface_ids': f'{interface.id}'},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data['constraints']), 1)
+        item = response.data['constraints'][0]
+        self.assertEqual(item['interface_id'], interface.id)
+        self.assertEqual(item['format'], 'openapi')
+        self.assertIn('body_fields', item['constraints'])
+        self.assertEqual(response.data['missing'], [])
+
+        # 未导入文档的接口进入 missing
+        other = ApiInterface.objects.create(
+            name='No Doc', type=ApiInterface.TYPE_HTTP, method='GET', url='/other',
+            project=self.project, created_by=self.user,
+        )
+        response = self.client.get(
+            f'{self.base_url}constraints/',
+            {'interface_ids': f'{interface.id},{other.id}'},
+        )
+        self.assertEqual(response.data['missing'], [other.id])
+
+    def test_constraints_endpoint_requires_ids(self):
+        """缺少 interface_ids 或接口不属于项目时返回 400"""
+        response = self.client.get(f'{self.base_url}constraints/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        other_project = Project.objects.create(name='Other', creator=self.user)
+        other_interface = ApiInterface.objects.create(
+            name='Other', type=ApiInterface.TYPE_HTTP, method='GET', url='/x',
+            project=other_project, created_by=self.user,
+        )
+        response = self.client.get(
+            f'{self.base_url}constraints/',
+            {'interface_ids': f'{other_interface.id}'},
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_extract_constraints_persists(self):
+        """extract-constraints 接口同样固化约束并返回 persisted 清单"""
+        interface = ApiInterface.objects.create(
+            name='创建订单', type=ApiInterface.TYPE_HTTP, method='POST', url='/api/orders',
+            project=self.project, created_by=self.user,
+        )
+        response = self.client.post(
+            f'{self.base_url}extract-constraints/',
+            {'document': json.dumps(self.document), 'interface_ids': [interface.id]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(interface.id, list(response.data['persisted']))
+        self.assertTrue(ApiInterfaceConstraint.objects.filter(interface=interface).exists())
+
+    def test_duplicate_copies_constraints(self):
+        """复制接口时同步复制约束快照"""
+        self._import_document()
+        interface = ApiInterface.objects.get(project=self.project, method='POST', url='/api/orders')
+        response = self.client.post(f'{self.base_url}{interface.id}/duplicate/', {}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        duplicate = ApiInterface.objects.get(id=response.data['id'])
+        self.assertTrue(ApiInterfaceConstraint.objects.filter(interface=duplicate).exists())
+        self.assertEqual(
+            duplicate.constraint.constraints['body_fields'],
+            interface.constraint.constraints['body_fields'],
+        )

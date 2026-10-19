@@ -1652,13 +1652,34 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             # 更新批量执行记录统计
             if batch_id:
                 try:
-                    batch = UiBatchExecutionRecord.objects.get(id=batch_id)
+                    batch = UiBatchExecutionRecord.objects.select_related('scheduled_task').get(id=batch_id)
                     batch.update_statistics()
                     logger.info(f"批量执行记录统计已更新: batch_id={batch_id}")
+                    self._maybe_dispatch_heal_task(batch)
                 except UiBatchExecutionRecord.DoesNotExist:
                     logger.warning(f"批量执行记录不存在: batch_id={batch_id}")
         except Exception as e:
             logger.error(f"保存执行结果失败: {e}", exc_info=True)
+
+    def _maybe_dispatch_heal_task(self, batch) -> None:
+        """批次完结且存在失败时，按需投递定时任务自动自愈 Celery 任务。
+
+        仅 scheduled 触发、关联任务开启 auto_heal_enabled、批次状态为部分/全部失败时触发；
+        事件驱动一次性投递，不做轮询。同步上下文（sync_to_async 包装的方法内）可直接 delay。
+        """
+        try:
+            if batch.status not in (3, 4):  # 部分失败 / 全部失败
+                return
+            if batch.trigger_type != 'scheduled' or batch.scheduled_task_id is None:
+                return
+            if not getattr(batch.scheduled_task, 'auto_heal_enabled', False):
+                return
+            from task_center.heal_tasks import heal_failed_cases
+
+            heal_failed_cases.delay(batch.id)
+            logger.info(f"[自愈] 批次 {batch.id} 存在失败用例，已投递自愈任务（任务 {batch.scheduled_task_id}）")
+        except Exception:
+            logger.error(f"[自愈] 批次 {batch.id} 自愈任务投递失败", exc_info=True)
 
     @sync_to_async
     def create_batch_record(self, case_ids: list) -> int:

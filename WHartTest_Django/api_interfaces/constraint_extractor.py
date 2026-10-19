@@ -3,7 +3,12 @@
 从已解析的 API 文档（OpenAPI 3.x / Swagger 2.0 / cURL / Markdown 等可归一化为
 OpenAPI 的格式）中，按 path+method 匹配选中的接口定义，提取参数约束清单
 （类型/必填/枚举全集/数值范围/长度限制/格式），供 AI 生成接口测试用例时作为
-D1/D2 维度的证据来源。纯确定性代码，无 AI 参与。
+必填校验/类型校验/边界值/长度限制/参数组合校验的证据来源，同时作为接口
+预览视图的数据源。纯确定性代码，无 AI 参与。
+
+展示原则（对齐 MeterSphere 导入预览）：所有参数逐行保留——必填缺失校验与
+类型校验需要每个参数的 required/type，参数组合校验需要参数的业务说明；
+无约束信息的字段约束列留空而不是丢弃或折叠为摘要。
 """
 from __future__ import annotations
 
@@ -18,8 +23,6 @@ from .openapi import _iter_operations, _resolve_ref, _resolve_parameters, _selec
 _MAX_SCHEMA_DEPTH = 2  # 递归展开收紧为 2 层：RuoYi 类自引用树形 schema 展开收益为零
 # 单接口返回的字段条数上限，超出截断并登记 truncated
 _MAX_FIELDS_PER_INTERFACE = 80
-# 无任何约束信息（无枚举/范围/长度/format/默认值/描述、非必填）的字段，聚合为一行摘要而非逐个展开
-_NOISE_FIELD_KEYS = ("params", "createBy", "createTime", "updateBy", "updateTime", "remark", "searchValue")
 
 
 def extract_constraints_from_document(
@@ -55,9 +58,6 @@ def extract_constraints_from_document(
 
     interfaces: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
-    # 跨接口去重：同一 requestBody schema（$ref 名）只在首个接口完整展开，
-    # 后续接口引用首接口 ID，避免共享 schema（如 RuoYi 的 SysUser）被重复展开数十遍。
-    body_schema_owner: dict[str, int] = {}
 
     for target in interface_targets:
         matched = _match_operation(operations, target)
@@ -71,9 +71,7 @@ def extract_constraints_from_document(
             continue
 
         method, path, operation_info = matched
-        payload = _extract_operation_constraints(
-            document, operation_info, interface_id=target.get("interface_id"), body_schema_owner=body_schema_owner, interfaces=interfaces,
-        )
+        payload = _extract_operation_constraints(document, operation_info)
         interfaces.append({
             "interface_id": target.get("interface_id"),
             "name": target.get("name"),
@@ -209,29 +207,9 @@ def _is_param_segment(segment: str) -> bool:
     return segment.startswith("{") and segment.endswith("}")
 
 
-def _request_body_ref_name(operation: dict[str, Any]) -> str:
-    """取 requestBody 的 $ref 名称（如 SysUser）；无 $ref 返回空串。"""
-    request_body = operation.get("requestBody")
-    if not isinstance(request_body, dict):
-        return ""
-    content = request_body.get("content")
-    if not isinstance(content, dict):
-        return ""
-    for media in content.values():
-        if isinstance(media, dict):
-            schema = media.get("schema")
-            if isinstance(schema, dict) and isinstance(schema.get("$ref"), str):
-                return schema["$ref"].rsplit("/", 1)[-1]
-    return ""
-
-
 def _extract_operation_constraints(
     document: dict[str, Any],
     operation_info: dict[str, Any],
-    *,
-    interface_id: Any = None,
-    body_schema_owner: dict[str, int] | None = None,
-    interfaces: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     operation = operation_info["operation"]
     path_parameters = _resolve_parameters(document, operation_info.get("path_parameters") or [])
@@ -254,23 +232,13 @@ def _extract_operation_constraints(
         params[location].append(constraint)
         field_count += 1
 
-    body_ref_name = "" if operation_info.get("is_swagger") else _request_body_ref_name(operation)
-    owner_id = body_schema_owner.get(body_ref_name) if (body_ref_name and body_schema_owner is not None) else None
-    if owner_id is not None and owner_id != interface_id:
-        # 同 schema 已在其他接口完整展开：此处仅引用，不再重复展开
-        body_payload: dict[str, Any] = {
-            "fields": [],
-            "required": [],
-            "notes": [f"requestBody 与接口 [{owner_id}] 共享 schema（{body_ref_name}），字段约束见该接口，不重复展开"],
-        }
-    else:
-        if body_ref_name and body_schema_owner is not None and owner_id is None:
-            body_schema_owner[body_ref_name] = interface_id
-        body_payload = (
-            _openapi_body_fields(document, operation)
-            if not operation_info.get("is_swagger")
-            else _swagger_body_fields(document, operation_info, parameters)
-        )
+    # body 完整展开：每个接口的快照自包含（预览完整、模型按需读取单接口即可），
+    # 不做跨接口共享 schema 去重
+    body_payload = (
+        _openapi_body_fields(document, operation)
+        if not operation_info.get("is_swagger")
+        else _swagger_body_fields(document, operation_info, parameters)
+    )
     body_fields: list[dict[str, Any]] = []
     required_list: list[str] = []
     if isinstance(body_payload, dict):
@@ -321,6 +289,13 @@ def _swagger_body_fields(
         schema = _resolve_ref(document, body_parameter.get("schema"))
         if isinstance(schema, dict):
             fields = _flatten_object_fields(document, schema, notes=notes)
+        # 同一操作的 formData 参数也并入 body 字段清单（body+formData 混合声明的老文档）
+        for parameter in parameters:
+            if parameter.get("in") != "formData" or len(fields) >= _MAX_FIELDS_PER_INTERFACE:
+                continue
+            item = _parameter_constraint(document, parameter)
+            item["required"] = bool(parameter.get("required"))
+            fields.append(item)
         required = schema.get("required") if isinstance(schema, dict) else None
         return {"fields": fields, "required": required or [], "notes": notes}
 
@@ -403,20 +378,6 @@ def _schema_constraint(
     return constraint
 
 
-def _has_constraint_info(constraint: dict[str, Any]) -> bool:
-    """字段是否携带有效约束信息（枚举/范围/长度/format/默认值/描述/必填/nullable）。"""
-    if constraint.get("required"):
-        return True
-    constraints = constraint.get("constraints")
-    if isinstance(constraints, dict) and constraints:
-        return True
-    if constraint.get("default") is not None:
-        return True
-    if constraint.get("description"):
-        return True
-    return False
-
-
 def _flatten_object_fields(
     document: dict[str, Any],
     schema: Any,
@@ -426,10 +387,9 @@ def _flatten_object_fields(
 ) -> list[dict[str, Any]]:
     """递归展开 object schema 的 properties 至叶子字段；array 展开到 items 一层。
 
-    噪音治理：
-    - 递归深度上限 _MAX_SCHEMA_DEPTH（2 层），自引用树形 schema（如 RuoYi 的 dept.children）不重复展开；
-    - 深度截断处记一条折叠说明而非逐字段罗列；
-    - 无任何约束信息的叶子字段聚合为一行摘要（_NOISE_FIELD_KEYS 命中者直接跳过，仅计数）。
+    展示原则（对齐 MeterSphere 导入预览）：所有参数逐行保留，不做聚合折叠——
+    必填/类型校验需要每个参数的 required 与 type，参数组合校验需要业务说明；
+    无约束信息的字段约束列留空。深度截断处仍记折叠说明（自引用树不重复展开）。
     """
     schema = _resolve_ref(document, schema)
     if not isinstance(schema, dict):
@@ -451,7 +411,6 @@ def _flatten_object_fields(
         }]
 
     fields: list[dict[str, Any]] = []
-    skipped_noise: list[str] = []
     for key, child in properties.items():
         if len(fields) >= _MAX_FIELDS_PER_INTERFACE:
             notes.append("字段过多，已截断")
@@ -464,18 +423,6 @@ def _flatten_object_fields(
             child_type = "object"
         constraint = _schema_constraint(document, child_schema, name=str(key), depth=depth)
         constraint["required"] = key in required_names
-
-        # 无约束叶子：不单独占行，聚合为摘要
-        child_is_leaf = not (
-            (child_type == "object" and isinstance(child_schema.get("properties"), dict) and child_schema.get("properties"))
-            or (child_type == "array" and isinstance(_resolve_ref(document, child_schema.get("items")), dict)
-                and isinstance(_resolve_ref(document, child_schema.get("items")).get("properties"), dict))
-        )
-        if child_is_leaf and not _has_constraint_info(constraint):
-            if str(key) not in _NOISE_FIELD_KEYS:
-                skipped_noise.append(str(key))
-            continue
-
         fields.append(constraint)
 
         # 嵌套 object/array 继续展开一层，字段名用点路径表达
@@ -491,15 +438,6 @@ def _flatten_object_fields(
                 for item in nested:
                     item["name"] = f"{key}[]{item['name']}"
                 fields.extend(nested[: max(0, _MAX_FIELDS_PER_INTERFACE - len(fields))])
-
-    if skipped_noise:
-        fields.append({
-            "name": "(无约束字段)",
-            "type": "summary",
-            "required": False,
-            "constraints": {},
-            "description": f"以下 {len(skipped_noise)} 个字段文档未声明任何约束（类型/必填/范围等均未知）：{('、'.join(skipped_noise))}",
-        })
 
     return fields
 

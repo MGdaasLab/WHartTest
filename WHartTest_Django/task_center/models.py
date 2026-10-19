@@ -87,6 +87,14 @@ class ScheduledTask(models.Model):
         validators=[MinValueValidator(1), MaxValueValidator(30)]
     )
 
+    # 失败自动自愈（仅 UI 自动化模块生效；会话中断重试同样复用 retry_count/retry_interval）
+    auto_heal_enabled = models.BooleanField(_('启用失败自愈'), default=False)
+    heal_case_limit = models.PositiveSmallIntegerField(
+        _('单次自愈用例数上限'), default=5,
+        validators=[MinValueValidator(1), MaxValueValidator(20)],
+        help_text=_('一次定时任务中最多自愈的失败用例数，超出的用例列入待人工确认清单')
+    )
+
     # 状态
     status = models.CharField(
         _('状态'), max_length=10, choices=TaskStatus.choices,

@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import ApiInterface, ApiInterfaceResult
+from .models import ApiInterface, ApiInterfaceConstraint, ApiInterfaceResult
 from .payloads import normalize_key_value_pairs, normalize_request_body
 from .validators import SUPPORTED_COMPARATORS, is_validator_meta_key
 from file_management.services import validate_file_ids, sync_file_references
@@ -20,16 +20,29 @@ class ApiInterfaceModuleInfoSerializer(serializers.Serializer):
 class ApiInterfaceSerializer(serializers.ModelSerializer):
     module_info = ApiInterfaceModuleInfoSerializer(source='module', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    created_by_name = serializers.CharField(
-        source='created_by.username',
-        read_only=True,
-        allow_null=True,
-    )
+    constraint_snapshot = serializers.SerializerMethodField()
+
+    def get_created_by_name(self, obj):
+        return obj.created_by.username if obj.created_by else ''
+
+    def get_constraint_snapshot(self, obj):
+        """附带回源文档解析出的参数约束快照（预览视图数据源；无快照返回 None）。"""
+        snapshot = getattr(obj, 'constraint', None)
+        if snapshot is None:
+            return None
+        return {
+            'matched': snapshot.matched,
+            'format': snapshot.document_format,
+            'version': snapshot.document_version,
+            'document_name': snapshot.document_name,
+            'constraints': snapshot.constraints,
+            'updated_at': snapshot.updated_at,
+        }
 
     class Meta:
         model = ApiInterface
         fields = '__all__'
-        read_only_fields = ['project', 'created_by', 'created_at', 'updated_at']
+        read_only_fields = ['project', 'created_by', 'created_at', 'updated_at', 'constraint_snapshot']
 
     def to_representation(self, instance):
         data = super().to_representation(instance)

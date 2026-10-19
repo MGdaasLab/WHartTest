@@ -19,6 +19,7 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
             'execution_target', 'schedule_type', 'once_datetime',
             'daily_time', 'weekly_days', 'weekly_time', 'hourly_minute',
             'retry_enabled', 'retry_count', 'retry_interval',
+            'auto_heal_enabled', 'heal_case_limit',
             'status', 'last_run_at', 'creator', 'creator_name',
             'schedule_display', 'created_at', 'updated_at',
             'test_suite', 'test_suite_name', 'ui_testcase_ids',
@@ -56,6 +57,13 @@ class ScheduledTaskSerializer(serializers.ModelSerializer):
         if module == ScheduledTask.TaskModule.TEST_SUITE:
             if not attrs.get('test_suite') and not getattr(self.instance, 'test_suite', None):
                 raise serializers.ValidationError({'test_suite': '测试套件模块必须关联一个测试套件'})
+
+        # 失败自愈仅对 UI 自动化任务有意义；测试套件任务强制关闭，避免残留配置
+        auto_heal_enabled = attrs.get(
+            'auto_heal_enabled', getattr(self.instance, 'auto_heal_enabled', False)
+        )
+        if auto_heal_enabled and module == ScheduledTask.TaskModule.TEST_SUITE:
+            raise serializers.ValidationError({'auto_heal_enabled': '失败自愈仅支持 UI 自动化任务'})
 
         if schedule_type == ScheduledTask.ScheduleType.ONCE:
             if not attrs.get('once_datetime') and not getattr(self.instance, 'once_datetime', None):

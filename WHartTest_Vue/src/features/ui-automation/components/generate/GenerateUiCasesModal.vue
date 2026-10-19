@@ -106,28 +106,6 @@
         </div>
       </div>
 
-      <!-- 知识库 -->
-      <div class="form-row">
-        <span class="form-row-label">{{ pageText.knowledgeBase }}</span>
-        <div class="kb-area">
-          <a-checkbox v-model="formState.useKnowledgeBase">
-            {{ pageText.useKnowledgeBase }}
-          </a-checkbox>
-          <a-select
-            v-if="formState.useKnowledgeBase"
-            v-model="formState.knowledgeBaseId"
-            :placeholder="pageText.selectPlaceholder"
-            :loading="isKbLoading"
-            style="margin-top: 8px;"
-            allow-clear
-          >
-            <a-option v-for="kb in knowledgeBases" :key="kb.id" :value="kb.id">
-              {{ kb.name }}
-            </a-option>
-          </a-select>
-        </div>
-      </div>
-
       <!-- 业务描述 -->
       <div class="form-row">
         <span class="form-row-label">{{ pageText.businessNotes }}</span>
@@ -147,8 +125,6 @@ import { computed, ref, watch } from 'vue';
 import { Message } from '@arco-design/web-vue';
 import { useProjectStore } from '@/store/projectStore';
 import { useAppI18n } from '@/composables/useAppI18n';
-import { KnowledgeService } from '@/features/knowledge/services/knowledgeService';
-import type { KnowledgeBase } from '@/features/knowledge/types/knowledge';
 import type { UiModule, UiEnvironmentConfig, UiAuthState } from '../../types';
 import SelectFunctionalCasesModal from './SelectFunctionalCasesModal.vue';
 import {
@@ -188,8 +164,6 @@ const pageText = computed(() => isEnglish.value ? {
   username: 'Username',
   password: 'Password',
   credentialsHint: 'Credentials are injected platform-side via environment variables; never shown in conversation.',
-  knowledgeBase: 'Knowledge Base',
-  useKnowledgeBase: 'Search knowledge base for business flows',
   selectPlaceholder: 'Select',
   businessNotes: 'Business Notes',
   businessNotesPlaceholder: 'Optional. Describe business rules, page states, dependencies...',
@@ -213,8 +187,6 @@ const pageText = computed(() => isEnglish.value ? {
   username: '账号',
   password: '密码',
   credentialsHint: '账密由平台侧通过环境变量注入，对话中不会显示明文。',
-  knowledgeBase: '知识库',
-  useKnowledgeBase: '检索知识库补充业务流程',
   selectPlaceholder: '请选择',
   businessNotes: '业务描述',
   businessNotesPlaceholder: '可选。描述业务规则、页面状态、依赖关系等',
@@ -231,8 +203,6 @@ interface FormState {
   authStateId: number | null;
   username: string;
   password: string;
-  useKnowledgeBase: boolean;
-  knowledgeBaseId: string | null;
   businessNotes: string;
 }
 
@@ -244,8 +214,6 @@ const formState = ref<FormState>({
   authStateId: null,
   username: '',
   password: '',
-  useKnowledgeBase: false,
-  knowledgeBaseId: null,
   businessNotes: '',
 });
 
@@ -254,12 +222,10 @@ const isSelectorVisible = ref(false);
 const moduleTree = ref<UiModule[]>([]);
 const envConfigs = ref<UiEnvironmentConfig[]>([]);
 const authStates = ref<UiAuthState[]>([]);
-const knowledgeBases = ref<KnowledgeBase[]>([]);
 const isCasesLoading = ref(false);
 const isModuleTreeLoading = ref(false);
 const isEnvLoading = ref(false);
 const isAuthStateLoading = ref(false);
-const isKbLoading = ref(false);
 
 const handleCasesConfirmed = (ids: number[]) => {
   formState.value.selectedFunctionalCaseIds = ids;
@@ -333,19 +299,6 @@ const handleEnvChange = async (envId: string | number | boolean | Record<string,
   }
 };
 
-const loadKnowledgeBases = async () => {
-  if (!projectId.value) return;
-  isKbLoading.value = true;
-  try {
-    const response = await KnowledgeService.getKnowledgeBases({ project: projectId.value });
-    knowledgeBases.value = Array.isArray(response) ? response : (response as any).results || [];
-  } catch {
-    knowledgeBases.value = [];
-  } finally {
-    isKbLoading.value = false;
-  }
-};
-
 const validate = (): string => {
   if (!formState.value.selectedFunctionalCaseIds.length) {
     return isEnglish.value ? 'Select at least one functional case.' : '请至少选择一条功能用例。';
@@ -361,9 +314,6 @@ const validate = (): string => {
   }
   if (formState.value.authMode === 'credentials' && (!formState.value.username.trim() || !formState.value.password)) {
     return isEnglish.value ? 'Username and password are required.' : '账号密码登录需填写账号与密码。';
-  }
-  if (formState.value.useKnowledgeBase && !formState.value.knowledgeBaseId && knowledgeBases.value.length) {
-    return isEnglish.value ? 'Select a knowledge base.' : '请选择知识库。';
   }
   return '';
 };
@@ -384,8 +334,6 @@ const handleSubmit = () => {
       authStateId: formState.value.authMode === 'auth_state' ? formState.value.authStateId : null,
       username: formState.value.authMode === 'credentials' ? formState.value.username.trim() : '',
       password: formState.value.authMode === 'credentials' ? formState.value.password : '',
-      useKnowledgeBase: formState.value.useKnowledgeBase,
-      knowledgeBaseId: formState.value.useKnowledgeBase ? formState.value.knowledgeBaseId : null,
       businessNotes: formState.value.businessNotes.trim(),
     });
     emit('update:visible', false);
@@ -408,7 +356,6 @@ watch(() => props.visible, (visible) => {
     formState.value.businessNotes = '';
     loadModuleTree();
     loadEnvConfigs();
-    loadKnowledgeBases();
   }
 });
 </script>

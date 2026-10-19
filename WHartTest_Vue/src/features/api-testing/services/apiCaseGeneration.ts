@@ -1,36 +1,32 @@
 /**
  * AI 生成接口测试用例：编排服务。
- * 负责文档约束提取、已有用例名收集、生成指令（message）拼装。
+ * 负责已有用例名收集、生成指令（message）拼装。
+ * 参数约束由模型通过 api-automation 技能的 get_interface_constraints 按需读取。
  */
-import axiosInstance from '@/utils/request';
-import { useProjectStore } from '@/store/projectStore';
 import { getInterfaceCases } from './interfaceCaseService';
-import { getTestCases } from './testcaseService';
-
-const base = (projectId: number) => `/projects/${projectId}/api-interfaces`;
 
 export type ApiCaseType = 'interface_case' | 'scenario';
+
+export interface FunctionalCaseRef {
+  case_id: number;
+  module_name: string;
+  name: string;
+  test_type: string;
+  level: string;
+}
 
 export interface GenerationFormData {
   caseType: ApiCaseType;
   dimensions: string[];
-  archetypes: string[];
   interfaceIds: number[];
   loginInterfaceId: number | null;
   useKnowledgeBase: boolean;
   knowledgeBaseId: string | null;
   businessNotes: string;
-  dbVerification: boolean;
+  functionalCaseRefs: FunctionalCaseRef[];
   groupId: number | null;
   caseLimit: number;
   promptId: number | null;
-}
-
-export interface ConstraintExtractResult {
-  format: string;
-  version: string;
-  interfaces: Array<Record<string, any>>;
-  unmatched: Array<Record<string, any>>;
 }
 
 export interface GenerationInterfaceInfo {
@@ -50,28 +46,6 @@ export interface GenerationInterfaceInfo {
 }
 
 /**
- * 上传接口文档并提取选中接口的参数约束。
- * @param file 文档文件
- * @param interfaceIds 选中的接口 ID
- */
-export async function extractConstraints(
-  file: File,
-  interfaceIds: number[],
-): Promise<ConstraintExtractResult> {
-  const pid = useProjectStore().currentProjectId ?? 0;
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('interface_ids', JSON.stringify(interfaceIds));
-  const response = await axiosInstance({
-    url: `${base(pid)}/extract-constraints/`,
-    method: 'POST',
-    data: formData,
-  });
-  const payload = (response.data as any)?.data ?? response.data;
-  return payload as ConstraintExtractResult;
-}
-
-/**
  * 收集选中接口下已有的单接口用例名（用于去重与撞名检测）。
  */
 export async function collectExistingInterfaceCaseNames(interfaceIds: number[]): Promise<string[]> {
@@ -86,93 +60,17 @@ export async function collectExistingInterfaceCaseNames(interfaceIds: number[]):
     .filter(Boolean);
 }
 
-/**
- * 收集项目下已有的场景用例名（用于去重与撞名检测）。
- */
-export async function collectExistingScenarioCaseNames(): Promise<string[]> {
-  const response = await getTestCases({ page_size: 500 });
-  if (!response?.success || !response.data) return [];
-  const payload: any = response.data;
-  const list = Array.isArray(payload) ? payload : payload?.results || [];
-  return list.map((item: any) => item.name).filter(Boolean);
-}
-
-const formatConstraintsText = (constraints: ConstraintExtractResult | null, onlyInterfaceId?: number): string => {
-  if (!constraints || !constraints.interfaces.length) return '';
-  const sections = constraints.interfaces
-    .filter(item => onlyInterfaceId === undefined || item.interface_id === onlyInterfaceId)
-    .map((item) => {
-    const lines: string[] = [];
-    lines.push(`### 接口 [${item.interface_id}] ${item.name}（${item.method} ${item.url}）`);
-    const paramGroups = item.params || {};
-    for (const location of ['path', 'query', 'header']) {
-      const params = paramGroups[location] || [];
-      if (params.length) {
-        lines.push(`- ${location} 参数：`);
-        for (const param of params) {
-          const constraintText = Object.keys(param.constraints || {}).length
-            ? JSON.stringify(param.constraints)
-            : '未知';
-          lines.push(`  - ${param.name}：类型=${param.type}${param.default !== undefined ? `，默认=${JSON.stringify(param.default)}` : ''}，约束=${constraintText}`);
-        }
-      }
-    }
-    if (item.body_fields && item.body_fields.length) {
-      lines.push(`- body 字段：`);
-      for (const field of item.body_fields) {
-        const constraintText = Object.keys(field.constraints || {}).length
-          ? JSON.stringify(field.constraints)
-          : '未知';
-        lines.push(`  - ${field.name}：类型=${field.type}，必填=${field.required ? '是' : '否'}，约束=${constraintText}${field.description ? `，说明=${field.description}` : ''}`);
-      }
-      if (item.body_required && item.body_required.length) {
-        lines.push(`- body 必填清单：${item.body_required.join('、')}`);
-      }
-    } else if (item.notes && item.notes.length) {
-      // body 为空但带有说明（如同 schema 去重引用），把说明原样呈现，避免被误读为"无约束"
-      for (const note of item.notes) {
-        lines.push(`- body：${note}`);
-      }
-    } else {
-      lines.push('- body：该接口未声明请求体，无字段级约束信息');
-    }
-    if (item.response) {
-      const successCode = item.response.success_code || (item.response.success_codes && item.response.success_codes[0]);
-      if (successCode) lines.push(`- 成功状态码：${successCode}`);
-      if (item.response.fields && item.response.fields.length) {
-        lines.push(`- 响应字段：${item.response.fields.map((f: any) => `${f.name}(${f.type})`).join('、')}`);
-      }
-    }
-    return lines.join('\n');
-  });
-  const relevantUnmatched = onlyInterfaceId === undefined
-    ? constraints.unmatched
-    : constraints.unmatched.filter(item => item.interface_id === onlyInterfaceId);
-  const unmatchedNote = relevantUnmatched.length
-    ? `\n\n注意：当前接口在文档中未匹配到（生成时按约束未知处理）。`
-    : '';
-  return `\n\n## 接口文档参数约束清单\n\n${sections.join('\n\n')}${unmatchedNote}`;
-};
-
-const formatInterfacesText = (
-  interfaces: GenerationInterfaceInfo[],
-  constraints: ConstraintExtractResult | null,
-): string => {
-  const constrainedIds = new Set((constraints?.interfaces || []).map(item => item.interface_id));
-  const sections = interfaces.map((item) => {
-    // 已有约束清单的接口只给精简定义，避免重复
-    if (constrainedIds.has(item.id)) {
-      return `- 接口 [${item.id}] ${item.name}（${item.method} ${item.url}）模块=${item.module_name || '未分组'}`;
-    }
-    return `- 接口 [${item.id}] ${item.name}（${item.method} ${item.url}）模块=${item.module_name || '未分组'}\n  定义 JSON：${JSON.stringify({
+const formatInterfacesText = (interfaces: GenerationInterfaceInfo[]): string => {
+  const sections = interfaces.map((item) => (
+    `- 接口 [${item.id}] ${item.name}（${item.method} ${item.url}）模块=${item.module_name || '未分组'}\n  定义 JSON：${JSON.stringify({
       method: item.method,
       url: item.url,
       params: item.params,
       path_params: item.path_params,
       body: item.body,
       validators: item.validators,
-    })}`;
-  });
+    })}`
+  ));
   return sections.join('\n');
 };
 
@@ -184,11 +82,10 @@ export function buildGenerationMessage(options: {
   interfaces: GenerationInterfaceInfo[];
   projectId: number;
   existingNames: string[];
-  constraints: ConstraintExtractResult | null;
-  documentName: string;
   loginInterface?: GenerationInterfaceInfo | null;
+  functionalCaseRefs?: FunctionalCaseRef[];
 }): string {
-  const { formData, interfaces, projectId, existingNames, constraints, documentName, loginInterface } = options;
+  const { formData, interfaces, projectId, existingNames, loginInterface, functionalCaseRefs } = options;
 
   const lines: string[] = [];
   // 会话守护标记：后端检测到后挂载工具守护中间件（拦截 create_testcase 等漂移、剥除误传 group）
@@ -202,14 +99,15 @@ export function buildGenerationMessage(options: {
   lines.push(`项目 ID：${projectId}`);
 
   if (formData.caseType === 'interface_case') {
-    lines.push(`本次生成维度：${formData.dimensions.join('、')}（未列出的维度跳过；D1 未列出时仍须先生成 D1 基线用例）`);
+    const dimNames = formData.dimensions.map(d => (d === 'D2' ? '参数验证' : '基本功能验证'));
+    lines.push(`本次生成范围：${dimNames.join('、')}（未列出的类别跳过，只生成勾选类别的用例）`);
     lines.push(`条数上限：每个接口最多 ${formData.caseLimit} 条（这是"单接口上限"，不是全部接口的总上限）`);
     lines.push(`接口数量：${formData.interfaceIds.length} 个，全部 ${formData.interfaceIds.length} 个接口都必须逐一处理并生成用例，理论总量最多 ${formData.interfaceIds.length * formData.caseLimit} 条。`);
     lines.push('处理方式：按接口逐个生成，每个接口独立按上述上限与维度处理。禁止以任何"总量/配额/轮次"理由跳过未处理的接口——确实无法生成用例的接口（如纯文件依赖缺失）才允许登记到待补充清单。');
     lines.push(`处理进度自检：每完成一个接口，确认剩余待处理接口数量；全部 ${formData.interfaceIds.length} 个接口处理完毕后才输出最终总结。`);
   } else {
-    lines.push(`本次生成原型：${formData.archetypes.join('、')}（未列出的原型跳过）`);
-    lines.push(`场景用例上限：${formData.caseLimit} 条，每条 2~8 步`);
+    lines.push('场景条数由命中的业务来源决定（一条功能用例映射一条场景，每条 2~8 步），无固定上限。');
+    lines.push('严禁结构推断填充：禁止基于接口结构关系（生命周期链路、数据传递链、查询组合）凭空生成场景。');
   }
 
   // 鉴权前置：登录接口在选中接口集合外时，其定义已包含在下方"登录接口"区块
@@ -227,42 +125,47 @@ export function buildGenerationMessage(options: {
 
   lines.push('');
   lines.push('## 选中接口');
-  lines.push(formatInterfacesText(interfaces, constraints));
+  lines.push(formatInterfacesText(interfaces));
 
-  lines.push(formatConstraintsText(constraints));
-  if (documentName) {
-    lines.push(`（约束提取自文档：${documentName}）`);
-  }
+  // 参数约束不在消息中展开：导入文档时平台已固化约束快照，
+  // 模型通过 api-automation 技能的 get_interface_constraints（--interface_ids）按接口按需读取
+  lines.push('');
+  lines.push('## 参数约束获取方式（必须遵守）');
+  lines.push('参数约束不随本消息下发。处理每个接口前，先调用 api-automation 技能的 get_interface_constraints 工具（--interface_ids 传当前接口 ID）读取平台固化的约束快照（类型/必填/枚举/范围/长度/响应结构），一次只取当前接口；接口出现在返回的 missing 清单中时按约束未知处理（参数验证收缩为必填缺失+类型错误，跳过边界值），并在总结中登记。禁止臆造约束。');
 
-  if (formData.dbVerification) {
-    lines.push('');
-    lines.push('## DB 校验：开启');
-    lines.push('允许生成 SQL 步骤。清理 SQL 一律前置（precondition 区，按业务唯一键删除）；校验 SQL 后置于关键写操作之后（每条用例最多 1 个），断言写在 SQL 步骤自身 validators。db_config 引用环境配置，禁止明文密码。');
-  } else {
-    lines.push('');
-    lines.push('## DB 校验：关闭（禁止生成 SQL 步骤）');
-  }
+  lines.push('');
+  lines.push('## SQL 步骤：禁止生成。不允许操作数据库（安全约束），任何用例不得包含 type 为 sql 的步骤，数据校验只通过接口响应断言完成。');
 
   lines.push('');
 
-  if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
+  // 业务来源一：功能用例摘要行（场景模式；仅场景模式使用，单接口为空数组）
+  const funcRefs = formData.caseType === 'scenario' ? (functionalCaseRefs || []) : [];
+  if (formData.caseType === 'scenario') {
     lines.push('');
-    lines.push('## 知识库：已启用，请先检索业务知识再设计用例；检索结果与业务对象关联模糊时跳过相关场景并登记，禁止编造。');
-  } else {
-    lines.push('');
-    lines.push('## 知识库：未启用（本次仅基于接口定义与下方业务描述生成）。');
+    if (funcRefs.length) {
+      lines.push('## 业务来源一：功能用例参考（业务依据，按需自取详情）');
+      lines.push('以下功能用例 ID 属于功能用例库（whart-test 技能的 get_testcase_detail --case_id），与接口 ID / 场景用例 ID 是不同命名空间，严禁混用：');
+      for (const ref of funcRefs) {
+        lines.push(`- 功能用例 case_id=${ref.case_id}：${ref.module_name} | ${ref.name} | ${ref.test_type} | ${ref.level}`);
+      }
+      lines.push('命中判定：仅当功能用例业务与选中接口高度匹配时，才调用 get_testcase_detail 读取其前置/步骤/预期作为场景编排依据；每个功能用例的命中情况（如何映射 / 未命中原因）必须写进最终总结。');
+      lines.push('未命中处理：功能用例未命中、且知识库/业务描述也未命中时，停止生成并总结原因，严禁用生命周期/数据传递链等结构推断场景填充。');
+      lines.push('缺口授权：命中的功能用例所需接口不在选中集合时，允许用 api-automation 技能的 list_interfaces / get_interface 按业务语义检索补充；检索不到则该场景跳过并登记待补充接口。');
+    } else {
+      lines.push('## 业务来源一：功能用例。未选择功能用例（本区块无业务参考）。');
+    }
   }
 
   if (formData.businessNotes) {
     lines.push('');
-    lines.push('## 用户业务描述（生成 D3/D4 与 S3/S4 的最高优先级依据）');
+    lines.push('## 用户业务描述（业务规则类场景的最高优先级依据）');
     lines.push(formData.businessNotes);
   } else {
     lines.push('');
-    lines.push('## 用户业务描述：无。D3 异常场景（业务状态拒绝类）、D4 业务逻辑（业务规则/依赖类）、S3 业务分支、S4 状态前置相应场景按无规则输入跳过。');
+    lines.push('## 用户业务描述：无。依赖业务规则的场景（如重复提交拒绝、业务状态拒绝）按无规则输入跳过，仅生成基本功能验证与参数验证用例。');
   }
 
-  if (existingNames.length) {
+  if (formData.caseType === 'interface_case' && existingNames.length) {
     lines.push('');
     lines.push('## 已有用例名清单（去重与撞名检测用，禁止生成同名用例）');
     lines.push(existingNames.slice(0, 200).map(name => `- ${name}`).join('\n'));

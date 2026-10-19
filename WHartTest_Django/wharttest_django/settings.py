@@ -697,6 +697,7 @@ CELERY_ACCEPT_CONTENT = ["json"]  # Worker 允许接收的消息内容类型。
 # Celery任务路由 - task_center 使用独立队列，避免被其他 worker 误消费
 CELERY_TASK_ROUTES = {
     'task_center.tasks.*': {'queue': 'task_center'},
+    'task_center.heal_tasks.*': {'queue': 'task_center'},
 }
 
 # Celery Beat 调度器配置

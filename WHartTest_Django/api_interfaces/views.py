@@ -70,8 +70,8 @@ class ApiInterfaceViewSet(BaseModelViewSet):
     def get_queryset(self):
         project_pk = self.kwargs.get('project_pk')
         queryset = ApiInterface.objects.filter(project_id=project_pk).select_related(
-            'module', 'created_by'
-        )
+            'module', 'created_by', 'constraint',
+        ).prefetch_related('constraint')
 
         no_module = self.request.query_params.get('no_module')
         if no_module and no_module.lower() in ('true', '1', 'yes'):
@@ -160,6 +160,7 @@ class ApiInterfaceViewSet(BaseModelViewSet):
                 view=self,
                 strip_base_url=strip_base_url,
                 create_environments=create_environments,
+                document_name=filename or '',
             )
             result['format'] = parsed.source_format
             result['version'] = parsed.source_version
@@ -252,7 +253,101 @@ class ApiInterfaceViewSet(BaseModelViewSet):
         except OpenAPIError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        return Response(result)
+        # 持久化：提取成功的接口固化约束快照，后续生成用例无需再传文档
+        from .constraint_store import store_interface_constraints
+        from .models import ApiInterfaceConstraint
+
+        matched_ids = [
+            item.get('interface_id') for item in result.get('interfaces', [])
+            if item.get('matched') and item.get('interface_id') in interface_map
+        ]
+        if matched_ids:
+            try:
+                parsed_doc = parse_api_document(
+                    content,
+                    filename=filename,
+                    source_type=source_type,
+                    strip_base_url=strip_base_url,
+                )
+                store_interface_constraints(
+                    project=project,
+                    document=parsed_doc.document,
+                    document_format=result.get('format', ''),
+                    document_version=result.get('version', ''),
+                    document_name=filename or '',
+                    interface_ids=matched_ids,
+                )
+            except OpenAPIError as exc:
+                logger.warning('persist constraints after extract failed: %s', exc)
+
+        return Response({
+            **result,
+            'persisted': ApiInterfaceConstraint.objects.filter(
+                interface_id__in=[item.id for item in interfaces],
+            ).values_list('interface_id', flat=True),
+        })
+
+    @action(detail=False, methods=['get'], url_path='constraints')
+    def constraints(self, request, *args, **kwargs):
+        """查询已固化的接口参数约束（按接口 ID 批量）。
+
+        GET /api-interfaces/constraints/?interface_ids=1,2,3
+        返回 {constraints: [{interface_id, name, method, url, format, version,
+        document_name, constraints, updated_at}], missing: [无约束的接口 ID]}
+        """
+        from .models import ApiInterfaceConstraint
+
+        raw_ids = request.query_params.get('interface_ids', '')
+        try:
+            target_ids = [int(item) for item in raw_ids.split(',') if item.strip()]
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'interface_ids 必须是逗号分隔的接口 ID。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not target_ids:
+            return Response(
+                {'detail': '请提供要查询约束的接口 ID 列表 interface_ids。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        interfaces = ApiInterface.objects.filter(
+            project_id=self.kwargs.get('project_pk'),
+            id__in=target_ids,
+        )
+        interface_map = {item.id: item for item in interfaces}
+        missing_ids = [item_id for item_id in target_ids if item_id not in interface_map]
+        if missing_ids:
+            return Response(
+                {'detail': f'以下接口不存在或不属于当前项目：{missing_ids}。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        records = (
+            ApiInterfaceConstraint.objects
+            .filter(interface_id__in=target_ids)
+            .select_related('interface')
+        )
+        items = [
+            {
+                'interface_id': record.interface_id,
+                'name': record.interface.name,
+                'method': record.interface.method,
+                'url': record.interface.url,
+                'matched': record.matched,
+                'format': record.document_format,
+                'version': record.document_version,
+                'document_name': record.document_name,
+                'constraints': record.constraints,
+                'updated_at': record.updated_at,
+            }
+            for record in records
+        ]
+        constraint_ids = {item['interface_id'] for item in items}
+        return Response({
+            'constraints': items,
+            'missing': [item_id for item_id in target_ids if item_id not in constraint_ids],
+        })
 
     @action(detail=False, methods=['get'], url_path='export-openapi')
     def export_openapi(self, request, *args, **kwargs):
@@ -382,6 +477,21 @@ class ApiInterfaceViewSet(BaseModelViewSet):
         serializer = self.get_serializer(data=duplicate_data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+
+        # 复制接口时同步复制约束快照，副本与源接口共用同一份文档解析结果
+        from .models import ApiInterfaceConstraint
+
+        source_constraint = getattr(source, 'constraint', None)
+        if source_constraint is not None:
+            ApiInterfaceConstraint.objects.create(
+                interface=serializer.instance,
+                document_format=source_constraint.document_format,
+                document_version=source_constraint.document_version,
+                document_name=source_constraint.document_name,
+                matched=source_constraint.matched,
+                constraints=deepcopy(source_constraint.constraints),
+            )
+
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 

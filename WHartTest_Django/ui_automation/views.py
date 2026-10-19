@@ -1350,6 +1350,7 @@ def trigger_batch_execution(request):
     actuator_id = request.data.get('actuator_id', '')
     batch_name = request.data.get('batch_name', '')
     trigger_type = request.data.get('trigger_type', 'scheduled')
+    scheduled_task_id = request.data.get('scheduled_task_id')
 
     if not case_ids:
         return Response({'error': '未提供用例 ID'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1414,6 +1415,7 @@ def trigger_batch_execution(request):
             total_cases=len(case_ids),
             status=1,
             trigger_type=trigger_type,
+            scheduled_task_id=scheduled_task_id,
             executor=request.user,
             start_time=tz.now(),
         )

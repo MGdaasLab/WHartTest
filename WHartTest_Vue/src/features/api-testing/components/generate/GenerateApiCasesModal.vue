@@ -24,24 +24,20 @@
       <div v-if="formState.caseType === 'interface_case'" class="form-row">
         <span class="form-row-label required">{{ pageText.dimensions }}</span>
         <a-checkbox-group v-model="formState.dimensions" class="dimension-checkboxes">
-          <a-checkbox value="D1" disabled>{{ pageText.dimD1 }}</a-checkbox>
+          <a-checkbox value="D1">{{ pageText.dimD1 }}</a-checkbox>
           <a-checkbox value="D2">{{ pageText.dimD2 }}</a-checkbox>
-          <a-checkbox value="D3">{{ pageText.dimD3 }}</a-checkbox>
-          <a-checkbox value="D4">{{ pageText.dimD4 }}</a-checkbox>
         </a-checkbox-group>
       </div>
 
-      <!-- 场景原型（场景模式） -->
-      <div v-else class="form-row">
-        <span class="form-row-label required">{{ pageText.archetypes }}</span>
-        <a-checkbox-group v-model="formState.archetypes" class="dimension-checkboxes">
-          <a-checkbox v-for="option in archetypeOptions" :key="option.value" :value="option.value">
-            {{ option.label }}
-            <a-tooltip :content="option.tip" position="top">
-              <icon-question-circle class="archetype-tip-icon" />
-            </a-tooltip>
-          </a-checkbox>
-        </a-checkbox-group>
+      <!-- 功能用例（仅场景模式，必填，业务来源） -->
+      <div v-if="formState.caseType === 'scenario'" class="form-row">
+        <span class="form-row-label required">{{ pageText.functionalCases }}</span>
+        <div class="functional-cases-area">
+          <a-button type="outline" size="small" @click="casePickerVisible = true">
+            {{ tl('选择功能用例') }}
+          </a-button>
+          <span class="functional-cases-count">{{ pageText.functionalSelected.replace('{count}', String(selectedFunctionalCases.length)) }}</span>
+        </div>
       </div>
 
       <!-- 接口选择（模块树级联 + 搜索） -->
@@ -74,35 +70,6 @@
         </div>
       </div>
 
-      <!-- 上传接口文档 -->
-      <div class="form-row">
-        <span class="form-row-label">{{ pageText.uploadDocument }}</span>
-        <div class="upload-area">
-          <a-upload
-            :auto-upload="false"
-            :show-file-list="false"
-            :limit="1"
-            :file-list="documentFileList"
-            @change="handleDocumentChange"
-          >
-            <template #upload-button>
-              <a-button type="outline" size="small">
-                <template #icon><icon-upload /></template>
-                {{ pageText.selectFile }}
-              </a-button>
-            </template>
-          </a-upload>
-          <div v-if="documentFileList.length" class="upload-file-item">
-            <icon-file class="upload-file-icon" />
-            <span class="upload-file-name" :title="documentFileList[0]?.name">{{ documentFileList[0]?.name }}</span>
-            <a-button type="text" size="mini" status="danger" @click="removeDocumentFile">
-              <template #icon><icon-delete /></template>
-            </a-button>
-          </div>
-          <div v-else class="upload-hint">{{ pageText.uploadHint }}</div>
-        </div>
-      </div>
-
       <!-- 登录接口（单接口/场景模式共用，候选为项目全部 HTTP 接口） -->
       <div class="form-row">
         <span class="form-row-label">{{ pageText.loginInterface }}</span>
@@ -120,28 +87,6 @@
             </a-option>
           </a-select>
           <div class="login-hint">{{ pageText.loginHint }}</div>
-        </div>
-      </div>
-
-      <!-- 知识库 -->
-      <div class="form-row">
-        <span class="form-row-label">{{ pageText.knowledgeBase }}</span>
-        <div class="kb-area">
-          <a-checkbox v-model="formState.useKnowledgeBase" :disabled="kbCheckboxLocked">
-            {{ pageText.useKnowledgeBase }}
-          </a-checkbox>
-          <a-select
-            v-if="formState.useKnowledgeBase"
-            v-model="formState.knowledgeBaseId"
-            :placeholder="pageText.selectPlaceholder"
-            :loading="isKbLoading"
-            style="margin-top: 8px;"
-            allow-clear
-          >
-            <a-option v-for="kb in knowledgeBases" :key="kb.id" :value="kb.id">
-              {{ kb.name }}
-            </a-option>
-          </a-select>
         </div>
       </div>
 
@@ -178,14 +123,9 @@
         </a-select>
       </div>
 
-      <!-- DB 校验 + 条数上限 -->
-      <div class="form-row">
-        <span class="form-row-label">{{ pageText.dbVerification }}</span>
-        <div class="db-area">
-          <a-switch v-model="formState.dbVerification" @change="handleDbSwitchChange" />
-          <span v-if="formState.dbVerification && dbCheckWarning" class="db-warning">{{ dbCheckWarning }}</span>
-        </div>
-        <span class="form-row-label" style="margin-left: 24px;">{{ pageText.caseLimit }}</span>
+      <!-- 条数上限（仅单接口模式；场景模式条数由命中业务来源决定） -->
+      <div v-if="formState.caseType === 'interface_case'" class="form-row">
+        <span class="form-row-label">{{ pageText.caseLimit }}</span>
         <a-input-number
           v-model="formState.caseLimit"
           :min="1"
@@ -195,6 +135,11 @@
       </div>
 
     </a-form>
+    <FunctionalCasePickerModal
+      v-model:visible="casePickerVisible"
+      :initial-selected="selectedFunctionalCases"
+      @confirm="handleFunctionalCasesConfirm"
+    />
   </a-modal>
 </template>
 
@@ -206,13 +151,11 @@ import { useAppI18n } from '@/composables/useAppI18n';
 import { getModuleTree } from '../../services/moduleService';
 import { getInterfaces } from '../../services/interfaceService';
 import { testcaseGroupService } from '../../services/testcaseGroupService';
-import { environmentService } from '../../services/environmentService';
-import { KnowledgeService } from '@/features/knowledge/services/knowledgeService';
-import type { KnowledgeBase } from '@/features/knowledge/types/knowledge';
 import type { ApiModule } from '../../types/module';
 import type { ApiTestCaseGroup } from '../../types/testcase';
 import type { ApiInterface } from '../../types/interface';
-import type { GenerationFormData } from '../../services/apiCaseGeneration';
+import FunctionalCasePickerModal from './FunctionalCasePickerModal.vue';
+import type { GenerationFormData, FunctionalCaseRef } from '../../services/apiCaseGeneration';
 
 const props = defineProps<{
   visible: boolean;
@@ -233,35 +176,19 @@ const pageText = computed(() => isEnglish.value ? {
   interfaceCase: 'Single-Interface Cases',
   scenarioCase: 'Scenario Cases',
   dimensions: 'Generation Scope',
-  dimD1: 'D1 Happy Path',
-  dimD2: 'D2 Param Validation',
-  dimD3: 'D3 Exceptions',
-  dimD4: 'D4 Business Logic',
-  archetypes: 'Generation Scope',
-  archS1: 'S1 Lifecycle',
-  archS2: 'S2 Data Passing',
-  archS3: 'S3 Branch Flows',
-  archS4: 'S4 State Setup',
-  archTipS1: 'Full lifecycle chain: create -> query -> update -> delete',
-  archTipS2: 'Producer-consumer relation (e.g. create returns id -> consumed by detail/update/delete)',
-  archTipS3: 'Conditional flows from business notes or knowledge base (e.g. amount threshold routing)',
-  archTipS4: 'Cross-interface state setup (e.g. interface A makes interface B usable/unusable)',
+  dimD1: '基本功能验证',
+  dimD2: '参数验证',
   selectInterfaces: 'Interfaces',
   searchPlaceholder: 'Search interface name / path',
   noInterfaces: 'No HTTP interfaces',
   selectedCount: '{count} interface(s) selected',
-  uploadDocument: 'API Document',
-  selectFile: 'Select File',
-  uploadHint: 'Optional. OpenAPI/Swagger/Apifox/Postman etc. Used to extract parameter constraints for better boundary cases.',
   loginInterface: 'Login Interface',
   loginAutoDetect: 'Select login interface (optional)',
   loginHint: 'Optional. Used as login precondition for authenticated cases.',
-  knowledgeBase: 'Knowledge Base',
-  useKnowledgeBase: 'Search knowledge base for business context',
-  selectPlaceholder: 'Select',
+  functionalCases: 'Functional Cases',
+  functionalSelected: '{count} selected',
   businessNotes: 'Business Notes',
   businessNotesPlaceholder: 'Optional. Describe business rules, state preconditions, conditional flows, dependencies... e.g. "amount > 500k goes to approver A"',
-  dbVerification: 'DB Verification',
   targetGroup: 'Target Group',
   groupPlaceholder: 'Ungrouped',
   groupLoadFailedText: 'Group list failed to load',
@@ -274,35 +201,19 @@ const pageText = computed(() => isEnglish.value ? {
   interfaceCase: '单接口用例',
   scenarioCase: '场景用例',
   dimensions: '生成范围',
-  dimD1: 'D1 基本功能',
-  dimD2: 'D2 参数验证',
-  dimD3: 'D3 异常场景',
-  dimD4: 'D4 业务逻辑',
-  archetypes: '生成范围',
-  archS1: 'S1 生命周期',
-  archS2: 'S2 数据传递',
-  archS3: 'S3 业务分支',
-  archS4: 'S4 状态前置',
-  archTipS1: '生成完整链路（创建→查询→修改→删除）',
-  archTipS2: '生产者-消费者关系（如创建返回 id → 详情/更新/删除消费 id）',
-  archTipS3: '用户业务描述或知识库命中的条件流转（如金额阈值分流）',
-  archTipS4: '跨接口构造前置状态（如接口 A 操作使接口 B 进入可/不可用状态）',
+  dimD1: '基本功能验证',
+  dimD2: '参数验证',
   selectInterfaces: '选择接口',
   searchPlaceholder: '搜索接口名称 / 路径',
   noInterfaces: '暂无 HTTP 接口',
   selectedCount: '已选 {count} 个接口',
-  uploadDocument: '接口文档',
-  selectFile: '选择文件',
-  uploadHint: '可选。支持 OpenAPI/Swagger/Apifox/Postman 等，提取参数约束用于边界值用例设计。',
   loginInterface: '登录接口',
   loginAutoDetect: '请选择登录接口（可选）',
   loginHint: '可选。作为鉴权用例的登录前置步骤。',
-  knowledgeBase: '知识库',
-  useKnowledgeBase: '检索知识库补充业务上下文',
-  selectPlaceholder: '请选择',
+  functionalCases: '功能用例',
+  functionalSelected: '已选 {count} 条',
   businessNotes: '业务描述',
   businessNotesPlaceholder: '可选。描述业务规则、状态前置、条件流转、依赖关系等，如"金额>50万流转A审核"',
-  dbVerification: 'DB 校验',
   targetGroup: '目标分组',
   groupPlaceholder: '未分组',
   groupLoadFailedText: '分组列表加载失败',
@@ -315,14 +226,9 @@ const currentProjectName = computed(() => projectStore.currentProject?.name || '
 interface FormState {
   caseType: 'interface_case' | 'scenario';
   dimensions: string[];
-  archetypes: string[];
   selectedInterfaceIds: number[];
-  documentFile: File | null;
   loginInterfaceId: number | null;
-  useKnowledgeBase: boolean;
-  knowledgeBaseId: string | null;
   businessNotes: string;
-  dbVerification: boolean;
   groupId: number | null;
   caseLimit: number;
   promptId: number | null;
@@ -331,14 +237,9 @@ interface FormState {
 const formState = ref<FormState>({
   caseType: 'interface_case',
   dimensions: ['D1'],
-  archetypes: ['S1'],
   selectedInterfaceIds: [],
-  documentFile: null,
   loginInterfaceId: null,
-  useKnowledgeBase: false,
-  knowledgeBaseId: null,
   businessNotes: '',
-  dbVerification: false,
   groupId: null,
   caseLimit: 12,
   promptId: null,
@@ -350,23 +251,14 @@ const modules = ref<ApiModule[]>([]);
 const isInterfacesLoading = ref(false);
 const isGroupsLoading = ref(false);
 const groupLoadFailed = ref(false);
-const isKbLoading = ref(false);
-const knowledgeBases = ref<KnowledgeBase[]>([]);
 const groups = ref<ApiTestCaseGroup[]>([]);
 const interfaceSearch = ref('');
-const dbCheckWarning = ref('');
-const documentFileList = ref<any[]>([]);
+const casePickerVisible = ref(false);
+const selectedFunctionalCases = ref<FunctionalCaseRef[]>([]);
 
-// 知识库复选框：场景模式默认开启且可取消；单接口模式勾了 D3/D4 才展示
-const kbCheckboxLocked = computed(() => false);
-
-// 场景模式默认勾选知识库
 const handleCaseTypeChange = () => {
-  formState.value.caseLimit = formState.value.caseType === 'scenario' ? 6 : 12;
   formState.value.promptId = null;
-  if (formState.value.caseType === 'scenario') {
-    formState.value.useKnowledgeBase = true;
-  } else {
+  if (formState.value.caseType !== 'scenario') {
     // 单接口用例按主接口归属，不使用分组
     formState.value.groupId = null;
   }
@@ -389,14 +281,38 @@ const flattenModules = (list: ApiModule[], depth = 0): ApiModule[] => {
   return result;
 };
 
+const fetchAllInterfaces = async (pid: number): Promise<ApiInterface[]> => {
+  // 首页按 500 拉取（后端 max_page_size=500）；总数超出时按 count 用 page 翻页补齐，
+  // 避免大文档导入后部分模块下拉不出接口
+  const first = await getInterfaces({ project_id: pid, page_size: 500 });
+  const payload: any = (first as any)?.data;
+  const total: number = payload?.count ?? 0;
+  const list: ApiInterface[] = Array.isArray(payload) ? payload : payload?.results || [];
+  if (!total || list.length >= total) return list;
+
+  const pageSize = list.length || 500;
+  const totalPages = Math.ceil(total / pageSize);
+  const pageRequests = [];
+  for (let page = 2; page <= totalPages; page += 1) {
+    pageRequests.push(getInterfaces({ project_id: pid, page_size: pageSize, page }));
+  }
+  const rest = await Promise.all(pageRequests);
+  for (const pageRes of rest) {
+    const pagePayload: any = (pageRes as any)?.data;
+    const pageList: ApiInterface[] = Array.isArray(pagePayload) ? pagePayload : pagePayload?.results || [];
+    list.push(...pageList);
+  }
+  return list;
+};
+
 const fetchData = async () => {
   if (!projectStore.currentProjectId) return;
   isInterfacesLoading.value = true;
   try {
     const pid = projectStore.currentProjectId ?? 0;
-    const [moduleRes, interfaceRes] = await Promise.all([
+    const [moduleRes, interfaceList] = await Promise.all([
       getModuleTree(),
-      getInterfaces({ project_id: pid, page_size: 200 }),
+      fetchAllInterfaces(pid),
     ]);
     // 包装函数返回 { data: { results, count }, status }，无 success 字段
     const moduleList: ApiModule[] = (moduleRes as any)?.data?.results
@@ -404,16 +320,11 @@ const fetchData = async () => {
     modules.value = moduleList;
     flatModules.value = flattenModules(moduleList);
 
-    const interfacePayload: any = (interfaceRes as any)?.data;
-    const interfaceList: ApiInterface[] = Array.isArray(interfacePayload)
-      ? interfacePayload
-      : interfacePayload?.results || [];
     interfaces.value = interfaceList.filter((item: ApiInterface) => item.type !== 'sql');
   } finally {
     isInterfacesLoading.value = false;
   }
   fetchGroups();
-  fetchKnowledgeBases();
 };
 
 const fetchGroups = async () => {
@@ -437,19 +348,6 @@ const fetchGroups = async () => {
     groupLoadFailed.value = true;
   } finally {
     isGroupsLoading.value = false;
-  }
-};
-
-const fetchKnowledgeBases = async () => {
-  if (!projectStore.currentProjectId) return;
-  isKbLoading.value = true;
-  try {
-    const response = await KnowledgeService.getKnowledgeBases({ project: projectStore.currentProjectId });
-    knowledgeBases.value = Array.isArray(response) ? response : (response as any).results || [];
-  } catch {
-    knowledgeBases.value = [];
-  } finally {
-    isKbLoading.value = false;
   }
 };
 
@@ -535,9 +433,7 @@ const interfaceTreeData = computed<InterfaceTreeNode[]>(() => {
 
 const interfaceTreeKey = computed(() => `tree-${projectStore.currentProjectId}-${interfaceSearch.value ? 'search' : 'full'}`);
 
-const expandedModuleKeys = computed(() =>
-  modules.value.slice(0, 3).map(module => `module-${module.id}`),
-);
+const expandedModuleKeys = computed(() => []);
 
 const selectedInterfaceIds = computed(() => formState.value.selectedInterfaceIds);
 
@@ -556,13 +452,6 @@ const loginCandidates = computed(() => {
     label: `${item.method || ''} ${item.name} ${moduleAbsolutePath(item.module) ? `(${moduleAbsolutePath(item.module)})` : ''}`.trim(),
   }));
 });
-
-const archetypeOptions = computed(() => [
-  { value: 'S1', label: pageText.value.archS1, tip: pageText.value.archTipS1 },
-  { value: 'S2', label: pageText.value.archS2, tip: pageText.value.archTipS2 },
-  { value: 'S3', label: pageText.value.archS3, tip: pageText.value.archTipS3 },
-  { value: 'S4', label: pageText.value.archS4, tip: pageText.value.archTipS4 },
-]);
 
 const groupOptions = computed(() => {
   const options: { id: number; name: string }[] = [];
@@ -584,43 +473,8 @@ const groupOptions = computed(() => {
 // 文档与 DB 校验
 // ---------------------------------------------------------------------------
 
-const handleDocumentChange = (fileList: any[]) => {
-  documentFileList.value = fileList.slice(-1);
-  const fileItem = fileList[fileList.length - 1];
-  formState.value.documentFile = fileItem?.file instanceof File ? fileItem.file : null;
-};
-
-const removeDocumentFile = () => {
-  documentFileList.value = [];
-  formState.value.documentFile = null;
-};
-
-const hasActiveDbConfig = async (): Promise<boolean> => {
-  try {
-    const pid = projectStore.currentProjectId ?? 0;
-    const response = await environmentService.list(pid, {});
-    const environments: any[] = Array.isArray(response)
-      ? response
-      : (response as any)?.data?.results || (response as any)?.data || [];
-    return environments.some(env => env.database_config);
-  } catch {
-    return false;
-  }
-};
-
-const handleDbSwitchChange = async (value: boolean | string | number) => {
-  if (!value) {
-    dbCheckWarning.value = '';
-    return;
-  }
-  const ok = await hasActiveDbConfig();
-  if (!ok) {
-    dbCheckWarning.value = isEnglish.value
-      ? 'No environment with database config found; generated SQL steps may fail at runtime.'
-      : '未检测到配置了数据库连接的环境，生成的 SQL 步骤运行时可能失败。';
-  } else {
-    dbCheckWarning.value = '';
-  }
+const handleFunctionalCasesConfirm = (cases: FunctionalCaseRef[]) => {
+  selectedFunctionalCases.value = cases;
 };
 
 // ---------------------------------------------------------------------------
@@ -628,6 +482,9 @@ const handleDbSwitchChange = async (value: boolean | string | number) => {
 // ---------------------------------------------------------------------------
 
 const validate = (): string => {
+  if (formState.value.caseType === 'scenario' && selectedFunctionalCases.value.length === 0) {
+    return isEnglish.value ? 'Select at least one functional case.' : '请选择功能用例。';
+  }
   if (!selectedInterfaceIds.value.length) {
     return pageText.value.selectedCount.replace('{count}', '0');
   }
@@ -637,13 +494,7 @@ const validate = (): string => {
       : '场景用例至少需要选择 2 个接口。';
   }
   if (formState.value.caseType === 'interface_case' && formState.value.dimensions.length === 0) {
-    return isEnglish.value ? 'Select at least one dimension.' : '至少选择一个生成维度。';
-  }
-  if (formState.value.caseType === 'scenario' && formState.value.archetypes.length === 0) {
-    return isEnglish.value ? 'Select at least one archetype.' : '至少选择一个场景原型。';
-  }
-  if (formState.value.useKnowledgeBase && !formState.value.knowledgeBaseId && knowledgeBases.value.length) {
-    return isEnglish.value ? 'Select a knowledge base.' : '请选择知识库。';
+    return isEnglish.value ? 'Please select generation scope.' : '请选择生成范围。';
   }
   return '';
 };
@@ -659,15 +510,15 @@ const handleSubmit = async () => {
     const payload: GenerationFormData = {
       caseType: formState.value.caseType,
       dimensions: [...formState.value.dimensions],
-      archetypes: [...formState.value.archetypes],
       interfaceIds: [...selectedInterfaceIds.value],
       loginInterfaceId: formState.value.loginInterfaceId,
-      useKnowledgeBase: formState.value.useKnowledgeBase,
-      knowledgeBaseId: formState.value.knowledgeBaseId,
+      useKnowledgeBase: false,
+      knowledgeBaseId: null,
       businessNotes: formState.value.businessNotes.trim(),
-      dbVerification: formState.value.dbVerification,
+      functionalCaseRefs:
+        formState.value.caseType === 'scenario' ? selectedFunctionalCases.value : [],
       groupId: formState.value.groupId,
-      caseLimit: formState.value.caseLimit,
+      caseLimit: formState.value.caseType === 'scenario' ? 0 : formState.value.caseLimit,
       promptId: formState.value.promptId,
     };
     emit('submit', payload);
@@ -685,19 +536,17 @@ watch(() => props.visible, (visible) => {
   if (visible) {
     formState.value.selectedInterfaceIds = [];
     interfaceSearch.value = '';
-    dbCheckWarning.value = '';
     if (props.presetCaseType) {
       formState.value.caseType = props.presetCaseType;
       formState.value.caseLimit = props.presetCaseType === 'scenario' ? 6 : 12;
-      formState.value.useKnowledgeBase = props.presetCaseType === 'scenario';
     }
     fetchData();
   }
 });
 
-// 供父组件使用：约束提取前需要文件
+// 供父组件使用
 defineExpose({
-  getDocumentFile: () => formState.value.documentFile,
+  getSelectedFunctionalCases: () => selectedFunctionalCases.value,
 });
 </script>
 
@@ -760,14 +609,6 @@ defineExpose({
   font-size: 12px;
   color: var(--color-text-3);
 }
-.upload-area {
-  flex: 1;
-}
-.upload-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--color-text-3);
-}
 .kb-area {
   flex: 1;
   display: flex;
@@ -791,27 +632,14 @@ defineExpose({
   white-space: normal;
   line-height: 1.5;
 }
-.upload-file-item {
+.functional-cases-area {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  padding: 4px 8px;
-  border: 1px solid var(--color-border-2);
-  border-radius: 4px;
-  background-color: var(--color-fill-1);
+  gap: 10px;
 }
-.upload-file-icon {
-  color: var(--color-text-2);
-  flex-shrink: 0;
-}
-.upload-file-name {
-  flex: 1;
+.functional-cases-count {
   font-size: 12px;
-  color: var(--color-text-1);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  color: var(--color-text-3);
 }
 .login-select-area {
   flex: 1;

@@ -15,8 +15,6 @@ export interface UiGenerationFormData {
   authStateId: number | null;
   username: string;
   password: string;
-  useKnowledgeBase: boolean;
-  knowledgeBaseId: string | null;
   businessNotes: string;
 }
 
@@ -137,15 +135,6 @@ export function buildUiGenerationMessage(options: {
     lines.push(`- 功能用例 ID：${tc.id}｜名称：${tc.name}｜等级：${tc.level || 'P1'}${bound}`);
   }
   lines.push('处理方式：用 wharttest 技能 get_testcase_detail（--case_id）读取每条用例的步骤与预期结果，按规范转换为 UI 自动化用例；全部处理完后逐条试跑验证，试跑通过才回写绑定关系（edit_testcase --ui_test_case_id）。');
-
-  // 知识库
-  if (formData.useKnowledgeBase && formData.knowledgeBaseId) {
-    lines.push('');
-    lines.push('## 知识库：已启用，可检索业务流程作为功能用例描述的补充上下文（如步骤指代不明时帮助消歧）；检索结果与业务关联模糊时跳过并登记，禁止编造。');
-  } else {
-    lines.push('');
-    lines.push('## 知识库：未启用（仅基于功能用例步骤与业务描述生成）。');
-  }
 
   // 业务描述
   if (formData.businessNotes) {

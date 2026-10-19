@@ -1900,20 +1900,20 @@ watch(() => tabsStore.tabs, () => {
           </div>
         </div>
 
-        <!-- 开关1：去除 URL 里的域名 -->
+        <!-- 开关1：去除接口域名 -->
         <div class="flex items-center justify-between rounded-md border border-gray-600/60 px-4 py-3 import-dialog-switch-row">
           <div class="pr-3">
-            <div class="import-dialog-label">去除 URL 里的 http://...com</div>
-            <div class="mt-0.5 text-xs import-dialog-hint">开启后接口默认去掉域名只保留 URL；关闭则导入完整 URL</div>
+            <div class="import-dialog-label">去除接口域名</div>
+            <div class="mt-0.5 text-xs import-dialog-hint">导入时去除接口域名只保留接口路径；关闭则导入完整地址</div>
           </div>
           <a-switch v-model="stripBaseUrl" :disabled="importingOpenApi" />
         </div>
 
-        <!-- 开关2：创建环境 -->
+        <!-- 开关2：创建环境配置 -->
         <div class="flex items-center justify-between rounded-md border border-gray-600/60 px-4 py-3 import-dialog-switch-row">
           <div class="pr-3">
-            <div class="import-dialog-label">创建环境</div>
-            <div class="mt-0.5 text-xs import-dialog-hint">开启后识别接口 URL 前缀，在环境管理创建对应环境（同一域名仅创建一次）</div>
+            <div class="import-dialog-label">创建环境配置</div>
+            <div class="mt-0.5 text-xs import-dialog-hint">开启后在环境管理创建对应环境（同一域名仅创建一次）</div>
           </div>
           <a-switch v-model="createEnvironments" :disabled="importingOpenApi" />
         </div>

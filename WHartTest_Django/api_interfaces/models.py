@@ -263,3 +263,37 @@ class ApiInterfaceResult(models.Model):
     def project(self):
         """Return the project via the interface FK for permission checks."""
         return self.interface.project if self.interface else None
+
+
+class ApiInterfaceConstraint(models.Model):
+    """接口文档解析后的参数约束快照（导入/更新接口文档时固化）。
+
+    结构与 extract-constraints 接口返回的单接口条目一致：
+    {params: {path/query/header}, body_fields, body_required, response, notes, truncated}
+    AI 生成用例时通过约束查询工具按接口取用，无需再次上传文档。
+    """
+
+    interface = models.OneToOneField(
+        ApiInterface,
+        on_delete=models.CASCADE,
+        related_name='constraint',
+        verbose_name='Interface',
+    )
+    document_format = models.CharField(max_length=30, blank=True, default='')
+    document_version = models.CharField(max_length=30, blank=True, default='')
+    document_name = models.CharField(max_length=255, blank=True, default='')
+    matched = models.BooleanField(default=True, verbose_name='Matched In Document')
+    constraints = models.JSONField(default=dict, blank=True, verbose_name='Constraints')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'API Interface Constraint'
+        verbose_name_plural = 'API Interface Constraints'
+
+    def __str__(self):
+        return f"{self.interface_id}-constraints"
+
+    @property
+    def project(self):
+        """Return the project via the interface FK for permission checks."""
+        return self.interface.project if self.interface else None

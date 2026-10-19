@@ -87,6 +87,7 @@ def import_openapi_interfaces(
     view,
     strip_base_url: bool = True,
     create_environments: bool = False,
+    document_name: str = "",
 ) -> dict[str, Any]:
     operations = _iter_operations(document, strip_base_url=strip_base_url)
 
@@ -161,6 +162,18 @@ def import_openapi_interfaces(
                 user=user,
             )
 
+        # 固化参数约束：导入/更新即解析文档约束并存库，供 AI 生成用例时按接口取用
+        from .constraint_store import store_interface_constraints
+
+        stored_constraints = store_interface_constraints(
+            project=project,
+            document=document,
+            document_format="swagger" if document.get("swagger") == "2.0" else "openapi",
+            document_version=str(document.get("swagger") or document.get("openapi") or ""),
+            document_name=document_name,
+            interface_ids=imported_ids,
+        )
+
     result: dict[str, Any] = {
         "format": "swagger" if document.get("swagger") == "2.0" else "openapi",
         "version": document.get("swagger") or document.get("openapi"),
@@ -172,6 +185,7 @@ def import_openapi_interfaces(
         "imported_ids": imported_ids,
         "module_count": len(touched_modules),
         "created_environments": created_environments,
+        "stored_constraints": stored_constraints,
     }
     return result
 

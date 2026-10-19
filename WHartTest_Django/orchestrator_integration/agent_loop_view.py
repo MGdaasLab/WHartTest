@@ -1099,7 +1099,7 @@ class AgentLoopStreamAPIView(View):
                 logger.info("AgentLoopStreamAPI: 已追加 UI 用例自愈规范指令")
 
             # 8.4 接口用例生成会话：追加试跑验证规范（与 default_templates 模板同源）
-            if generation_guard_enabled:
+            if generation_mode == GENERATION_MODE_INTERFACE_CASE:
                 effective_prompt = (
                     (effective_prompt or "") + "\n\n" + INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
                 )
@@ -1719,6 +1719,8 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                generation_mode=generation_mode,
+                ui_generation_context=ui_generation_context,
             )
     async def _handle_non_stream_request(
         self,
@@ -1735,6 +1737,8 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        generation_mode: Optional[str] = None,
+        ui_generation_context: Optional[dict] = None,
     ) -> JsonResponse:
         """
         处理非流式请求，收集所有流式事件后返回统一 JSON 响应
@@ -1766,6 +1770,8 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                generation_mode=generation_mode,
+                ui_generation_context=ui_generation_context,
             ):
                 # 解析 SSE 数据
                 if isinstance(chunk, str) and chunk.startswith("data: "):

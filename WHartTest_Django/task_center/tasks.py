@@ -5,6 +5,10 @@ import logging
 from celery import shared_task
 from django.utils import timezone
 
+# 显式导入自愈任务模块：celery autodiscover 只加载各 app 的 tasks.py，
+# heal_tasks.py 中的 @shared_task 需要随本模块导入才会注册到 worker
+from . import heal_tasks  # noqa: F401
+
 logger = logging.getLogger(__name__)
 
 
@@ -71,6 +75,8 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
                     'actuator_id': task.actuator_id,
                     'batch_name': f"定时任务-{task.name}",
                     'trigger_type': 'scheduled',
+                    'scheduled_task_id': task.id,
+                    'executor_id': task.creator.id,
                 },
                 headers={'Authorization': f'Bearer {token}'},
                 timeout=30,

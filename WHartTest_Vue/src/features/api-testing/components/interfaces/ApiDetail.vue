@@ -11,6 +11,7 @@ import ApiResponse from './ApiResponse.vue'
 import ApiExtractConfig from './ApiExtractConfig.vue'
 import ApiAssertConfig from './ApiAssertConfig.vue'
 import ApiHooksConfigEnhanced from './ApiHooksConfigEnhanced.vue'
+import ApiConstraintPreview from './ApiConstraintPreview.vue'
 import { createInterface, updateInterface, debugInterface, quickDebugInterface, type ApiInterface, type DebugInterfaceRequest, type QuickDebugInterfaceRequest, type KeyValuePair } from '../../services/interfaceService'
 import { DEFAULT_INTERFACE_STATUS } from '../../types/interface'
 import { useProjectStore } from '@/store/projectStore'
@@ -54,6 +55,14 @@ const tabsStore = useApiTabsStore()
 
 // 当前选中的配置tab
 const activeTab = ref('headers')
+
+// 视图模式：definition 编辑定义（默认）/ preview 只读预览导入固化的参数约束
+const viewMode = ref<'definition' | 'preview'>('definition')
+
+// 接口切换时退出预览，避免看到上一个接口的预览数据
+watch(() => props.interface?.id, () => {
+  viewMode.value = 'definition'
+})
 
 // 监听 activeTab 变化，保存到页签
 watch(activeTab, (newTab) => {
@@ -707,8 +716,25 @@ watch(() => props.autoDebug, async (newValue) => {
     </div>
 
     <!-- 中间请求配置卡片 -->
-    <div class="detail-shell detail-shell--config flex-1 min-h-0 rounded-lg shadow-lg overflow-hidden">
-      <a-tabs v-model:active-key="activeTab" class="h-full" :lazy-load="false">
+    <div class="detail-shell detail-shell--config flex-1 min-h-0 flex flex-col rounded-lg shadow-lg overflow-hidden">
+      <!-- 预览 / 定义 视图切换 -->
+      <div class="view-switch-bar flex items-center justify-between px-4 pt-2 flex-shrink-0">
+        <a-radio-group v-model="viewMode" type="button" size="small">
+          <a-radio value="definition">定义</a-radio>
+          <a-radio value="preview">预览</a-radio>
+        </a-radio-group>
+        <span v-if="viewMode === 'preview'" class="text-xs text-gray-400">
+          导入文档时固化的参数约束（只读）
+        </span>
+      </div>
+
+      <!-- 预览视图：导入固化的参数约束快照（只读） -->
+      <div v-if="viewMode === 'preview'" class="flex-1 min-h-0">
+        <ApiConstraintPreview :interface="props.interface" />
+      </div>
+
+      <!-- 定义视图：可编辑的请求配置 -->
+      <a-tabs v-else v-model:active-key="activeTab" class="config-tabs flex-1 min-h-0" :lazy-load="false">
         <!-- Headers配置 -->
         <a-tab-pane key="headers" title="Headers">
           <ApiHeadersConfig ref="headersRef" :headers="(props.interface?.headers as any)" />
@@ -811,8 +837,12 @@ watch(() => props.autoDebug, async (newValue) => {
   --detail-resize-line: rgb(156, 163, 175);
 }
 
+.view-switch-bar {
+  border-bottom: 1px solid var(--detail-tab-border);
+}
+
 :deep(.arco-tabs) {
-  @apply h-full flex flex-col;
+  @apply flex flex-col overflow-hidden;
 
   .arco-tabs-content {
     @apply flex-1 min-h-0 overflow-auto;

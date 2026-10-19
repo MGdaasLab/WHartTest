@@ -351,6 +351,12 @@ class UiBatchExecutionRecord(models.Model):
     failed_cases = models.IntegerField(_('失败数'), default=0)
     status = models.SmallIntegerField(_('状态'), choices=STATUS_CHOICES, default=0)
     trigger_type = models.CharField(_('触发类型'), max_length=20, choices=TRIGGER_TYPE_CHOICES, default='manual')
+    scheduled_task = models.ForeignKey(
+        'task_center.ScheduledTask', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='batch_executions',
+        verbose_name=_('关联定时任务'),
+        help_text=_('定时任务触发的批次记录来源任务；手动/API 触发时为空')
+    )
     executor = models.ForeignKey(
         User, on_delete=models.SET_NULL, null=True,
         related_name='ui_batch_executions', verbose_name=_('执行人')

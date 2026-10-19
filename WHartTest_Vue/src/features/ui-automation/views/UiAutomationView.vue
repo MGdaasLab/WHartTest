@@ -125,7 +125,6 @@ const handleGenerateSubmit = async (formData: UiGenerationFormData) => {
       message,
       project_id: String(projectId),
       module_key: 'testcase_generation',
-      use_knowledge_base: formData.useKnowledgeBase && !!formData.knowledgeBaseId,
       ui_generation: {
         env_config_id: formData.envConfigId ?? undefined,
         auth_state_id: formData.authMode === 'auth_state' ? (formData.authStateId ?? undefined) : undefined,
@@ -133,21 +132,11 @@ const handleGenerateSubmit = async (formData: UiGenerationFormData) => {
         password: formData.authMode === 'credentials' ? formData.password : undefined,
       },
     }
-    if (formData.knowledgeBaseId) {
-      requestData.knowledge_base_id = formData.knowledgeBaseId
-    }
 
     sendChatMessageStream(
       requestData,
       (sessionId) => {
         localStorage.setItem('langgraph_session_id', sessionId)
-        // 同步知识库设置：对话窗口 onActivated 时从该 localStorage 恢复开关状态
-        localStorage.setItem('langgraph_knowledge_settings', JSON.stringify({
-          useKnowledgeBase: requestData.use_knowledge_base || false,
-          selectedKnowledgeBaseId: formData.knowledgeBaseId || null,
-          similarityThreshold: 0.3,
-          topK: 5,
-        }))
         showStartNotification()
         // 生成完成后刷新测试用例页签数据
         setTimeout(() => {
