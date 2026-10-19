@@ -92,6 +92,10 @@ WHartTest_Actuator/config.toml
 # 独立仓库（各自有 .git 和远程），不随父仓库提交
 WHartTest_Desktop/
 WHartTest_Website/
+# 独立仓库克隆（本地开发用，不属于本仓库）
+WHartTest_IDEA_Plugin/
+WHartTest_VSCode_Extension/
+docx-editor/
 
 # 内部安全文档：含威胁模型与绕过思路，不得进入客户交付分支（release/client-pe）
 docs/security/

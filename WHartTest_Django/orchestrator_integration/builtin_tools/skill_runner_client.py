@@ -1,8 +1,9 @@
 """
 skill-runner 客户端（backend 侧）
 
-当 ``SKILL_EXEC_MODE=runner`` 时，skill 命令不再在 backend 进程内执行，而是提交给
-独立 runner 容器；``SKILL_EXEC_MODE=inprocess``（默认）保持第 1 层的进程内加固行为。
+默认（``SKILL_EXEC_MODE=runner``）把 skill 命令提交给独立 runner 容器执行，backend
+进程内不再直接运行 skill 代码；显式设置 ``SKILL_EXEC_MODE=inprocess`` 才退回第 1 层的
+进程内加固行为（文件系统与业务网段不做隔离，仅建议本地开发/轻量部署使用）。
 
 设计要点：
 
@@ -39,11 +40,11 @@ class RunnerJobOutcome:
 
 
 def runner_exec_mode() -> str:
-    """当前执行模式：``runner`` 或 ``inprocess``（默认）。"""
+    """当前执行模式：``runner``（默认）或 ``inprocess``。"""
     mode = (
         getattr(_settings(), "SKILL_EXEC_MODE", None)
         or os.environ.get("SKILL_EXEC_MODE")
-        or "inprocess"
+        or "runner"
     )
     mode = str(mode).strip().lower()
     return "runner" if mode == "runner" else "inprocess"

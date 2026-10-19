@@ -109,8 +109,9 @@ services:
       # Qdrant向量数据库
       - QDRANT_URL=http://qdrant:6333
       - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://huggingface.co}
-      # Skill 执行模式：inprocess（默认，第 1 层进程内加固）或 runner（第 2 层独立沙箱）
-      - SKILL_EXEC_MODE=${SKILL_EXEC_MODE:-inprocess}
+      # Skill 执行模式：runner（默认，第 2 层独立沙箱）或 inprocess（第 1 层进程内加固，
+      # 文件系统/业务网段不做隔离，仅建议本地开发）
+      - SKILL_EXEC_MODE=${SKILL_EXEC_MODE:-runner}
       - SKILL_RUNNER_URL=${SKILL_RUNNER_URL:-http://skill-runner:8010}
       - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
       - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
@@ -123,6 +124,9 @@ services:
         condition: service_started
       weixin-plugin-host:
         condition: service_started
+      # runner 是默认执行面：先等它健康再启动 backend，避免首批 skill 调用直接失败
+      skill-runner:
+        condition: service_healthy
     networks:
       - wharttest-network
       # 同时接入执行网，才能把作业提交给 skill-runner（反向不可达：runner 进不了业务网）
@@ -241,14 +245,17 @@ services:
       - wharttest-network
     restart: unless-stopped
 
-  # Skill 命令的独立执行面（第 2 层安全加固，可选启用）
+  # Skill 命令的独立执行面（第 2 层安全加固，默认执行模式）
   #
-  # 与 backend 的关系：backend 只做鉴权与取可见 skill 目录，把命令交给本服务执行。
+  # 与 backend 的关系：backend 只做鉴权与取可见 skill 目录，把命令交给本服务执行；
+  # backend 的 SKILL_EXEC_MODE 默认即为 runner，本服务随栈默认启动。
   # 本服务刻意做到「无秘密、无业务网段、无持久化」：
   #   - 不注入任何平台机密（DJANGO_SECRET_KEY / DB 口令 / LLM Key 都不在此容器环境里）
   #   - 只加入 skill-runner-net，到不了 postgres/redis/qdrant
   #   - 根文件系统只读，工作区用 tmpfs，作业结束即销毁
-  # 启用方式：在 .env 设置 SKILL_EXEC_MODE=runner，并配置 SKILL_RUNNER_TOKEN。
+  # 必须在 .env 配置 SKILL_RUNNER_TOKEN，否则本服务拒绝所有作业（fail-closed），
+  # backend 侧 skill 执行会直接报错而不会回退到进程内执行。
+  # 如需回退第 1 层进程内执行：在 .env 设 SKILL_EXEC_MODE=inprocess。
   skill-runner:
     # 与 backend 复用同一个镜像名：runner 只是换了个入口命令，没必要再打一份
     # 4GB 的镜像。compose 见到相同 image 名会复用已构建的镜像层（构建缓存命中）。

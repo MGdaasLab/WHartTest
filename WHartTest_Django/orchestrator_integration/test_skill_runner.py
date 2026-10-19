@@ -291,9 +291,15 @@ class RunnerServerAuthTests(SimpleTestCase):
 
 
 class RunnerClientTests(SimpleTestCase):
-    def test_default_mode_is_inprocess(self):
+    def test_default_mode_is_runner(self):
+        # 默认执行面是第 2 层 runner 沙箱：未显式配置时必须走 runner，不得静默退化到进程内。
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("SKILL_EXEC_MODE", None)
+            self.assertEqual(runner_exec_mode(), "runner")
+
+    def test_explicit_inprocess_mode(self):
+        # 仅显式配置时才允许第 1 层进程内执行（本地开发/轻量部署的逃生场景）。
+        with patch.dict(os.environ, {"SKILL_EXEC_MODE": "inprocess"}, clear=False):
             self.assertEqual(runner_exec_mode(), "inprocess")
 
     def test_runner_mode_requires_url_and_token(self):
