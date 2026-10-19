@@ -727,19 +727,15 @@ def _resolve_skill_runtime_backend_url() -> str:
 
 
 def _visible_skills_for_user(user_id: Optional[int]):
-    """与 ``skills/views.py`` 的可见性口径对齐：本人创建的 + 全局共享的。
+    """与 CE 版 ``skills/views.py`` 的可见性口径对齐：Skill 为全局共享资源。
 
-    工具层此前用 ``filter(name=..., is_active=True)`` 全库查询，导致任意用户都能
-    通过 Agent 读取并执行他人 ``is_global=False`` 的私有 Skill，绕过 API 层授权。
-    无用户上下文时仅暴露全局共享 Skill。
+    PE 线有 ``is_global`` 字段（本人创建 + 全局共享的可见性模型）；CE 线 Skill
+    模型没有该字段，视图层也是「全局共享、不按项目过滤」，因此这里直接返回全部
+    Skill，避免引用 CE 不存在的字段导致工具层报 FieldError。
     """
-    from django.db.models import Q
-
     from skills.models import Skill
 
-    if user_id:
-        return Skill.objects.filter(Q(creator_id=user_id) | Q(is_global=True))
-    return Skill.objects.filter(is_global=True)
+    return Skill.objects.all()
 
 
 def get_skill_tools(
