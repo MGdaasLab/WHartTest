@@ -97,6 +97,13 @@ services:
       - DJANGO_BASE_URL=http://localhost:8000
       - WEIXIN_PLUGIN_HOST_URL=http://weixin-plugin-host:3001
       - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://huggingface.co}
+      # Skill 执行沙箱（第 2 层独立 runner 容器）
+      - SKILL_EXEC_MODE=${SKILL_EXEC_MODE:-runner}
+      - SKILL_RUNNER_URL=${SKILL_RUNNER_URL:-http://skill-runner:8923}
+      - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
+      - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
+      # 沙箱内 Skill 访问 backend 的地址（沙箱里的 127.0.0.1 是它自己）
+      - WHARTTEST_RUNNER_BACKEND_URL=${WHARTTEST_RUNNER_BACKEND_URL:-http://backend:8000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,8 +113,13 @@ services:
         condition: service_started
       weixin-plugin-host:
         condition: service_started
+      # runner 是默认执行面：先等它健康再启动 backend，避免首批 skill 调用直接失败
+      skill-runner:
+        condition: service_healthy
     networks:
       - wharttest-network
+      # 同时接入执行网，才能把作业提交给 skill-runner（反向不可达：runner 进不了业务网）
+      - skill-runner-net
     restart: unless-stopped
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/')" ]
@@ -171,6 +183,49 @@ services:
       start_period: 20s
 
   # MCP 服务（独立容器）
+  # Skill 命令的独立执行面（第 2 层安全加固，默认执行模式）
+  #
+  # 复用 backend 镜像（同一构建产物里已包含 skill_runner 与沙箱基础依赖），
+  # 只换入口命令；无机密、只读根 + tmpfs 工作区、独立执行网。
+  skill-runner:
+    image: ${DOCKER_BACKEND_IMAGE:-ghcr.io/mgdaaslab/wharttest-backend:latest}
+    container_name: wharttest-skill-runner
+    user: "${SKILL_RUNNER_UID:-1000}:${SKILL_RUNNER_GID:-1000}"
+    entrypoint: ["python", "-m", "skill_runner.server"]
+    environment:
+      - HOME=/tmp
+      - SKILL_RUNNER_HOST=0.0.0.0
+      - SKILL_RUNNER_PORT=8923
+      - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
+      - SKILL_RUNNER_SKILLS_ROOT=/app/data/media
+      - SKILL_RUNNER_WORKSPACE_ROOT=/tmp
+      - SKILL_RUNNER_MAX_CONCURRENT_JOBS=${SKILL_RUNNER_MAX_CONCURRENT_JOBS:-4}
+      - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
+      - PLAYWRIGHT_BROWSERS_PATH=${SKILL_RUNNER_PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}
+      - LLM_BROWSER_AUTO_CHROME=1
+    volumes:
+      - ./data/media:/app/data/media:ro
+      - ./data/media/skill_runtime:/app/data/media/skill_runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 4096
+    mem_limit: ${SKILL_RUNNER_MEM_LIMIT:-4g}
+    cpus: ${SKILL_RUNNER_CPUS:-2}
+    networks:
+      - skill-runner-net
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8923/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
   mcp:
     image: ${DOCKER_MCP_IMAGE:-ghcr.io/mgdaaslab/wharttest-mcp:latest}
     # 如果需要本地构建，注释掉上面的image行，取消注释下面的build部分
@@ -281,6 +336,9 @@ services:
 
 networks:
   wharttest-network:
+    driver: bridge
+  # 独立执行网：skill-runner 与 backend 在此互通，数据面服务不接入
+  skill-runner-net:
     driver: bridge
 
 volumes:
