@@ -727,6 +727,13 @@ DOCX_EDITOR_PUBLIC_BASE_URL = os.environ.get("DOCX_EDITOR_PUBLIC_BASE_URL", "").
 # 主项目调用 docx-editor 集成接口时使用的服务密钥。
 DOCX_EDITOR_SERVICE_KEY = os.environ.get("DOCX_EDITOR_SERVICE_KEY", "").strip()
 
+# Skill 沙箱访问 backend 的地址：runner 模式下 skill 在独立容器执行，
+# 容器内的 127.0.0.1 是沙箱自身，必须用服务网络内可达的地址。
+# Docker Compose 默认用服务名 backend（http://backend:8000）；本地开发按需覆盖。
+WHARTTEST_RUNNER_BACKEND_URL = os.environ.get(
+    "WHARTTEST_RUNNER_BACKEND_URL", ""
+).rstrip("/")
+
 # Skill 商店配置
 # 默认商店源：SkillHub 网站地址，或自建/镜像 base URL
 # base URL 必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包

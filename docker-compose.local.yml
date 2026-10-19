@@ -115,6 +115,9 @@ services:
       - SKILL_RUNNER_URL=${SKILL_RUNNER_URL:-http://skill-runner:8923}
       - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
       - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
+      # 沙箱内 Skill 访问 backend 的地址：沙箱容器里的 127.0.0.1 是它自己，
+      # 必须用容器网络内可达的地址（compose 服务名 backend）
+      - WHARTTEST_RUNNER_BACKEND_URL=${WHARTTEST_RUNNER_BACKEND_URL:-http://backend:8000}
     depends_on:
       postgres:
         condition: service_healthy

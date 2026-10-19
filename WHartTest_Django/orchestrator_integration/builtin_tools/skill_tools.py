@@ -689,7 +689,32 @@ def _resolve_skill_runtime_api_key(user_id: int) -> tuple[str, str]:
 
 
 def _resolve_skill_runtime_backend_url() -> str:
-    """Skill 在 backend 进程内执行时，默认回环访问本服务。"""
+    """Skill 子进程访问 backend 的 base URL；runner 与进程内模式取值不同。
+
+    条件：进程内模式 skill 与 backend 在同一容器/进程；runner 模式 skill 在独立沙箱容器。
+    动作：runner 模式改用沙箱网络内可达的地址（默认 compose 服务名 backend:8000），
+          进程内模式仍用回环地址。
+    结果：避免沙箱里的 127.0.0.1 指向沙箱自身，导致 Skill 调用平台接口时报
+          Connection refused / Max retries exceeded。
+    """
+    use_sandbox = False
+    try:
+        from .skill_runner_client import runner_exec_mode
+
+        use_sandbox = (
+            runner_exec_mode() == "runner" and not legacy_shell_exec_enabled()
+        )
+    except Exception:  # pragma: no cover - 独立运行/配置异常时按进程内处理
+        use_sandbox = False
+
+    if use_sandbox:
+        configured = (
+            getattr(settings, "WHARTTEST_RUNNER_BACKEND_URL", None)
+            or os.environ.get("WHARTTEST_RUNNER_BACKEND_URL")
+            or ""
+        ).strip()
+        return (configured or "http://backend:8000").rstrip("/")
+
     configured = (
         getattr(settings, "WHARTTEST_BACKEND_URL", None)
         or os.environ.get("WHARTTEST_BACKEND_URL")
