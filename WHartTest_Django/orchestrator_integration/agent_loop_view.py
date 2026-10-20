@@ -226,47 +226,6 @@ _MAX_SAFE_TOOL_MESSAGE_CHARS = _get_env_int(
 )
 
 
-def _parse_ui_generation_context(raw: Any) -> Optional[dict]:
-    """解析 UI 一键生成上下文（凭据/登录态/环境），仅保留注入所需字段。
-
-    返回 dict 含：
-    - auth_state_id: 登录态 ID（可选）
-    - env_config_id: 环境配置 ID（可选）
-    - username / password: 账号密码明文（可选，仅用于 env 注入，禁止落库/日志）
-    - start_url: 起始页面 URL（可选，仅日志脱敏使用）
-
-    非法字段一律丢弃；非 dict 输入返回 None。
-    """
-    if not isinstance(raw, dict):
-        return None
-
-    def _opt_int(key: str) -> Optional[int]:
-        value = raw.get(key)
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    def _opt_str(key: str) -> Optional[str]:
-        value = raw.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        return None
-
-    context = {
-        "auth_state_id": _opt_int("auth_state_id"),
-        "env_config_id": _opt_int("env_config_id"),
-        "username": _opt_str("username"),
-        "password": _opt_str("password"),
-        "start_url": _opt_str("start_url"),
-    }
-    if not any(
-        [context["auth_state_id"], context["env_config_id"], context["username"], context["password"]]
-    ):
-        return None
-    return context
-
-
 def _extract_linked_image_urls(text: str) -> List[str]:
     """从用户消息中提取图片 URL（支持 Markdown 图片语法和纯 URL）。"""
     if not text:
@@ -2542,13 +2501,19 @@ class AgentLoopResumeAPIView(View):
             try:
                 first_user_message = await sync_to_async(
                     lambda: ChatMessage.objects.filter(
-                        session__session_id=session_id, role='human'
-                    ).order_by('created_at').values_list('content', flat=True).first()
+                        session__session_id=session_id,
+                        session__user=user,
+                        role="human",
+                    )
+                    .order_by("created_at")
+                    .values_list("content", flat=True)
+                    .first()
                 )()
                 generation_mode = detect_generation_mode(first_user_message)
             except Exception:
-                logger.warning("[AgentLoopResumeAPI] 生成守护标记检测失败，按未启用处理")
-
+                logger.warning(
+                    "[AgentLoopResumeAPI] 生成守护标记检测失败，按未启用处理"
+                )
             async for chunk in self._create_resume_stream_generator(
                 user,
                 session_id,

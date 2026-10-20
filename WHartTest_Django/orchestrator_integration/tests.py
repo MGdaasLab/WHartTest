@@ -350,6 +350,8 @@ class TerminalOutputSanitizerTests(SimpleTestCase):
         raw = "\x1b[32m✓\x1b[0m Browser closed"
 
         self.assertEqual(strip_terminal_control_sequences(raw), "✓ Browser closed")
+
+
 class GenerationModeGuardTests(SimpleTestCase):
     """UI/接口一键生成模式检测与守护中间件行为。"""
 
@@ -455,3 +457,162 @@ class GenerationModeGuardTests(SimpleTestCase):
                 'start_url': 'https://x.com',
             },
         )
+class UiGenerationCredentialInjectionTests(SimpleTestCase):
+    """UI 一键生成凭据注入链路与内置工具装配回归。"""
+
+    def test_get_builtin_tools_without_credential_context(self):
+        # 回归：__init__.py 曾无条件把 ui_credential_context 透传给
+        # get_skill_tools，导致所有 Agent 会话在此处 TypeError。
+        from .builtin_tools import get_builtin_tools
+
+        tools = get_builtin_tools(user_id=1, project_id=1)
+        self.assertTrue(tools)
+        self.assertIn(
+            "execute_skill_script",
+            [getattr(tool, "name", "") for tool in tools],
+        )
+
+    def test_get_builtin_tools_accepts_ui_credential_context(self):
+        from .builtin_tools import get_builtin_tools
+
+        tools = get_builtin_tools(
+            user_id=1,
+            project_id=1,
+            ui_credential_context={"username": "admin", "password": "p"},
+        )
+        self.assertTrue(tools)
+
+    def test_apply_ui_credential_env(self):
+        from .builtin_tools.skill_tools import _apply_ui_credential_env
+
+        env = {}
+        _apply_ui_credential_env(
+            env,
+            {"username": " admin ", "password": "p"},
+            "/tmp/state.json",
+        )
+        self.assertEqual(
+            env,
+            {
+                "WHARTTEST_UI_USERNAME": "admin",
+                "WHARTTEST_UI_PASSWORD": "p",
+                "WHARTTEST_UI_AUTH_STATE_FILE": "/tmp/state.json",
+            },
+        )
+
+        empty = {}
+        _apply_ui_credential_env(empty, None, None)
+        self.assertEqual(empty, {})
+
+    def test_truncate_tool_output(self):
+        from .builtin_tools.skill_tools import _truncate_tool_output
+
+        self.assertEqual(_truncate_tool_output("short"), "short")
+        truncated = _truncate_tool_output("x" * 20, max_chars=5)
+        self.assertTrue(truncated.startswith("xxxxx"))
+        self.assertIn("输出已截断", truncated)
+
+
+class UiAuthStateSnapshotTests(SimpleTestCase):
+    """UI 生成登录态快照：项目隔离、权限与文件权限。"""
+
+    @staticmethod
+    def _patch_auth_state(auth_state):
+        from unittest.mock import MagicMock
+
+        queryset = MagicMock()
+        queryset.filter.return_value.first.return_value = auth_state
+        manager = MagicMock()
+        manager.select_related.return_value = queryset
+        model = MagicMock()
+        model.objects = manager
+        return model, queryset
+
+    def test_prepare_snapshot_scopes_by_project_and_writes_file(self):
+        import json
+        import os
+        import stat
+        import tempfile
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from .builtin_tools import skill_tools
+
+        state = type("State", (), {})()
+        state.state_json = {"cookies": [{"name": "s"}], "origins": []}
+        model, queryset = self._patch_auth_state(state)
+
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root):
+                with patch("ui_automation.models.UiAuthState", model):
+                    with patch.object(
+                        skill_tools, "_skill_exec_uses_runner_sandbox", return_value=False
+                    ):
+                        file_path = skill_tools._prepare_ui_auth_state_file(
+                            {"auth_state_id": 7}, 5, 9, "sess-1"
+                        )
+            self.assertIsNotNone(file_path)
+            self.assertTrue(file_path.startswith(media_root))
+            with open(file_path, encoding="utf-8") as fh:
+                self.assertEqual(json.load(fh), state.state_json)
+            self.assertEqual(
+                stat.S_IMODE(os.stat(file_path).st_mode),
+                0o600,
+            )
+
+        queryset.filter.assert_called_once_with(
+            id=7, is_active=True, env_config__project_id=9
+        )
+
+    def test_prepare_snapshot_returns_none_for_foreign_or_missing_state(self):
+        import tempfile
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from .builtin_tools import skill_tools
+
+        model, _queryset = self._patch_auth_state(None)
+        with tempfile.TemporaryDirectory() as media_root:
+            with override_settings(MEDIA_ROOT=media_root):
+                with patch("ui_automation.models.UiAuthState", model):
+                    file_path = skill_tools._prepare_ui_auth_state_file(
+                        {"auth_state_id": 7}, 5, 9, "sess-1"
+                    )
+        self.assertIsNone(file_path)
+
+    def test_prepare_snapshot_runner_mode_is_shared_readable(self):
+        import os
+        import stat
+        import tempfile
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        from .builtin_tools import skill_tools
+
+        state = type("State", (), {})()
+        state.state_json = {"cookies": [], "origins": []}
+        model, _queryset = self._patch_auth_state(state)
+
+        with tempfile.TemporaryDirectory() as media_root:
+            os.makedirs(os.path.join(media_root, "skill_runtime"))
+            with override_settings(MEDIA_ROOT=media_root):
+                with patch("ui_automation.models.UiAuthState", model):
+                    with patch.object(
+                        skill_tools, "_skill_exec_uses_runner_sandbox", return_value=True
+                    ):
+                        file_path = skill_tools._prepare_ui_auth_state_file(
+                            {"auth_state_id": 7}, 5, 9, "sess-1"
+                        )
+            self.assertIsNotNone(file_path)
+            self.assertEqual(
+                stat.S_IMODE(os.stat(file_path).st_mode),
+                0o640,
+            )
+            state_dir = os.path.dirname(file_path)
+            self.assertEqual(
+                stat.S_IMODE(os.stat(state_dir).st_mode),
+                0o750,
+            )
