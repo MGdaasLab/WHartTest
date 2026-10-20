@@ -449,6 +449,14 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "user_id",  # token 中用户 ID claim 名称。
 }
 
+# UI 自动化 WebSocket 认证（wharttest_django/websocket_auth.py）
+# /ws/ui/web/ 校验 SimpleJWT access token；/ws/ui/actuator/ 校验本共享密钥。
+# 部署时必须通过环境变量注入，勿使用代码内默认值（默认空 = 密钥未配置）。
+UI_WS_ACTUATOR_TOKEN = os.environ.get("UI_WS_ACTUATOR_TOKEN", "")
+# 兼容模式开关：0 = 缺 token 的旧客户端连接放行（带了 token 则必须有效）；
+# 1 = 一律拒绝未认证连接。前端/执行器均完成 token 改造后应设为 1。
+UI_WS_AUTH_STRICT = os.environ.get("UI_WS_AUTH_STRICT", "0")
+
 # 日志输出目录
 LOGS_DIR = BASE_DIR / "data" / "logs"
 # 自动创建日志目录。

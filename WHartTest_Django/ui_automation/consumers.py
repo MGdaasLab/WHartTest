@@ -11,6 +11,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+import uuid
 from typing import Optional
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
@@ -20,6 +22,13 @@ from django.utils import timezone as django_timezone
 from .socket_models import (
     SocketDataModel, QueueModel, NoticeType, ResponseCode,
     UiSocketEnum, ExecutionTaskModel, StepResultModel, CaseResultModel
+)
+from wharttest_django.websocket_auth import (
+    WS_CLOSE_UNAUTHENTICATED,
+    WS_CLOSE_FORBIDDEN,
+    WS_CLOSE_CONFLICT,
+    SCOPE_AUTH_KEY,
+    auth_strict_mode,
 )
 from wharttest_django.i18n import translate_app_text
 
@@ -48,9 +57,18 @@ class SocketUserManager:
             logger.info(f"Web用户断开: {user_id}, 当前连接数: {len(cls._web_users)}")
     
     @classmethod
-    def add_actuator(cls, actuator_id: str, consumer: 'UiAutomationConsumer'):
+    def add_actuator(cls, actuator_id: str, consumer: 'UiAutomationConsumer') -> bool:
+        """注册执行器。同 ID 已在线时拒绝（返回 False），防止连接抢注：
+        否则攻击者可用已在线执行器的 ID 顶掉真实连接，截获后续全部任务载荷。"""
+        existing = cls._actuator_users.get(actuator_id)
+        if existing is not None and existing is not consumer:
+            logger.warning(
+                f"拒绝执行器注册: ID {actuator_id} 已在线（疑似抢注），拒绝新连接"
+            )
+            return False
         cls._actuator_users[actuator_id] = consumer
         logger.info(f"执行器连接: {actuator_id}, 当前执行器数: {len(cls._actuator_users)}")
+        return True
     
     @classmethod
     def remove_actuator(cls, actuator_id: str):
@@ -107,6 +125,15 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         self.group_name: str = 'ui_automation'
         self.actuator_info: dict = {}  # 执行器信息
         self.language: str = 'zh-Hans'
+        # 中间件写入的认证信息（None = 无中间件或兼容模式匿名放行）
+        self.ws_auth: Optional[dict] = None
+        # 本执行器下发任务的来源登记与回传校验状态：
+        # - task_tokens: task_token -> 目标 user（新版执行器回显后可做强校验）
+        # - recent_users: user -> 最近一次任务下发时间戳（当前执行器只回传
+        #   user 字段，不回显 args 自定义字段，故以“近期下发过该用户任务”
+        #   作为回传来源校验依据）
+        self.actuator_task_tokens: dict[str, str] = {}
+        self.actuator_recent_users: dict[str, float] = {}
         # 录制器浏览器执行状态（步骤调试/用例执行兜底；支持关闭画布即中断）
         self._recorder_exec_task = None
         self._recorder_exec_session = None
@@ -127,6 +154,15 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
     def _localize(self, message: str) -> str:
         return translate_app_text(message, self.language)
     
+    async def _reject(self, code: int) -> None:
+        """拒绝连接：先 accept 握手再带码关闭。
+
+        close() 必须在 accept() 之后调用——uvicorn 下未 accept 就 close 会被
+        提升为握手层 HTTP 403，客户端拿不到 4401/4403/4409 等具体关闭码。
+        """
+        await self.accept()
+        await self.close(code=code)
+
     async def connect(self):
         """建立连接"""
         import datetime
@@ -134,17 +170,28 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         query_params = self._get_query_params()
         self.language = query_params.get('lang', ['zh-Hans'])[0]
 
+        # 第二层校验：认证状态由 asgi 中间件写入 scope（仅认证通过时写入；
+        # 兼容模式匿名放行 / 单元测试直接实例化时无该键，仅在非严格模式下放行）。
+        self.ws_auth = self.scope.get(SCOPE_AUTH_KEY)
+        if self.ws_auth is None and auth_strict_mode():
+            await self._reject(WS_CLOSE_UNAUTHENTICATED)
+            return
+
         # 获取客户端IP
         client = self.scope.get('client', ['unknown', 0])
         client_ip = client[0] if client else 'unknown'
-        
+
         # 根据路径判断是前端还是执行器
         if '/actuator/' in path:
             self.is_actuator = True
+            if self.ws_auth and self.ws_auth.get('kind') != 'actuator':
+                # 端点与凭据类型不匹配（如拿 web JWT 连执行器端点）
+                await self._reject(WS_CLOSE_FORBIDDEN)
+                return
             self.user_id = query_params.get('id', [None])[0] or query_params.get('user_id', [None])[0]
             if not self.user_id:
                 self.user_id = f"actuator_{id(self)}"
-            
+
             # 初始化执行器信息
             self.actuator_info = {
                 'id': self.user_id,
@@ -163,9 +210,15 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 'busy_slots': 0,
                 'connected_at': datetime.datetime.now().isoformat(),
             }
-            SocketUserManager.add_actuator(self.user_id, self)
+            if not SocketUserManager.add_actuator(self.user_id, self):
+                # 同 ID 执行器已在线：拒绝抢注
+                await self._reject(WS_CLOSE_CONFLICT)
+                return
         else:
             self.is_actuator = False
+            if self.ws_auth and self.ws_auth.get('kind') != 'web':
+                await self._reject(WS_CLOSE_FORBIDDEN)
+                return
             # 从用户认证获取ID
             user = self.scope.get('user')
             if user and hasattr(user, 'username'):
@@ -204,6 +257,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         await self.channel_layer.group_discard(self.group_name, self.channel_name)
         
         if self.is_actuator:
+            self.actuator_task_tokens.clear()
+            self.actuator_recent_users.clear()
             try:
                 from .actuator_registry import clear_actuator_leases
                 cleared = clear_actuator_leases(self.user_id)
@@ -526,6 +581,61 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             return UiEnvironmentConfig.objects.filter(id=env_config_id).first()
 
         return await sync_to_async(_fetch)()
+
+    # ------------------------------------------------------------------
+    # 任务来源登记与结果回传校验（防伪造结果）
+    # ------------------------------------------------------------------
+
+    _TASK_TOKEN_TTL_SECONDS = 6 * 60 * 60  # 与 slot lease TTL 上限对齐
+
+    def register_actuator_task(self, actuator, args: dict, target_user: str) -> None:
+        """任务下发时登记来源：一次性 token + 发起人近期下发记录。
+
+        - token 放入 func_args 一并下发：新版执行器回显后可做一一对应强校验；
+          旧版执行器不回显，退化为下面的近期来源校验。
+        - recent_users 记录该执行器最近给各发起人下发任务的时间，结果回传时
+          校验 user 必须命中，防止执行器/攻击者伪造任意用户的结果。
+        """
+        if actuator is None:
+            return
+        token = uuid.uuid4().hex
+        now = time.monotonic()
+        tokens = getattr(actuator, 'actuator_task_tokens', None)
+        if isinstance(tokens, dict):
+            tokens[token] = target_user
+        recent = getattr(actuator, 'actuator_recent_users', None)
+        if isinstance(recent, dict):
+            recent[target_user] = now
+            # 清理过期登记，避免长期运行下无限增长
+            cutoff = now - self._TASK_TOKEN_TTL_SECONDS
+            stale = [u for u, ts in recent.items() if ts < cutoff]
+            for u in stale:
+                recent.pop(u, None)
+        args['task_token'] = token
+
+    def verify_result_source(self, claimed_user: str) -> bool:
+        """执行器结果回传时的来源校验（仅 is_actuator 连接生效）。
+
+        严格模式：claimed_user 必须命中本执行器近期的下发记录，否则拒绝
+        （不转发、不落库）；兼容模式：未命中仅告警放行，避免误杀旧执行器
+        的合法结果（如重连后回传）。
+        """
+        if not self.is_actuator:
+            return True
+        if not claimed_user:
+            return not auth_strict_mode()
+        if claimed_user in self.actuator_recent_users:
+            return True
+        if auth_strict_mode():
+            logger.warning(
+                f"拒绝未登记的结果回传: 执行器={self.user_id}, claimed_user={claimed_user}"
+            )
+            return False
+        logger.warning(
+            f"结果回传未命中下发登记（兼容模式放行）: 执行器={self.user_id}, "
+            f"claimed_user={claimed_user}"
+        )
+        return True
 
     async def _prepare_task_dispatch(self, args: dict):
         """Resolve effective_runtime + select actuator. Returns (args, actuator, error)."""
@@ -1216,6 +1326,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             ))
             return
 
+        self.register_actuator_task(actuator, args, user or self.user_id)
+
         try:
             await actuator.send_json(SocketDataModel(
                 code=ResponseCode.SUCCESS,
@@ -1270,6 +1382,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 ),
             ))
             return
+
+        self.register_actuator_task(actuator, args, user or self.user_id)
 
         try:
             case_id = args.get("case_id")
@@ -1347,6 +1461,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         args["batch_id"] = batch_id
         # 批量执行不展示执行画面：强制无头
         self._force_batch_headless(args)
+        self.register_actuator_task(actuator, args, user or self.user_id)
 
         try:
             for case_id in case_ids:
@@ -1438,6 +1553,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
     async def handle_step_result(self, args: dict, user: str):
         """处理步骤执行结果（来自执行器）"""
+        if not self.verify_result_source(user):
+            return
         logger.info(f"收到步骤结果, 目标用户: {user}, 当前Web用户: {list(SocketUserManager._web_users.keys())}")
         
         # 转发给对应的前端用户
@@ -1478,6 +1595,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         """
         if not args:
             return
+        if not self.verify_result_source(user):
+            return
         web_user = SocketUserManager.get_web_user(user)
         if not web_user:
             return  # 发起人不在线，丢弃本帧
@@ -1494,6 +1613,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
     
     async def handle_page_step_result(self, args: dict, user: str):
         """处理页面步骤执行结果（来自执行器）"""
+        if not self.verify_result_source(user):
+            return
         self._release_actuator_slots(args, 1)
         logger.info(f"收到页面步骤结果, 执行用户: {user}")
 
@@ -1519,6 +1640,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
     
     async def handle_case_result(self, args: dict, user: str):
         """处理用例执行结果（来自执行器）"""
+        if not self.verify_result_source(user):
+            return
         logger.info(f"收到用例结果, 执行用户: {user}")
         
         # 保存执行结果到数据库

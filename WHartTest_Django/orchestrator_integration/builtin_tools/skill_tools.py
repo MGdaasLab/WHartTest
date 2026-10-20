@@ -420,6 +420,53 @@ def _resolve_skill_runtime_backend_url() -> str:
     return "http://127.0.0.1:8000"
 
 
+def _visible_skills_for_user(user_id: Optional[int]):
+    """与 ``skills/views.py`` 的可见性口径对齐：本人创建的 + 全局共享的。
+
+    工具层此前用 ``filter(name=..., is_active=True)`` 全库查询，导致任意用户都能
+    通过 Agent 读取并执行他人 ``is_global=False`` 的私有 Skill，绕过 API 层授权。
+    无用户上下文时仅暴露全局共享 Skill。
+    """
+    from django.db.models import Q
+
+    from skills.models import Skill
+
+    if user_id:
+        return Skill.objects.filter(Q(creator_id=user_id) | Q(is_global=True))
+    return Skill.objects.filter(is_global=True)
+
+
+# UI 登录态临时目录：文件为 storageState（含 cookie/token），属敏感临时文件。
+# 对齐截图/产物目录的空闲清理惯例：超过该时长的文件在下次写入前清扫。
+_UI_AUTH_STATE_STALE_SECONDS = 5 * 60 * 60
+
+
+def _cleanup_stale_ui_auth_state_files(runtime_dir: str, keep_path: Optional[str] = None) -> None:
+    """清扫 ui-auth-state-tmp 目录中已过期的登录态临时文件。
+
+    以文件 mtime 判定过期（超过 _UI_AUTH_STATE_STALE_SECONDS 即删）；
+    keep_path 为当前正要使用的文件，跳过不删。
+    """
+    try:
+        if not os.path.isdir(runtime_dir):
+            return
+        now = time.time()
+        for name in os.listdir(runtime_dir):
+            file_path = os.path.join(runtime_dir, name)
+            if not os.path.isfile(file_path):
+                continue
+            if keep_path and os.path.abspath(file_path) == os.path.abspath(keep_path):
+                continue
+            try:
+                if now - os.path.getmtime(file_path) > _UI_AUTH_STATE_STALE_SECONDS:
+                    os.remove(file_path)
+                    logger.info("[execute_skill_script] 清扫过期 UI 登录态临时文件: %s", file_path)
+            except OSError:
+                continue
+    except Exception as e:
+        logger.warning("[execute_skill_script] 清扫 UI 登录态临时文件失败: %s", e)
+
+
 def _prepare_ui_auth_state_file(
     ui_credential_context: dict,
     user_id: object,
@@ -429,6 +476,8 @@ def _prepare_ui_auth_state_file(
 
     登录态 JSON 不进 LLM 上下文，Skill/持久浏览器进程通过
     WHARTTEST_UI_AUTH_STATE_FILE 环境变量拿到文件路径后自行注入。
+    敏感临时文件生命周期：写入前清扫目录内过期文件（mtime 超
+    _UI_AUTH_STATE_STALE_SECONDS），避免 storageState 长期驻留磁盘。
     """
     auth_state_id = (ui_credential_context or {}).get("auth_state_id")
     if not auth_state_id:
@@ -453,6 +502,8 @@ def _prepare_ui_auth_state_file(
         os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
         session_part = re.sub(r"[^A-Za-z0-9_-]+", "-", str(chat_session_id or "default"))[:40]
         file_path = os.path.join(runtime_dir, f"u{user_id}_s{session_part}_{auth_state_id}.json")
+        # 写入前清扫过期文件（登录态属敏感临时文件，防止长期驻留磁盘）
+        _cleanup_stale_ui_auth_state_files(runtime_dir, keep_path=file_path)
         fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(auth_state.state_json, fh, ensure_ascii=False)

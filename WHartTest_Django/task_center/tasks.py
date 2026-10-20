@@ -94,10 +94,13 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
             batch_id = batch_data.get('batch_id')
             log_lines.append(f"[{timezone.now().isoformat()}] 批量执行已触发: batch_id={batch_id}")
 
-            # 触发成功后执行记录保持 running，测试结果由批次完结处回写（用例失败 → failed）
-            if batch_id:
-                execution.batch_record_id = batch_id
-                execution.save(update_fields=['batch_record'])
+            if not batch_id:
+                raise ValueError("触发批量执行未返回批次 ID")
+
+            # 先持久化批次关联再进入后续流程：批次若秒级完结（执行器极快/单用例秒失败），
+            # consumers 回写按 batch_record_id 过滤时关联必须已落库，否则执行记录永久停在 running
+            execution.batch_record_id = batch_id
+            execution.save(update_fields=['batch_record'])
 
         elif task.module == ScheduledTask.TaskModule.TEST_SUITE:
             log_lines.append(f"[{timezone.now().isoformat()}] 触发测试套件执行...")
@@ -113,10 +116,13 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
                 status='pending',
                 scheduled_task=task,
             )
+            # 先持久化套件执行关联再入队：套件 worker 可能先于本任务后续 save() 完成
+            # （空套件/秒失败），回写按 suite_execution_id 过滤时关联必须已落库，
+            # 否则执行记录永久停在 running
+            execution.suite_execution = suite_execution
+            execution.save(update_fields=['suite_execution'])
             run_suite.delay(suite_execution.id)
             log_lines.append(f"[{timezone.now().isoformat()}] 套件执行已提交: execution_id={suite_execution.id}")
-            # 触发成功后执行记录保持 running，测试结果由套件任务完结处回写（用例失败 → failed）
-            execution.suite_execution = suite_execution
 
         log_lines.append(f"[{timezone.now().isoformat()}] 任务执行完成")
 

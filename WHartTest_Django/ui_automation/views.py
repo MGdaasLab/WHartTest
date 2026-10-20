@@ -1420,6 +1420,32 @@ def trigger_batch_execution(request):
             start_time=tz.now(),
         )
 
+        # 服务端同步回填任务中心执行记录的批次关联（必须在下发执行器之前完成）：
+        # 执行器可能秒级跑完并回传结果，consumers 回写按 batch_record_id 过滤，
+        # 若关联此时未落库会导致执行记录永久停在 running
+        if scheduled_task_id:
+            try:
+                from task_center.models import TaskExecution
+
+                task_execution = (
+                    TaskExecution.objects
+                    .filter(
+                        task_id=scheduled_task_id,
+                        status=TaskExecution.ExecutionStatus.RUNNING,
+                        batch_record__isnull=True,
+                    )
+                    .order_by('-started_at')
+                    .first()
+                )
+                if task_execution:
+                    task_execution.batch_record = batch
+                    task_execution.save(update_fields=['batch_record'])
+            except Exception:
+                logger.warning(
+                    "[trigger-batch] 回填任务中心执行记录批次关联失败 scheduled_task_id=%s",
+                    scheduled_task_id,
+                    exc_info=True,
+                )
         # 批量执行不展示执行画面：强制无头（执行器优先采用下发的 effective_runtime）
         if isinstance(effective, dict) and effective.get("browser"):
             effective["headless"] = True
@@ -1436,6 +1462,10 @@ def trigger_batch_execution(request):
             'effective_runtime': effective,
             'trigger_type': trigger_type,
         }
+
+        # 登记 HTTP 触发的批量任务来源（user='system'），执行器回传结果时
+        # consumers.verify_result_source 才能命中；漏登记会在严格模式被拒
+        actuator.register_actuator_task(actuator, args, 'system')
 
         # 通过 WebSocket 发送给执行器
         async_to_sync(actuator.send_json)(SocketDataModel(

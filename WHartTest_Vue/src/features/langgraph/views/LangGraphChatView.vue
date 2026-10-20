@@ -447,6 +447,76 @@ const isLoadingMoreHistory = ref(false);
 const historyOffset = ref(0);
 const historyLimit = 5; // 按照用户要求，默认每页加载5条
 
+// ---------------------------------------------------------------------------
+// 外部任务会话自动刷新（定时自愈等后端发起的会话在服务端消费 SSE，
+// 浏览器端没有流订阅，通过轮询 history 接口跟进进展；history 接口
+// 自带 checkpointer → ChatMessage 增量同步，刷新即拉到最新消息）
+// ---------------------------------------------------------------------------
+const EXTERNAL_POLL_INTERVAL_MS = 8000;
+const EXTERNAL_POLL_IDLE_STOP_ROUNDS = 3; // 连续无新增消息的轮询次数上限，超过即认为任务已结束
+let externalPollTimer: ReturnType<typeof window.setInterval> | null = null;
+let externalPollIdleRounds = 0;
+let externalPollInFlight = false;
+let externalPollLastMessageCount = 0;
+
+const stopExternalPolling = () => {
+  if (externalPollTimer) {
+    window.clearInterval(externalPollTimer);
+    externalPollTimer = null;
+  }
+  externalPollIdleRounds = 0;
+};
+
+const startExternalPolling = () => {
+  if (externalPollTimer) return;
+  externalPollIdleRounds = 0;
+  externalPollLastMessageCount = messages.value.length;
+  externalPollTimer = window.setInterval(async () => {
+    // 用户正在页内发消息（SSE 接管渲染）时不重复拉取
+    if (isLoading.value || externalPollInFlight || !sessionId.value) return;
+    externalPollInFlight = true;
+    try {
+      const response = await getChatHistory(sessionId.value, projectStore.currentProjectId, historyLimit, 0);
+      if (response.status === 'success' && response.data?.history) {
+        const latestMessages = buildHistoryMessages(response.data.history, formatHistoryTime);
+        if (latestMessages.length !== externalPollLastMessageCount) {
+          externalPollLastMessageCount = latestMessages.length;
+          externalPollIdleRounds = 0;
+          messages.value = mergeThinkingProcessMessages(latestMessages);
+          await nextTick();
+          chatMessagesRef.value?.scrollToBottom?.();
+        } else {
+          // 连续多轮无新增：外部任务大概率已结束，停止轮询
+          externalPollIdleRounds += 1;
+          if (externalPollIdleRounds >= EXTERNAL_POLL_IDLE_STOP_ROUNDS) {
+            stopExternalPolling();
+          }
+        }
+      }
+    } catch {
+      // 静默失败：网络抖动不影响下一轮
+    } finally {
+      externalPollInFlight = false;
+    }
+  }, EXTERNAL_POLL_INTERVAL_MS);
+};
+
+// 判断当前会话是否可能是外部任务会话（定时自愈/一键生成）：
+// 会话标题带任务标记，或会话创建于近 30 分钟内（外部任务窗口期）
+const maybeStartExternalPolling = () => {
+  stopExternalPolling();
+  if (!sessionId.value) return;
+  const current = chatSessions.value.find(s => s.id === sessionId.value);
+  const isTaskSession = !!current && (
+    current.title?.includes('自愈') ||
+    current.title?.includes('生成') ||
+    (current.lastTime && Date.now() - new Date(current.lastTime).getTime() < 30 * 60 * 1000)
+  );
+  if (isTaskSession) {
+    startExternalPolling();
+  }
+};
+
 // 流式模式：从 LLM 配置读取（computed）
 const isStreamMode = computed(() => currentLlmConfig.value?.enable_streaming ?? true);
 
@@ -531,6 +601,7 @@ const closeFloatingImage = () => {
 watch(sessionId, () => {
   floatingToolImageSrc.value = null;
   panelPos.value = null;
+  maybeStartExternalPolling();
 });
 
 // 提示词相关
@@ -2742,6 +2813,8 @@ onUnmounted(() => {
   pendingTitleRefreshTimers.clear();
   // 组件卸载时，终止任何正在进行的流式请求
   abortController.abort();
+  // 停止外部任务会话轮询
+  stopExternalPolling();
 });
 </script>
 
