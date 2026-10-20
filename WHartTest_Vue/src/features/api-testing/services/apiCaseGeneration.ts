@@ -138,12 +138,12 @@ export function buildGenerationMessage(options: {
 
   lines.push('');
 
-  // 业务来源一：功能用例摘要行（场景模式；仅场景模式使用，单接口为空数组）
+  // 业务来源：功能用例摘要行（场景模式；仅场景模式使用，单接口为空数组）
   const funcRefs = formData.caseType === 'scenario' ? (functionalCaseRefs || []) : [];
   if (formData.caseType === 'scenario') {
     lines.push('');
     if (funcRefs.length) {
-      lines.push('## 业务来源一：功能用例参考（业务依据，按需自取详情）');
+      lines.push('## 业务来源：功能用例参考（业务依据，按需自取详情）');
       lines.push('以下功能用例 ID 属于功能用例库（whart-test 技能的 get_testcase_detail --case_id），与接口 ID / 场景用例 ID 是不同命名空间，严禁混用：');
       for (const ref of funcRefs) {
         lines.push(`- 功能用例 case_id=${ref.case_id}：${ref.module_name} | ${ref.name} | ${ref.test_type} | ${ref.level}`);
@@ -152,7 +152,7 @@ export function buildGenerationMessage(options: {
       lines.push('未命中处理：功能用例未命中、且知识库/业务描述也未命中时，停止生成并总结原因，严禁用生命周期/数据传递链等结构推断场景填充。');
       lines.push('缺口授权：命中的功能用例所需接口不在选中集合时，允许用 api-automation 技能的 list_interfaces / get_interface 按业务语义检索补充；检索不到则该场景跳过并登记待补充接口。');
     } else {
-      lines.push('## 业务来源一：功能用例。未选择功能用例（本区块无业务参考）。');
+      lines.push('## 业务来源：功能用例。未选择功能用例（本区块无业务参考）。');
     }
   }
 

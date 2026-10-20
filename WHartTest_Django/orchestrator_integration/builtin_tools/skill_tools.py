@@ -614,6 +614,17 @@ def get_skill_tools(
                     key_source,
                 )
 
+            # UI 生成会话凭据注入（仅 env 传递，不进 LLM 上下文）
+            current_ui_auth_state_file = None
+            if current_ui_credential_context:
+                current_ui_auth_state_file = _prepare_ui_auth_state_file(
+                    current_ui_credential_context,
+                    current_user_id,
+                    current_chat_session_id,
+                )
+                _apply_ui_credential_env(runtime_env, current_ui_credential_context, current_ui_auth_state_file)
+                logger.info("[execute_skill_script] 已注入 UI 生成凭据 env (auth_state_file=%s)", bool(current_ui_auth_state_file))
+
             case_dir_key = None
             if current_test_case_id:
                 case_dir_key = str(current_test_case_id)

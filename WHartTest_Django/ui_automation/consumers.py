@@ -15,6 +15,7 @@ from typing import Optional
 from urllib.parse import parse_qs
 from channels.generic.websocket import AsyncWebsocketConsumer
 from asgiref.sync import sync_to_async
+from django.utils import timezone as django_timezone
 
 from .socket_models import (
     SocketDataModel, QueueModel, NoticeType, ResponseCode,
@@ -1655,11 +1656,51 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                     batch = UiBatchExecutionRecord.objects.select_related('scheduled_task').get(id=batch_id)
                     batch.update_statistics()
                     logger.info(f"批量执行记录统计已更新: batch_id={batch_id}")
+                    self._sync_task_execution_result(batch)
                     self._maybe_dispatch_heal_task(batch)
                 except UiBatchExecutionRecord.DoesNotExist:
                     logger.warning(f"批量执行记录不存在: batch_id={batch_id}")
         except Exception as e:
             logger.error(f"保存执行结果失败: {e}", exc_info=True)
+
+    def _sync_task_execution_result(self, batch) -> None:
+        """批次完结时把测试结果回写到任务中心执行记录（归一成败语义）。
+
+        UI 批次完结（全部成功=2 / 部分失败=3 / 全部失败=4）后，找到关联该批次的
+        running 执行记录：全部通过 → success；存在失败 → failed（触发成功但用例失败同归失败）。
+        只更新 running 记录防止重复回写；无关联（手动批次）不处理。
+        """
+        try:
+            from task_center.models import TaskExecution
+
+            if batch.status not in (2, 3, 4) or batch.scheduled_task_id is None:
+                return
+            execution = (
+                TaskExecution.objects
+                .filter(
+                    task_id=batch.scheduled_task_id,
+                    batch_record_id=batch.id,
+                    status=TaskExecution.ExecutionStatus.RUNNING,
+                )
+                .order_by('-started_at')
+                .first()
+            )
+            if execution is None:
+                return
+            result_status = (
+                TaskExecution.ExecutionStatus.SUCCESS
+                if batch.status == 2
+                else TaskExecution.ExecutionStatus.FAILED
+            )
+            execution.status = result_status
+            execution.test_status = result_status
+            execution.finished_at = django_timezone.now()
+            execution.save(update_fields=['status', 'test_status', 'finished_at'])
+            logger.info(
+                f"[任务中心] 批次 {batch.id} 测试结果已回写执行记录 {execution.execution_id}: {result_status}"
+            )
+        except Exception:
+            logger.error(f"[任务中心] 批次 {batch.id} 测试结果回写失败", exc_info=True)
 
     def _maybe_dispatch_heal_task(self, batch) -> None:
         """批次完结且存在失败时，按需投递定时任务自动自愈 Celery 任务。

@@ -31,21 +31,12 @@ _STEP_HISTORY_LIMIT = 20
 
 
 def _build_auth_headers(user) -> dict:
-    """构造任务创建者身份的认证头。
+    """构造任务创建者身份的认证头（JWT，与 trigger-batch 同模式）。
 
-    优先用户级 API Key（无单设备 session_version 约束、长期有效）；
-    无可用 Key 时兜底签发带当前 session_version 的 JWT（与 trigger-batch 同模式）。
+    agent-loop 视图是 Django View，手动认证只解析 Bearer JWT（不支持 X-API-Key），
+    因此这里始终签发带当前 session_version 的 JWT，不使用 API Key。
+    （API Key 仅适用于 skill 工具回调的 DRF 路径，两者认证入口不同。）
     """
-    from api_keys.models import APIKey
-
-    api_key = (
-        APIKey.objects.filter(user=user, is_active=True)
-        .order_by('-created_at')
-        .first()
-    )
-    if api_key and api_key.is_valid():
-        return {'X-API-Key': api_key.key}
-
     token = RefreshToken.for_user(user).access_token
     from accounts.models import UserLoginState
 

@@ -2097,6 +2097,16 @@ class AgentLoopResumeAPIView(View):
                 except Exception:
                     pass
 
+                # 5.1 生成守护模式：恢复前追加对应规范指令（与 default_templates 模板同源）
+                if generation_mode == GENERATION_MODE_UI_CASE:
+                    resume_system_prompt = (
+                        (resume_system_prompt or "") + "\n\n" + UI_CASE_GENERATION_INSTRUCTION
+                    )
+                elif generation_mode == GENERATION_MODE_SELF_HEAL:
+                    resume_system_prompt = (
+                        (resume_system_prompt or "") + "\n\n" + SELF_HEAL_INSTRUCTION
+                    )
+
                 tool_names = [t.name for t in tools] if tools else []
                 middleware = await sync_to_async(get_middleware_from_config)(
                     active_config,
@@ -2513,6 +2523,18 @@ class AgentLoopResumeAPIView(View):
         logger.info(
             f"AgentLoopResumeAPI: Resume request for session {session_id}, knowledge_base_id={knowledge_base_id}"
         )
+
+        # 2.1 从会话首条用户消息检测生成守护模式（主流式入口在消息头注入标记）
+        generation_mode = None
+        try:
+            first_user_message = await sync_to_async(
+                lambda: ChatMessage.objects.filter(
+                    session__session_id=session_id, role='human'
+                ).order_by('created_at').values_list('content', flat=True).first()
+            )()
+            generation_mode = detect_generation_mode(first_user_message)
+        except Exception:
+            logger.warning("[AgentLoopResumeAPI] 生成守护标记检测失败，按未启用处理")
 
         # 3. 返回 SSE 流式响应
         async def async_generator():

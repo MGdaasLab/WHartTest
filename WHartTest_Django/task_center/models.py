@@ -158,6 +158,11 @@ class TaskExecution(models.Model):
         SUCCESS = 'success', _('成功')
         FAILED = 'failed', _('失败')
 
+    class TestStatus(models.TextChoices):
+        PENDING = 'pending', _('待结果')
+        SUCCESS = 'success', _('通过')
+        FAILED = 'failed', _('失败')
+
     execution_id = models.CharField(
         _('执行ID'), max_length=50, unique=True, editable=False
     )
@@ -170,7 +175,27 @@ class TaskExecution(models.Model):
     )
     status = models.CharField(
         _('状态'), max_length=10, choices=ExecutionStatus.choices,
-        default=ExecutionStatus.RUNNING
+        default=ExecutionStatus.RUNNING,
+        help_text=_('归一结果：触发失败或用例执行失败均为 failed；触发成功且用例全部通过为 success')
+    )
+
+    # 测试结果与下游执行关联
+    test_status = models.CharField(
+        _('测试结果'), max_length=10, choices=TestStatus.choices,
+        default=TestStatus.PENDING,
+        help_text=_('下游用例执行结果：pending 待结果 / success 全部通过 / failed 存在失败')
+    )
+    batch_record = models.ForeignKey(
+        'ui_automation.UiBatchExecutionRecord', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='task_executions',
+        verbose_name=_('关联UI批次'),
+        help_text=_('UI 自动化任务触发的批次记录')
+    )
+    suite_execution = models.ForeignKey(
+        'testcases.TestExecution', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='task_executions',
+        verbose_name=_('关联套件执行'),
+        help_text=_('测试套件任务触发的套件执行记录')
     )
     started_at = models.DateTimeField(_('开始时间'), auto_now_add=True)
     finished_at = models.DateTimeField(_('结束时间'), null=True, blank=True)

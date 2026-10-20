@@ -23,6 +23,54 @@ from asgiref.sync import sync_to_async
 logger = logging.getLogger(__name__)
 
 
+def sync_scheduled_task_result(execution) -> None:
+    """套件执行完结时把测试结果回写到任务中心执行记录（归一成败语义）。
+
+    套件执行（TestExecution）由任务中心定时/手动触发时携带 scheduled_task 关联；
+    完结后按归一规则更新对应 TaskExecution：completed 且无失败 → success；
+    completed 但有用例失败、或套件执行本身 failed → failed；cancelled 不动。
+    """
+    try:
+        scheduled_task_id = getattr(execution, 'scheduled_task_id', None)
+        if not scheduled_task_id:
+            return
+        from task_center.models import TaskExecution
+
+        if execution.status == 'completed':
+            result_status = (
+                TaskExecution.ExecutionStatus.SUCCESS
+                if execution.failed_count == 0 and execution.error_count == 0
+                else TaskExecution.ExecutionStatus.FAILED
+            )
+        elif execution.status == 'failed':
+            result_status = TaskExecution.ExecutionStatus.FAILED
+        else:
+            # cancelled / running / pending：不回写
+            return
+
+        task_execution = (
+            TaskExecution.objects
+            .filter(
+                task_id=scheduled_task_id,
+                suite_execution_id=execution.id,
+                status=TaskExecution.ExecutionStatus.RUNNING,
+            )
+            .order_by('-started_at')
+            .first()
+        )
+        if task_execution is None:
+            return
+        task_execution.status = result_status
+        task_execution.test_status = result_status
+        task_execution.finished_at = timezone.now()
+        task_execution.save(update_fields=['status', 'test_status', 'finished_at'])
+        logger.info(
+            f"[任务中心] 套件执行 {execution.id} 测试结果已回写执行记录 {task_execution.execution_id}: {result_status}"
+        )
+    except Exception:
+        logger.error(f"[任务中心] 套件执行 {getattr(execution, 'id', '?')} 测试结果回写失败", exc_info=True)
+
+
 @shared_task(bind=True, name='testcases.execute_test_suite')
 def execute_test_suite(self, execution_id):
     """
@@ -85,6 +133,7 @@ def execute_test_suite(self, execution_id):
         execution.status = 'completed' if execution.status != 'cancelled' else 'cancelled'
         execution.completed_at = timezone.now()
         execution.save(update_fields=['status', 'completed_at', 'updated_at'])
+        sync_scheduled_task_result(execution)
         
         logger.info(f"测试套件执行完成: {suite.name}, "
                    f"通过: {execution.passed_count}, "
@@ -120,6 +169,7 @@ def execute_test_suite(self, execution_id):
             execution.status = 'failed'
             execution.completed_at = timezone.now()
             execution.save(update_fields=['status', 'completed_at', 'updated_at'])
+            sync_scheduled_task_result(execution)
         except:
             pass
             

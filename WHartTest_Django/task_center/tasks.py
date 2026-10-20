@@ -85,8 +85,19 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
                 error_msg = resp.json().get('error', resp.text)
                 raise ValueError(f"触发批量执行失败: {error_msg}")
 
-            batch_data = resp.json().get('data', {})
-            log_lines.append(f"[{timezone.now().isoformat()}] 批量执行已触发: batch_id={batch_data.get('batch_id')}")
+            # UnifiedResponseRenderer 会把视图返回体包装为 {status, code, message, data: <视图返回体>}，
+            # 因此取 batch_id 需要两层 data：外层 data = 视图的 {'status','data':{batch_id,...}}
+            resp_body = resp.json()
+            batch_data = resp_body.get('data') or {}
+            if isinstance(batch_data.get('data'), dict):
+                batch_data = batch_data['data']
+            batch_id = batch_data.get('batch_id')
+            log_lines.append(f"[{timezone.now().isoformat()}] 批量执行已触发: batch_id={batch_id}")
+
+            # 触发成功后执行记录保持 running，测试结果由批次完结处回写（用例失败 → failed）
+            if batch_id:
+                execution.batch_record_id = batch_id
+                execution.save(update_fields=['batch_record'])
 
         elif task.module == ScheduledTask.TaskModule.TEST_SUITE:
             log_lines.append(f"[{timezone.now().isoformat()}] 触发测试套件执行...")
@@ -100,16 +111,33 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
                 suite=task.test_suite,
                 executor=task.creator,
                 status='pending',
+                scheduled_task=task,
             )
             run_suite.delay(suite_execution.id)
             log_lines.append(f"[{timezone.now().isoformat()}] 套件执行已提交: execution_id={suite_execution.id}")
+            # 触发成功后执行记录保持 running，测试结果由套件任务完结处回写（用例失败 → failed）
+            execution.suite_execution = suite_execution
 
         log_lines.append(f"[{timezone.now().isoformat()}] 任务执行完成")
 
-        execution.status = TaskExecution.ExecutionStatus.SUCCESS
-        execution.finished_at = timezone.now()
-        execution.log = '\n'.join(log_lines)
-        execution.save()
+        ui_pending_result = (
+            task.module == ScheduledTask.TaskModule.UI_AUTOMATION and bool(batch_id)
+        )
+        suite_pending_result = (
+            task.module == ScheduledTask.TaskModule.TEST_SUITE
+            and suite_execution.status == 'pending'
+        )
+        if ui_pending_result or suite_pending_result:
+            # 触发成功但测试结果未出：执行记录保持 running，由下游完结处回写成败
+            # （UI → consumers 批次完结回写；套件 → execute_test_suite 完结回写）
+            execution.log = '\n'.join(log_lines)
+            execution.save()
+        else:
+            # 异常兜底（UI 未取到批次 ID 等）：无法回写测试结果，按触发结果落成功
+            execution.status = TaskExecution.ExecutionStatus.SUCCESS
+            execution.finished_at = timezone.now()
+            execution.log = '\n'.join(log_lines)
+            execution.save()
 
         # 一次性任务执行后自动禁用
         if task.schedule_type == ScheduledTask.ScheduleType.ONCE:

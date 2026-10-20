@@ -68,6 +68,8 @@ export interface TaskExecution {
   task: number;
   trigger_type: TriggerType;
   status: ExecutionStatus;
+  batch_record?: number | null;
+  suite_execution?: number | null;
   started_at: string;
   finished_at: string | null;
   duration: string;
