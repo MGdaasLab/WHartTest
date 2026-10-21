@@ -43,6 +43,10 @@ class TaskConsumer:
         self._api_token: Optional[str] = None
         self.config = config
         self.config_path = config_path
+        # 任务来源令牌：后端下发任务时放在 func_args.task_token，结果回传时
+        # 原样回显，供后端 verify_result_source 做"任务确实下发给本执行器"的
+        # 一一对应强校验。路由任务时摘取，回传时自动附带并清除。
+        self._task_token: Optional[str] = None
         
         # 从配置创建执行器
         executor_config = {}
@@ -369,7 +373,15 @@ class TaskConsumer:
         
         handler = handlers.get(task.func_name)
         if handler:
-            await handler(task.func_args)
+            # 摘取后端下发的任务来源令牌（旧版后端无此字段，保持 None）；
+            # 同步到 ws_client，send_result 回传所有结果时自动附带回显
+            self._task_token = task.func_args.get('task_token') if isinstance(task.func_args, dict) else None
+            self.ws_client.set_task_token(self._task_token)
+            try:
+                await handler(task.func_args)
+            finally:
+                self._task_token = None
+                self.ws_client.set_task_token(None)
         else:
             logger.warning(f"未知任务类型: {task.func_name}")
 
@@ -610,13 +622,16 @@ class TaskConsumer:
     async def _push_exec_frame(self, w: int, h: int, data: str) -> None:
         """帧上报：复用执行器上行 WS 连接，直推发起用户（Django 侧按 user 转发）。"""
         try:
+            frame_args = {
+                'case_id': self._exec_frame_case_id,
+                'page_step_id': self._exec_frame_page_step_id,
+                'frame': {'w': w, 'h': h, 'data': data},
+            }
+            if self._task_token:
+                frame_args['task_token'] = self._task_token
             await self.ws_client.send_result(
                 UiSocketEnum.EXEC_FRAME,
-                {
-                    'case_id': self._exec_frame_case_id,
-                    'page_step_id': self._exec_frame_page_step_id,
-                    'frame': {'w': w, 'h': h, 'data': data},
-                },
+                frame_args,
                 self._current_user,
             )
         except Exception as e:

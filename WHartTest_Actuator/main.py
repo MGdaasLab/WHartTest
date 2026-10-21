@@ -138,7 +138,14 @@ class Config:
         # 打包成 exe 时默认启用 GUI 登录，开发模式默认关闭
         self.use_gui = getattr(sys, 'frozen', False) and not container_mode
         self.api_username = "admin"
-        self.api_password = "admin123"
+        # 安全：不内置默认口令（原 admin123 已随源码公开）
+        self.api_password = ""
+        # API Key 认证（可选，优先级高于账号密码）：不发 /api/token/ 登录请求，
+        # 不会触发后端单设备 session_version 递增，避免挤掉浏览器登录会话
+        self.api_key = ""
+        # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 一致；后端开启严格模式
+        # （UI_WS_AUTH_STRICT=1）后，无 token 的执行器连接会被拒绝（close 4401）
+        self.ws_token = ""
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None
         self.actuator_description: str | None = None
@@ -197,6 +204,8 @@ class Config:
             self.use_gui = data['server'].get('use_gui', self.use_gui)
             self.api_username = data['server'].get('api_username', self.api_username)
             self.api_password = data['server'].get('api_password', self.api_password)
+            self.api_key = data['server'].get('api_key', self.api_key)
+            self.ws_token = data['server'].get('ws_token', self.ws_token)
         
         # 执行器配置
         if 'actuator' in data:
@@ -254,6 +263,10 @@ class Config:
             self.api_username = api_username.strip()
         if api_password := os.environ.pop('WHARTTEST_ACTUATOR_API_PASSWORD', None):
             self.api_password = api_password.strip()
+        if api_key := os.environ.get('WHARTTEST_ACTUATOR_API_KEY'):
+            self.api_key = api_key.strip()
+        if ws_token := os.environ.pop('WHARTTEST_ACTUATOR_WS_TOKEN', None):
+            self.ws_token = ws_token.strip()
         if browser_type := os.environ.get('WHARTTEST_ACTUATOR_BROWSER_TYPE'):
             self.browser_type = browser_type.strip()
         if stealth_user_agent := os.environ.get('WHARTTEST_ACTUATOR_STEALTH_USER_AGENT'):

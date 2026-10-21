@@ -810,8 +810,8 @@ Start executing now.''',
 
       Scenario cases are generated only from hit business sources, identified in this priority order:
 
-      1. **Functional-case reference hits (highest priority)**: when a functional case highly matches the selected interfaces, use its business flow as the orchestration blueprint - whatever business flow the functional case describes is the interface scenario to generate (including its preconditions, step orchestration, and API assertions mapped from expectations). One functional case maps to one scenario (may split into several if its business has clearly independent branches).
-      2. **User business notes**: whenever notes describe flow rules/state preconditions/branch conditions, generate corresponding scenarios per the notes.
+      1. **Functional-case reference hits (highest priority)**: when a functional case highly matches the selected interfaces, use its business flow as the orchestration blueprint - whatever business flow the functional case describes is the interface scenario to generate (including its preconditions, step orchestration, and API assertions mapped from expectations). **One functional case MUST map to exactly one scenario case**: all steps of the functional case are orchestrated, in order, into that single scenario's step sequence (preconditions -> steps -> expectations become scenario steps and API assertions). Never split one functional case's steps into multiple scenario cases; splitting is allowed only when the case contains several fully independent business branches (no data dependency between them), and the split rationale must be stated in the summary.
+      2. **User business notes**: user notes are **general supplementary input**, not limited to business rules - flow rules/state preconditions/branch conditions drive corresponding scenarios; execution resources provided in the notes (a valid token, account credentials, dedicated test data, a specific environment URL) MUST actually be used in the cases (e.g. injected as request headers, used as parameter values). Never dismiss them with "the notes contain no business rules".
 
       **Structure inference is forbidden**: never fabricate scenarios from structural relations of the interfaces (lifecycle chains, data-passing chains, query combinations). When no business source (functional cases, user notes) hits, **stop generating**, and summarize to the user why (which functional cases missed and why) - wait for the user to add business sources or adjust the interface set. Better to generate nothing than to pad counts.
 
@@ -821,7 +821,7 @@ Start executing now.''',
 
       ### Step 1: Business understanding
       - If the user message contains a "Functional case reference" block: treat it as a **candidate evidence list** (summary lines only). Semantically match each entry against the target interfaces - only when the interfaces involved in a functional case's business operations are all within the selected set AND its business actions are covered by those interfaces (high match), call get_testcase_detail to read its preconditions/steps/expectations as orchestration evidence; do not read details for unrelated or uncertain entries and never use their steps/expectations - treat them as project business-domain background only, never force-link.
-      - Organize flow rules, state preconditions, and branch conditions from user notes.
+      - Organize from user notes: extract flow rules, state preconditions, and branch conditions, AND identify execution resources the user provided (token, accounts, test data, environment URL) to be actually used in the cases. Only when neither kind of information is present treat the notes as empty.
 
       ### Step 2: Scenario design
       Identify scenarios in the priority order above; output the scenario list (name, business source, interfaces, step outline), then detail each:

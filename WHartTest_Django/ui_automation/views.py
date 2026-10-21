@@ -1332,6 +1332,36 @@ def upload_trace(request):
 from asgiref.sync import async_to_sync
 
 
+def _resolve_task_execution_for_batch(*, task_execution_id=None, scheduled_task_id=None):
+    """定位批次应回填的任务中心执行记录。
+
+    优先按触发方显式传入的执行记录 ID 精确匹配（同任务并发/重试时启发式
+    可能关联到错误的记录）；无 execution_id 时退化为启发式（同任务最早一条
+    running 且未关联批次的记录）。仅匹配 running 未关联记录，防重复回填。
+    """
+    from task_center.models import TaskExecution
+
+    if task_execution_id:
+        return TaskExecution.objects.filter(
+            id=task_execution_id,
+            status=TaskExecution.ExecutionStatus.RUNNING,
+            batch_record__isnull=True,
+        ).first()
+    if scheduled_task_id:
+        # 最早优先（先触发先关联）：后触发的执行记录等自己触发的批次
+        return (
+            TaskExecution.objects
+            .filter(
+                task_id=scheduled_task_id,
+                status=TaskExecution.ExecutionStatus.RUNNING,
+                batch_record__isnull=True,
+            )
+            .order_by('started_at')
+            .first()
+        )
+    return None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def trigger_batch_execution(request):
@@ -1351,6 +1381,7 @@ def trigger_batch_execution(request):
     batch_name = request.data.get('batch_name', '')
     trigger_type = request.data.get('trigger_type', 'scheduled')
     scheduled_task_id = request.data.get('scheduled_task_id')
+    task_execution_id = request.data.get('task_execution_id')
 
     if not case_ids:
         return Response({'error': '未提供用例 ID'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1423,27 +1454,20 @@ def trigger_batch_execution(request):
         # 服务端同步回填任务中心执行记录的批次关联（必须在下发执行器之前完成）：
         # 执行器可能秒级跑完并回传结果，consumers 回写按 batch_record_id 过滤，
         # 若关联此时未落库会导致执行记录永久停在 running
-        if scheduled_task_id:
+        if task_execution_id or scheduled_task_id:
             try:
-                from task_center.models import TaskExecution
-
-                task_execution = (
-                    TaskExecution.objects
-                    .filter(
-                        task_id=scheduled_task_id,
-                        status=TaskExecution.ExecutionStatus.RUNNING,
-                        batch_record__isnull=True,
-                    )
-                    .order_by('-started_at')
-                    .first()
+                task_execution = _resolve_task_execution_for_batch(
+                    task_execution_id=task_execution_id,
+                    scheduled_task_id=scheduled_task_id,
                 )
                 if task_execution:
                     task_execution.batch_record = batch
                     task_execution.save(update_fields=['batch_record'])
             except Exception:
                 logger.warning(
-                    "[trigger-batch] 回填任务中心执行记录批次关联失败 scheduled_task_id=%s",
+                    "[trigger-batch] 回填任务中心执行记录批次关联失败 scheduled_task_id=%s execution_id=%s",
                     scheduled_task_id,
+                    task_execution_id,
                     exc_info=True,
                 )
         # 批量执行不展示执行画面：强制无头（执行器优先采用下发的 effective_runtime）

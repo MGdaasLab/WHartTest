@@ -65,13 +65,20 @@ class UiWebSocketAuthMiddleware:
             return await self.app(scope, receive, send)
 
         path = scope.get('path', '')
-        if not (path.startswith('/ws/ui/web/') or path.startswith('/ws/ui/actuator/')):
+        if not (
+            path.startswith('/ws/ui/web/')
+            or path.startswith('/ws/ui/actuator/')
+            or path.startswith('/ws/heal/chat/')
+        ):
             return await self.app(scope, receive, send)
 
         query = parse_qs(scope.get('query_string', b'').decode('utf-8'))
         token = (query.get('token') or [''])[0]
 
-        if path.startswith('/ws/ui/web/'):
+        if path.startswith('/ws/heal/chat/'):
+            # 自愈对话订阅：与 UI web 同为 JWT 认证
+            authed, principal = await self._authenticate_web(token)
+        elif path.startswith('/ws/ui/web/'):
             authed, principal = await self._authenticate_web(token)
         else:
             authed, principal = self._authenticate_actuator(token)
@@ -94,7 +101,7 @@ class UiWebSocketAuthMiddleware:
         if principal is not None:
             scope['user'] = principal
         scope[SCOPE_AUTH_KEY] = {
-            'kind': 'web' if path.startswith('/ws/ui/web/') else 'actuator',
+            'kind': 'actuator' if path.startswith('/ws/ui/actuator/') else 'web',
             'authenticated': True,
             'token_kind': 'jwt' if path.startswith('/ws/ui/web/') else 'shared_secret',
         }
@@ -150,3 +157,28 @@ class UiWebSocketAuthMiddleware:
         """拒绝连接：先接受握手再立即以自定义码关闭（浏览器 WS 无法在握手前传码）。"""
         await send({'type': 'websocket.accept'})
         await send({'type': 'websocket.close', 'code': WS_CLOSE_UNAUTHENTICATED})
+
+
+def warn_insecure_ws_config() -> None:
+    """启动时检查 WS 认证配置，不安全组合打 WARNING（只提示，不阻断启动）。"""
+    import django.conf
+
+    token_set = bool(_get_setting('UI_WS_ACTUATOR_TOKEN'))
+    strict = auth_strict_mode()
+    logger_ws = logging.getLogger('ui_automation')
+    if not token_set and not strict:
+        logger_ws.warning(
+            "UI WS 认证处于开放状态：UI_WS_ACTUATOR_TOKEN 未配置且 UI_WS_AUTH_STRICT=0，"
+            "匿名连接仍可访问 /ws/ui/web/ 与 /ws/ui/actuator/（兼容模式）。"
+            "生产环境请配置密钥并在客户端改造完成后开启 UI_WS_AUTH_STRICT=1"
+        )
+    elif not token_set and strict:
+        logger_ws.warning(
+            "UI_WS_AUTH_STRICT=1 但 UI_WS_ACTUATOR_TOKEN 未配置：所有执行器连接"
+            "都将被拒绝（4401）。请先为执行器配置共享密钥"
+        )
+    elif token_set and not strict:
+        logger_ws.info(
+            "UI WS 执行器密钥已配置（兼容模式）：带错误 token 的连接会被拒绝，"
+            "未带 token 的匿名连接仍放行。全部客户端就绪后建议开启 UI_WS_AUTH_STRICT=1"
+        )

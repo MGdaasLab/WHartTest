@@ -89,6 +89,12 @@ services:
       - MEDIA_ROOT=${MEDIA_ROOT:-/app/data/media}
       - LANGGRAPH_CHECKPOINT_SQLITE_PATH=${LANGGRAPH_CHECKPOINT_SQLITE_PATH:-/app/data/chat_history.sqlite}
       - DJANGO_DEBUG=True
+      # UI 自动化 WebSocket 认证（wharttest_django/websocket_auth.py）：
+      # 执行器连接 /ws/ui/actuator/ 的共享密钥，须与执行器侧 ws_token 一致；
+      # 留空时兼容模式仍放行无凭据连接（仅告警）。
+      - UI_WS_ACTUATOR_TOKEN=${UI_WS_ACTUATOR_TOKEN:-}
+      # 严格模式：1 = 未认证 WS 连接一律拒绝（前端/执行器均带 token 后再开启）
+      - UI_WS_AUTH_STRICT=${UI_WS_AUTH_STRICT:-0}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80,http://*:8913
@@ -187,7 +193,121 @@ services:
       retries: 3
       start_period: 20s
 
-  # MCP 服务（独立容器）
+  # UI 自动化执行器（默认无头浏览器容器）
+  actuator:
+    build:
+      context: ./WHartTest_Actuator
+      dockerfile: Dockerfile
+      args:
+        PLAYWRIGHT_PYTHON_IMAGE: ${DOCKER_PLAYWRIGHT_PYTHON_IMAGE:-mcr.microsoft.com/playwright/python:v1.60.0-jammy}
+        PIP_INDEX_URL: ${DOCKER_PIP_INDEX_URL:-https://pypi.org/simple}
+    container_name: wharttest-actuator
+    shm_size: "1gb"
+    volumes:
+      - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - WHARTTEST_ACTUATOR_DOCKER=1
+      - WHARTTEST_ACTUATOR_WS_URL=${WHARTTEST_ACTUATOR_WS_URL:-ws://host.docker.internal:8000/ws/ui/actuator/}
+      - WHARTTEST_ACTUATOR_API_URL=${WHARTTEST_ACTUATOR_API_URL:-http://host.docker.internal:8000}
+      - WHARTTEST_ACTUATOR_USE_GUI=false
+      - WHARTTEST_ACTUATOR_HEADLESS=false
+      - WHARTTEST_ACTUATOR_PERSISTENT=false
+      # API Key 认证（推荐）：配置后执行器不再调用 /api/token/ 登录，
+      # 避免触发后端「单设备登录」导致浏览器会话被挤掉
+      # 安全：不再回退到源码里公开过的固定演示密钥，请通过 .env 显式配置
+      - WHARTTEST_ACTUATOR_API_KEY=${WHARTTEST_ACTUATOR_API_KEY:-}
+      # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 同值（run_compose.sh 自动生成回写 .env）
+      - WHARTTEST_ACTUATOR_WS_TOKEN=${WHARTTEST_ACTUATOR_WS_TOKEN:-}
+      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    networks:
+      - wharttest-network
+    restart: unless-stopped
+
+  # Skill 命令的独立执行面（第 2 层安全加固，默认执行模式）
+  #
+  # 与 backend 的关系：backend 只做鉴权与取可见 skill 目录，把命令交给本服务执行；
+  # backend 的 SKILL_EXEC_MODE 默认即为 runner，本服务随栈默认启动。
+  # 本服务刻意做到「无秘密、无业务网段、无持久化」：
+  #   - 不注入任何平台机密（DJANGO_SECRET_KEY / DB 口令 / LLM Key 都不在此容器环境里）
+  #   - 只加入 skill-runner-net，到不了 postgres/redis/qdrant
+  #   - 根文件系统只读，工作区用 tmpfs，作业结束即销毁
+  # 必须在 .env 配置 SKILL_RUNNER_TOKEN，否则本服务拒绝所有作业（fail-closed），
+  # backend 侧 skill 执行会直接报错而不会回退到进程内执行。
+  # 如需回退第 1 层进程内执行：在 .env 设 SKILL_EXEC_MODE=inprocess。
+  skill-runner:
+    # 与 backend 复用同一个镜像名：runner 只是换了个入口命令，没必要再打一份
+    # 4GB 的镜像。compose 见到相同 image 名会复用已构建的镜像层（构建缓存命中）。
+    image: ${SKILL_RUNNER_IMAGE:-wharttest-backend}
+    build:
+      context: ./WHartTest_Django
+      dockerfile: Dockerfile
+      args:
+        PYTHON_BASE_IMAGE: ${DOCKER_PYTHON_BASE_IMAGE:-python:3.12-slim}
+        APT_BASE_URL: ${DOCKER_APT_BASE_URL:-http://deb.debian.org}
+        PIP_INDEX_URL: ${DOCKER_PIP_INDEX_URL:-https://pypi.org/simple}
+        PIP_INDEX_FALLBACKS: ${DOCKER_PIP_INDEX_FALLBACKS:-}
+        NPM_REGISTRY: ${DOCKER_NPM_REGISTRY:-https://registry.npmjs.org}
+        PLAYWRIGHT_DOWNLOAD_HOST: ${DOCKER_PLAYWRIGHT_DOWNLOAD_HOST:-}
+    container_name: wharttest-skill-runner
+    # 以数据目录属主身份运行：
+    #   - 产物/截图写进宿主 media 后属主正确，backend（同为该 uid）能正常清理；
+    #   - 不需要补回 DAC_OVERRIDE（cap_drop: ALL 后 root 反而写不了宿主属主目录）。
+    # 用 `stat -c '%u:%g' data/media/skill_runtime` 可查得应填的 UID/GID。
+    user: "${SKILL_RUNNER_UID:-1000}:${SKILL_RUNNER_GID:-1000}"
+    # 必须覆盖 entrypoint：镜像的 /app/entrypoint.sh 末尾无条件 `exec supervisord`
+    # 且忽略 CMD，若只用 command 会被忽略、runner 容器会启动成 Django+celery。
+    # runner 不需要数据库准备步骤，直接启动服务即可。
+    entrypoint: ["python", "-m", "skill_runner.server"]
+    # HOME 指向可写 tmpfs，避免只读根文件系统下 node/playwright 写缓存失败
+    environment:
+      - HOME=/tmp
+      - SKILL_RUNNER_HOST=0.0.0.0
+      - SKILL_RUNNER_PORT=8923
+      - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
+      - SKILL_RUNNER_SKILLS_ROOT=/app/data/media
+      - SKILL_RUNNER_WORKSPACE_ROOT=/tmp
+      - SKILL_RUNNER_MAX_CONCURRENT_JOBS=${SKILL_RUNNER_MAX_CONCURRENT_JOBS:-4}
+      - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
+      # 注意：本服务复用 WHartTest_Django 镜像，Chromium 由 Dockerfile 的
+      # `playwright install chromium` 装到默认缓存目录；/ms-playwright 是
+      # Actuator 镜像（mcr.microsoft.com/playwright/python）的路径，不能混用。
+      - PLAYWRIGHT_BROWSERS_PATH=${SKILL_RUNNER_PLAYWRIGHT_BROWSERS_PATH:-/opt/ms-playwright}
+      - LLM_BROWSER_AUTO_CHROME=1
+    volumes:
+      # skill 目录只读可见（与 backend 的 MEDIA_ROOT 同路径，便于路径直接互通）
+      - ./data/media:/app/data/media:ro
+      # 产物/截图目录可写，供 backend 的产物收集逻辑继续工作
+      - ./data/media/skill_runtime:/app/data/media/skill_runtime
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 4096
+    mem_limit: ${SKILL_RUNNER_MEM_LIMIT:-4g}
+    cpus: ${SKILL_RUNNER_CPUS:-2}
+    networks:
+      # 只挂执行网：与 postgres/redis/qdrant 所在网段隔离
+      - skill-runner-net
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8923/health')" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # MCP 服务（独立容器，默认不启动）
+  #
+  # 该服务以 root 绑定 0.0.0.0 暴露 WHartTest_tools(8006) 与 ms_mcp_api(8007)，
+  # 默认关闭：仅在需要对接 MCP 客户端时显式启用：
+  #     docker compose --profile mcp up -d mcp
+  # 启用前必须在 .env 配置 MCP_SHARED_TOKEN（未配置会 fail-closed 拒绝启动），
+  # 并在客户端请求头带上 Authorization: Bearer <同一密钥>。
   mcp:
     # 本地构建模式
     build:

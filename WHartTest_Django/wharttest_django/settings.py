@@ -152,10 +152,18 @@ ASGI_APPLICATION = "wharttest_django.asgi.application"
 
 # Channels Layer 配置（使用内存后端，生产环境建议使用 Redis）
 # 配置 Channels 通道层后端。
+# 通道层：自愈等 Celery worker 侧任务需要向 web 进程的 WS consumer 推送实时事件，
+# 跨进程必须用 Redis 通道层（InMemory 仅单进程内有效）。UI_AUTOMATION_REDIS_URL /
+# CELERY_BROKER_URL 未配置时回退单机 8911。
+_redis_layer_url = (
+    os.environ.get("UI_AUTOMATION_REDIS_URL")
+    or os.environ.get("CELERY_BROKER_URL")
+    or "redis://localhost:8911/0"
+)
 CHANNEL_LAYERS = {
     "default": {
-        # 使用内存通道层（适合开发/单进程场景）。
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [_redis_layer_url]},
     }
 }
 
@@ -706,6 +714,7 @@ CELERY_ACCEPT_CONTENT = ["json"]  # Worker 允许接收的消息内容类型。
 CELERY_TASK_ROUTES = {
     'task_center.tasks.*': {'queue': 'task_center'},
     'task_center.heal_tasks.*': {'queue': 'task_center'},
+    'task_center.watchdog_stale_executions': {'queue': 'task_center'},
 }
 
 # Celery Beat 调度器配置

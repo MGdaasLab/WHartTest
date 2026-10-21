@@ -76,6 +76,7 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
                     'batch_name': f"定时任务-{task.name}",
                     'trigger_type': 'scheduled',
                     'scheduled_task_id': task.id,
+                    'task_execution_id': execution.id,
                     'executor_id': task.creator.id,
                 },
                 headers={'Authorization': f'Bearer {token}'},
@@ -135,9 +136,14 @@ def execute_scheduled_task(self, task_id: int, trigger_type: str = 'scheduled'):
         )
         if ui_pending_result or suite_pending_result:
             # 触发成功但测试结果未出：执行记录保持 running，由下游完结处回写成败
-            # （UI → consumers 批次完结回写；套件 → execute_test_suite 完结回写）
-            execution.log = '\n'.join(log_lines)
-            execution.save()
+            # （UI → consumers 批次完结回写；套件 → execute_test_suite 完结回写）。
+            # 竞态防护：下游可能在此前已完结并回写 success/failed（如秒失败场景），
+            # 只更新仍为 running 的行的 log 字段——不用内存对象的整对象 save()，
+            # 否则会把过期的 RUNNING 状态覆盖回去。
+            TaskExecution.objects.filter(
+                id=execution.id,
+                status=TaskExecution.ExecutionStatus.RUNNING,
+            ).update(log='\n'.join(log_lines))
         else:
             # 异常兜底（UI 未取到批次 ID 等）：无法回写测试结果，按触发结果落成功
             execution.status = TaskExecution.ExecutionStatus.SUCCESS

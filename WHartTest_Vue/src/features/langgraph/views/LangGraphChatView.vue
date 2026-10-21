@@ -57,6 +57,11 @@
         <div v-if="pinnedTodoPayload" class="todo-summary-panel">
           <TodoSummaryCard :payload="pinnedTodoPayload" />
         </div>
+
+        <!-- 自愈实时流（打字机）：WS 事件驱动的增量文本，任务节后结束清空 -->
+        <div v-if="healLiveText" class="heal-live-panel">
+          <pre class="heal-live-text">{{ healLiveText }}</pre>
+        </div>
       </div>
 
       <!-- 工具图片悬浮面板（可拖动） -->
@@ -188,8 +193,10 @@ import {
 import { getCurrentRuntimeLlmConfig, patchLlmConfigBundle } from '@/features/langgraph/services/llmConfigService';
 import { getUserPrompts } from '@/features/prompts/services/promptService';
 import type { ChatRequest, ChatHistoryMessage, ChatSessionDetail } from '@/features/langgraph/types/chat';
+import { subscribeHealChat, type HealChatSubscription, type HealStreamEvent } from '@/features/langgraph/services/healChatSocket';
 import type { LlmRuntimeConfig } from '@/features/langgraph/types/llmConfig';
 import { useProjectStore } from '@/store/projectStore';
+import { useAuthStore } from '@/store/authStore';
 import { useLlmConfigRefresh } from '@/composables/useLlmConfigRefresh';
 import { useAppI18n } from '@/composables/useAppI18n';
 import { marked } from 'marked';
@@ -411,6 +418,26 @@ const HTML_PREVIEW_BASE_STYLE = `
   *, *::before, *::after {
     box-sizing: border-box;
   }
+.heal-live-panel {
+  margin: 8px 16px;
+  padding: 10px 14px;
+  background: var(--color-fill-1, #f2f3f5);
+  border-left: 3px solid rgb(var(--primary-6));
+  border-radius: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.heal-live-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--color-text-2, #4e5969);
+  font-family: inherit;
+}
+
 </style>`;
 
 const buildHtmlPreviewSrcdoc = (html: string): string => {
@@ -452,12 +479,18 @@ const historyLimit = 5; // 按照用户要求，默认每页加载5条
 // 浏览器端没有流订阅，通过轮询 history 接口跟进进展；history 接口
 // 自带 checkpointer → ChatMessage 增量同步，刷新即拉到最新消息）
 // ---------------------------------------------------------------------------
-const EXTERNAL_POLL_INTERVAL_MS = 8000;
-const EXTERNAL_POLL_IDLE_STOP_ROUNDS = 3; // 连续无新增消息的轮询次数上限，超过即认为任务已结束
+// WS 桥接为主通道（打字机）；此轮询降级为断线补偿兜底（WS 断开或事件丢失时以低频拉取）
+const EXTERNAL_POLL_INTERVAL_MS = 60000;
+// 自愈单用例复测静默数分钟属正常，不能按"短暂无新增"判定任务结束：
+// 以任务级信号为准——后端会话在任务结束时输出总结消息且之后 checkpointer 不再变化，
+// 连续多轮（含长静默）都无新增才停止；有新增即重置计时。
+const EXTERNAL_POLL_IDLE_STOP_ROUNDS = 5; // 5 × 60s = 5 分钟持续无新增才停（覆盖分钟级静默）
+const EXTERNAL_POLL_MAX_DURATION_MS = 60 * 60 * 1000; // 兜底：最长轮询 1 小时
 let externalPollTimer: ReturnType<typeof window.setInterval> | null = null;
 let externalPollIdleRounds = 0;
 let externalPollInFlight = false;
-let externalPollLastMessageCount = 0;
+let externalPollLastTotalCount = -1; // 服务端该会话消息总数（增量合并的基准）
+let externalPollStartedAt = 0;
 
 const stopExternalPolling = () => {
   if (externalPollTimer) {
@@ -465,28 +498,47 @@ const stopExternalPolling = () => {
     externalPollTimer = null;
   }
   externalPollIdleRounds = 0;
+  externalPollLastTotalCount = -1;
 };
 
 const startExternalPolling = () => {
   if (externalPollTimer) return;
   externalPollIdleRounds = 0;
-  externalPollLastMessageCount = messages.value.length;
+  externalPollLastTotalCount = -1;
+  externalPollStartedAt = Date.now();
   externalPollTimer = window.setInterval(async () => {
     // 用户正在页内发消息（SSE 接管渲染）时不重复拉取
     if (isLoading.value || externalPollInFlight || !sessionId.value) return;
+    if (Date.now() - externalPollStartedAt > EXTERNAL_POLL_MAX_DURATION_MS) {
+      stopExternalPolling();
+      return;
+    }
     externalPollInFlight = true;
     try {
+      // 只取最新一页用于增量合并，不动用户已加载的更早历史
       const response = await getChatHistory(sessionId.value, projectStore.currentProjectId, historyLimit, 0);
       if (response.status === 'success' && response.data?.history) {
-        const latestMessages = buildHistoryMessages(response.data.history, formatHistoryTime);
-        if (latestMessages.length !== externalPollLastMessageCount) {
-          externalPollLastMessageCount = latestMessages.length;
+        const data = response.data;
+        const totalMessages: number = data.total_messages ?? 0;
+        const latestMessages = buildHistoryMessages(data.history, formatHistoryTime);
+
+        if (totalMessages !== externalPollLastTotalCount) {
+          // 有新消息：增量合并（按消息身份去重，保留已加载的更早历史），重置空闲计数
+          const firstLoad = externalPollLastTotalCount === -1;
+          externalPollLastTotalCount = totalMessages;
           externalPollIdleRounds = 0;
-          messages.value = mergeThinkingProcessMessages(latestMessages);
-          await nextTick();
-          chatMessagesRef.value?.scrollToBottom?.();
+          if (!firstLoad) {
+            const existingIds = new Set(messages.value.map(m => (m as any).message_id ?? (m as any).id));
+            const appended = latestMessages.filter(m => !existingIds.has((m as any).message_id ?? (m as any).id));
+            if (appended.length) {
+              messages.value = mergeThinkingProcessMessages([...messages.value, ...appended]);
+              hasMoreHistory.value = data.has_more || hasMoreHistory.value;
+              await nextTick();
+              chatMessagesRef.value?.scrollToBottom?.();
+            }
+          }
         } else {
-          // 连续多轮无新增：外部任务大概率已结束，停止轮询
+          // 连续多轮（约 5 分钟）无新增：外部任务大概率已结束，停止轮询
           externalPollIdleRounds += 1;
           if (externalPollIdleRounds >= EXTERNAL_POLL_IDLE_STOP_ROUNDS) {
             stopExternalPolling();
@@ -515,6 +567,87 @@ const maybeStartExternalPolling = () => {
   if (isTaskSession) {
     startExternalPolling();
   }
+};
+
+// ---------------------------------------------------------------------------
+// 自愈对话 WebSocket 桥接：实时接收后端转发的 agent-loop 事件（打字机效果）。
+// 事件到达时：(1) stream 文本直接追加实时消息条目；(2) 结构类事件（工具调用等）
+// 触发一次 history 轻刷新（复用现有渲染管线拼装工具卡片）。轮询降级为断线补偿。
+// ---------------------------------------------------------------------------
+let healSubscription: HealChatSubscription | null = null;
+let healRefreshInFlight = false;
+const healLiveText = ref('');
+
+const stopHealSubscription = () => {
+  healSubscription?.close();
+  healSubscription = null;
+  healLiveText.value = '';
+};
+
+/** 结构类事件到达：轻量拉取最新一页并增量合并（复用轮询的合并管线） */
+const refreshFromHealEvent = async () => {
+  if (healRefreshInFlight || !sessionId.value) return;
+  healRefreshInFlight = true;
+  try {
+    const response = await getChatHistory(sessionId.value, projectStore.currentProjectId, historyLimit, 0);
+    if (response.status === 'success' && response.data?.history) {
+      const data = response.data;
+      const latestMessages = buildHistoryMessages(data.history, formatHistoryTime);
+      const existingIds = new Set(messages.value.map(m => (m as any).message_id ?? (m as any).id));
+      const appended = latestMessages.filter(m => !existingIds.has((m as any).message_id ?? (m as any).id));
+      if (appended.length) {
+        messages.value = mergeThinkingProcessMessages([...messages.value, ...appended]);
+        externalPollLastTotalCount = data.total_messages ?? externalPollLastTotalCount;
+        // 最终内容已随落库消息渲染，清空实时条避免重复
+        healLiveText.value = '';
+        await nextTick();
+        chatMessagesRef.value?.scrollToBottom?.();
+      }
+    }
+  } catch {
+    // 静默：下一事件会再触发
+  } finally {
+    healRefreshInFlight = false;
+  }
+};
+
+/** 处理自愈流事件：stream 文本打字机追加，其余触发轻刷新 */
+const handleHealStreamEvent = async (event: HealStreamEvent) => {
+  if (event.type === 'stream' && typeof event.data === 'string' && event.data) {
+    healLiveText.value += event.data;
+    await nextTick();
+    chatMessagesRef.value?.scrollToBottom?.();
+    return;
+  }
+  if (event.type === 'error') {
+    healLiveText.value += `\n[错误] ${event.message || '执行异常'}\n`;
+    return;
+  }
+  // 工具调用 / 步骤完成等结构事件：刷新拿真实落库卡片
+  await refreshFromHealEvent();
+};
+
+/** 为当前会话建立自愈 WS 订阅（仅任务会话） */
+const startHealSubscription = () => {
+  stopHealSubscription();
+  if (!sessionId.value) return;
+  const current = chatSessions.value.find(s => s.id === sessionId.value);
+  const isTaskSession = !!current && (
+    current.title?.includes('自愈') ||
+    current.title?.includes('生成')
+  );
+  if (!isTaskSession) return;
+  const authStore = useAuthStore();
+  const token = authStore.getAccessToken;
+  if (!token) return;
+  healSubscription = subscribeHealChat(
+    sessionId.value,
+    token,
+    (event) => { void handleHealStreamEvent(event); },
+    () => {
+      // 连接关闭（任务结束服务端不关，一般为网络问题）：由低频轮询兜底
+    },
+  );
 };
 
 // 流式模式：从 LLM 配置读取（computed）
@@ -602,6 +735,7 @@ watch(sessionId, () => {
   floatingToolImageSrc.value = null;
   panelPos.value = null;
   maybeStartExternalPolling();
+  startHealSubscription();
 });
 
 // 提示词相关
@@ -2813,8 +2947,9 @@ onUnmounted(() => {
   pendingTitleRefreshTimers.clear();
   // 组件卸载时，终止任何正在进行的流式请求
   abortController.abort();
-  // 停止外部任务会话轮询
+  // 停止外部任务会话轮询与自愈 WS 订阅
   stopExternalPolling();
+  stopHealSubscription();
 });
 </script>
 

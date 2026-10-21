@@ -65,6 +65,161 @@ load_env_file() {
   fi
 }
 
+# 生成随机密钥：优先 openssl，退化为 od（POSIX），最后用 python3
+random_secret() {
+  local bytes="$1"
+
+  if [ -z "$bytes" ]; then
+    bytes=32
+  fi
+
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "$bytes"
+    return 0
+  fi
+
+  if command -v od >/dev/null 2>&1; then
+    od -An -N"$bytes" -tx1 /dev/urandom | tr -d ' \n'
+    return 0
+  fi
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import secrets; print(secrets.token_hex($bytes))"
+    return 0
+  fi
+
+  echo "错误：缺少 openssl / od / python3，无法生成随机密钥" >&2
+  return 1
+}
+
+# 读取 .env 中某个键当前生效的值（忽略注释行与行尾 CR）
+env_file_value() {
+  local name="$1"
+
+  [ -f "$ENV_FILE" ] || return 0
+
+  # 未配置该键时 grep 返回 1，这里必须容忍，否则 set -e + pipefail 会中止脚本
+  tr -d "\r" < "$ENV_FILE" \
+    | grep -E "^[[:space:]]*$name=" \
+    | tail -n 1 \
+    | cut -d= -f2- \
+    | sed -E 's/^"(.*)"$/\1/' \
+    || true
+}
+
+# 写入/替换 .env 中某个键，注释掉的示例行会被替换为生效行
+env_file_set() {
+  local name="$1"
+  local value="$2"
+  local tmp_file=""
+
+  [ -f "$ENV_FILE" ] || return 1
+
+  tmp_file=$(mktemp "$ENV_FILE.XXXXXX") || return 1
+  tr -d "\r" < "$ENV_FILE" | sed -E "s|^[[:space:]]*#?[[:space:]]*$name=.*|$name=$value|" > "$tmp_file"
+  grep -qE "^[[:space:]]*$name=" "$tmp_file" || printf "%s=%s\n" "$name" "$value" >> "$tmp_file"
+  # 用 cat 覆盖而不是 mv，保留 .env 原有权限与属主
+  cat "$tmp_file" > "$ENV_FILE"
+  rm -f "$tmp_file"
+}
+
+# 确保 .env 中某个密钥非空：缺失则生成并回写，同时导出给 compose 使用
+ensure_env_secret() {
+  local name="$1"
+  local bytes="${2:-32}"
+  local prefix="${3:-}"
+  local current=""
+  local generated=""
+
+  if [ -z "$bytes" ]; then
+    bytes=32
+  fi
+
+  current=$(env_file_value "$name")
+  if [ -n "$current" ]; then
+    export "$name=$current"
+    return 0
+  fi
+
+  generated="$prefix$(random_secret "$bytes")" || return 1
+  env_file_set "$name" "$generated"
+  export "$name=$generated"
+  echo "已自动生成 $name 并写入 $ENV_FILE（无需手工配置）"
+}
+
+# 首次运行引导：补齐 .env 与密钥，使“复制 .env.example 后直接执行”即可使用
+bootstrap_env_secrets() {
+  local secret_key=""
+  local generated_secret=""
+
+  if [ ! -f "$ENV_FILE" ]; then
+    if [ ! -f .env.example ]; then
+      echo "错误：未找到 $ENV_FILE，且没有 .env.example 可作为模板" >&2
+      return 1
+    fi
+    cp .env.example "$ENV_FILE"
+    chmod 600 "$ENV_FILE" 2>/dev/null || true
+    echo "未检测到 $ENV_FILE，已从 .env.example 创建"
+    # 新建的 .env 需要立即生效，否则后续步骤读不到示例里的其它配置
+    set -a
+    # shellcheck disable=SC1090
+    source <(sed 's/\r$//' "$ENV_FILE")
+    set +a
+  fi
+
+  # backend 与 skill-runner 两侧共用同一个值：启动前生成即可，无需启动后再重启
+  ensure_env_secret SKILL_RUNNER_TOKEN 32
+  ensure_env_secret DJANGO_ADMIN_PASSWORD 24
+  ensure_env_secret WHARTTEST_API_KEY 24 "whart-"
+  # UI 自动化 WS 认证：执行器连接共享密钥，与执行器侧 WHARTTEST_ACTUATOR_WS_TOKEN
+  # 同值（下方统一注入），无需手工配置
+  ensure_env_secret UI_WS_ACTUATOR_TOKEN 32
+
+  # 执行器通过独立变量注入，未配置时复用同一把平台 Key（必须与数据库中的记录一致）
+  local actuator_key=""
+  actuator_key=$(env_file_value WHARTTEST_ACTUATOR_API_KEY)
+  if [ -z "$actuator_key" ]; then
+    actuator_key="$WHARTTEST_API_KEY"
+    env_file_set WHARTTEST_ACTUATOR_API_KEY "$actuator_key"
+  fi
+  export WHARTTEST_ACTUATOR_API_KEY="$actuator_key"
+
+  # 执行器 WS 认证 token：与后端 UI_WS_ACTUATOR_TOKEN 同值（兼容模式留空也可运行）
+  local ws_token=""
+  ws_token=$(env_file_value WHARTTEST_ACTUATOR_WS_TOKEN)
+  if [ -z "$ws_token" ]; then
+    ws_token="$UI_WS_ACTUATOR_TOKEN"
+    env_file_set WHARTTEST_ACTUATOR_WS_TOKEN "$ws_token"
+  fi
+  export WHARTTEST_ACTUATOR_WS_TOKEN="$ws_token"
+
+  # 示例中的占位密钥：未替换时自动生成，避免以公开占位值上线
+  secret_key=$(env_file_value DJANGO_SECRET_KEY)
+  if [ -z "$secret_key" ] || [ "$secret_key" = "your-secret-key-here-change-in-production" ]; then
+    generated_secret=$(random_secret 32) || return 1
+    env_file_set DJANGO_SECRET_KEY "$generated_secret"
+    export DJANGO_SECRET_KEY="$generated_secret"
+    echo "已自动生成 DJANGO_SECRET_KEY 并写入 $ENV_FILE"
+  fi
+
+  # skill-runner 以非 root 运行：数据目录需由当前用户预先创建，否则容器内无法写产物
+  mkdir -p data/media/skill_runtime data/playwright-screenshots 2>/dev/null || true
+  if [ -d data/media/skill_runtime ] && [ ! -w data/media/skill_runtime ]; then
+    echo "警告：data/media/skill_runtime 当前用户不可写，skill-runner 写产物会失败。" >&2
+    echo "      可执行: sudo chown -R $(id -u):$(id -g) data/media/skill_runtime" >&2
+  fi
+
+  # 默认以当前宿主用户身份运行 runner，避免 uid 1000 与宿主用户不一致导致写权限失败
+  if [ -z "${SKILL_RUNNER_UID:-}" ] && command -v id >/dev/null 2>&1; then
+    export SKILL_RUNNER_UID
+    SKILL_RUNNER_UID=$(id -u)
+  fi
+  if [ -z "${SKILL_RUNNER_GID:-}" ] && command -v id >/dev/null 2>&1; then
+    export SKILL_RUNNER_GID
+    SKILL_RUNNER_GID=$(id -g)
+  fi
+}
+
 prompt_local_build_mode() {
   local choice=""
 

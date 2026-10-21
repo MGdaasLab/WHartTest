@@ -143,6 +143,129 @@ def _build_failure_message(task, case_record, project_id: int) -> str:
     return '\n'.join(lines)
 
 
+def _sync_heal_session_messages(session_id: str, user_id: int, project_id: int):
+    """把自愈会话的 checkpointer 消息增量同步到 ChatMessage 表。
+
+    agent-loop 路径自身不做该同步（消息只在 LangGraph checkpointer 里），
+    对话页会话列表读的是 ChatMessage 表——不同步则用户在 LLM 对话看不到自愈过程。
+    每个用例的自愈调用结束后调用一次，实现准实时可见。
+    """
+    try:
+        from langgraph_integration.models import ChatSession
+        from langgraph_integration.views import sync_chat_messages_from_checkpointer
+
+        chat_session = ChatSession.objects.filter(session_id=session_id).first()
+        if chat_session:
+            thread_id = f"{user_id}_{project_id}_{session_id}"
+            sync_chat_messages_from_checkpointer(chat_session, chat_session.user, thread_id)
+    except Exception:
+        logger.warning("[自愈] 自愈会话消息同步到 ChatMessage 失败", exc_info=True)
+
+
+def _ensure_heal_session_title(session_id: str, task_name: str, case_name: str):
+    """给自愈会话设置可读标题（默认标题取 message 头部含守护标记，可读性差）。"""
+    try:
+        from langgraph_integration.models import ChatSession
+
+        title = f"定时任务自愈 - {task_name} - {case_name}"
+        ChatSession.objects.filter(session_id=session_id, title__startswith='新对话').update(title=title)
+    except Exception:
+        logger.debug("[自愈] 自愈会话标题设置失败", exc_info=True)
+
+
+def _publish_heal_event(session_id: str, payload: dict) -> None:
+    """把自愈流事件转发到通道层，供对话页 WS 订阅实时渲染（打字机效果）。
+
+    best-effort：通道层不可用时静默跳过（对话页退化为轮询兜底），
+    不影响自愈主流程。
+    """
+    try:
+        import asyncio
+        from channels.layers import get_channel_layer
+
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
+        # Celery worker 是同步环境，用全新事件循环执行 async group_send
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                channel_layer.group_send(
+                    f"heal_chat.{session_id}",
+                    {"type": "heal.event", "payload": payload},
+                )
+            )
+        finally:
+            loop.close()
+    except Exception:
+        logger.debug("[自愈] 流事件转发通道层失败（前端将走轮询兜底）", exc_info=True)
+
+
+def _call_agent_loop_stream(headers: dict, payload: dict) -> dict:
+    """流式调用 agent-loop（SSE），收集事件并返回与非流式一致的结构。
+
+    使用 stream=True 的事件流路径：会话状态实时写入 LangGraph checkpointer，
+    结束后再同步 ChatMessage，用户可在 AI 对话页看到自愈全过程。
+    每个事件同时转发到通道层（打字机实时渲染，best-effort）。
+    网络/超时异常向上抛出由调用方判定是否续跑。
+    """
+    payload = {**payload, 'stream': True}
+    final_content = ""
+    final_session_id = payload['session_id']
+    error_message = None
+    error_code = 500
+    error_details = None
+
+    with requests.post(
+        f"{django_settings.BASE_URL}/api/orchestrator/agent-loop/",
+        json=payload,
+        headers={**headers, 'Accept': 'text/event-stream'},
+        timeout=(30, AGENT_LOOP_TIMEOUT_SECONDS),
+        stream=True,
+    ) as resp:
+        if resp.status_code >= 400:
+            retriable = resp.status_code not in (401, 403)
+            try:
+                detail = resp.json().get('message') or resp.text
+            except ValueError:
+                detail = resp.text
+            raise AgentLoopCallError(f"agent-loop 调用失败 HTTP {resp.status_code}: {detail}", retriable=retriable)
+
+        for raw_line in resp.iter_lines(decode_unicode=True):
+            if not raw_line or not str(raw_line).startswith('data: '):
+                continue
+            data_str = str(raw_line)[6:].strip()
+            if data_str == '[DONE]':
+                break
+            try:
+                event = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            event_type = event.get('type')
+            if event_type == 'start':
+                final_session_id = event.get('session_id', final_session_id)
+            elif event_type == 'stream':
+                final_content += event.get('data', '')
+            elif event_type == 'error':
+                error_message = event.get('message', 'Unknown error')
+                error_code = event.get('code', 500)
+                error_details = event.get('errors')
+            # 实时转发给对话页（打字机效果）；step/tool 事件一并转发
+            _publish_heal_event(final_session_id, {
+                'type': event_type or 'unknown',
+                'data': event.get('data'),
+                'message': event.get('message'),
+                'summary': event.get('summary'),
+                'tool_name': event.get('tool_name'),
+                'step': event.get('step'),
+                'session_id': final_session_id,
+            })
+
+    if error_message:
+        raise AgentLoopCallError(f"agent-loop 执行错误: {error_message}", retriable=True)
+    return {'session_id': final_session_id, 'content': final_content, 'code': error_code, 'errors': error_details}
+
+
 def _call_agent_loop(headers: dict, payload: dict) -> dict:
     """同步调用 agent-loop 非流式接口。网络/超时异常向上抛出由调用方判定是否续跑。"""
     resp = requests.post(

@@ -36,10 +36,16 @@ from django.core.asgi import get_asgi_application
 from ui_automation.routing import websocket_urlpatterns as ui_ws_patterns
 
 # 导入 UI 自动化 WebSocket 认证中间件（JWT / 执行器共享密钥）。
-from wharttest_django.websocket_auth import UiWebSocketAuthMiddleware
+from wharttest_django.websocket_auth import (
+    UiWebSocketAuthMiddleware,
+    warn_insecure_ws_config,
+)
 
 # 创建 Django HTTP ASGI 应用实例。
 django_asgi_app = get_asgi_application()
+
+# 启动时检查 WS 认证配置，不安全组合打告警（兼容模式/密钥缺失等）。
+warn_insecure_ws_config()
 
 application = ProtocolTypeRouter(
     {

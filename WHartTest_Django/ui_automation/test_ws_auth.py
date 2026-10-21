@@ -3,12 +3,16 @@
 覆盖：
 - 中间件：web JWT 校验、执行器共享密钥校验、grace/strict 模式、错误凭据拒绝
 - consumer：执行器 ID 防抢注、结果回传来源校验（严格/兼容模式）
+
+注意：WebSocket 用例必须用 TransactionTestCase——中间件在独立线程/事件循环里
+同步查库（sync_to_async），PostgreSQL 下看不到 TestCase 未提交事务的数据，
+会以 SynchronousOnlyOperation 报错。
 """
 
 from unittest.mock import patch
 
 from django.contrib.auth.models import User
-from django.test import TestCase, override_settings
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from channels.routing import URLRouter
 from channels.testing import WebsocketCommunicator
@@ -25,7 +29,7 @@ def _middleware_app():
     return UiWebSocketAuthMiddleware(URLRouter(websocket_urlpatterns))
 
 
-class MiddlewareWebAuthTests(TestCase):
+class MiddlewareWebAuthTests(TransactionTestCase):
     """web 端点 JWT 认证。"""
 
     def setUp(self):
@@ -88,7 +92,7 @@ class MiddlewareWebAuthTests(TestCase):
             await communicator.disconnect()
 
 
-class MiddlewareActuatorAuthTests(TestCase):
+class MiddlewareActuatorAuthTests(TransactionTestCase):
     """执行器端点共享密钥认证。"""
 
     SECRET = 'test-actuator-secret'
@@ -219,3 +223,55 @@ class ResultSourceVerificationTests(TestCase):
         consumer.register_actuator_task(consumer, {}, 'web_new')
         self.assertNotIn('web_old', consumer.actuator_recent_users)
         self.assertIn('web_new', consumer.actuator_recent_users)
+
+    def test_task_tokens_pruned_on_register(self):
+        """过期 token 登记在下次登记时被统一清理（#8：防长连接内存增长）。"""
+        consumer = self._actuator_consumer()
+        stale_time = -10_000.0
+        consumer.actuator_task_tokens['stale-token'] = ('web_old', stale_time)
+        consumer.register_actuator_task(consumer, {}, 'web_new')
+        self.assertNotIn('stale-token', consumer.actuator_task_tokens)
+
+    def test_token_echo_strong_verification(self):
+        """执行器回显 task_token：一一对应强校验；登记非消费式，同一任务的
+        多条结果（逐步结果/帧/汇总）复用同一 token 均可校验通过。"""
+        consumer = self._actuator_consumer()
+        args: dict = {}
+        consumer.register_actuator_task(consumer, args, 'web_9')
+        token = args['task_token']
+        with override_settings(UI_WS_AUTH_STRICT='1'):
+            first_args = {'task_token': token, 'case_id': 1}
+            self.assertTrue(consumer.verify_result_source('web_9', first_args))
+            # token 已从 args 剥离（不随结果入库/广播）
+            self.assertNotIn('task_token', first_args)
+            # 非消费式：再次回显同一 token 仍命中
+            self.assertTrue(
+                consumer.verify_result_source('web_9', {'task_token': token})
+            )
+
+    def test_token_user_mismatch_rejected(self):
+        """task_token 与 claimed_user 不符（伪造/串扰）→ 拒绝。"""
+        consumer = self._actuator_consumer()
+        args: dict = {}
+        consumer.register_actuator_task(consumer, args, 'web_9')
+        with override_settings(UI_WS_AUTH_STRICT='1'):
+            mismatch_args = {'task_token': args['task_token']}
+            self.assertFalse(
+                consumer.verify_result_source('web_victim', mismatch_args)
+            )
+            # 拒绝路径同样剥离 token
+            self.assertNotIn('task_token', mismatch_args)
+
+    def test_unknown_token_falls_back_to_user_record(self):
+        """未知 token（伪造/过期）→ 回退按 user 近期记录校验。"""
+        consumer = self._actuator_consumer()
+        consumer.register_actuator_task(consumer, {}, 'web_9')
+        with override_settings(UI_WS_AUTH_STRICT='1'):
+            # 已登记用户 + 伪造 token：user 命中放行
+            self.assertTrue(
+                consumer.verify_result_source('web_9', {'task_token': 'forged'})
+            )
+            # 未登记用户 + 伪造 token：拒绝
+            self.assertFalse(
+                consumer.verify_result_source('web_victim', {'task_token': 'forged'})
+            )
