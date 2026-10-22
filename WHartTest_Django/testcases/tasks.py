@@ -541,6 +541,17 @@ async def _execute_testcase_via_chat_api(result: TestCaseResult):
         logger.info(f"调用 Agent Loop API: {api_url}")
         logger.info(f"会话ID: {session_id}")
         execution_log.append(f"✓ 开始与AI测试引擎通信...")
+
+        # 会话标题设为可读（agent-loop 默认标题取提示词开头，不可读）；
+        # 标题含"测试执行"供对话页识别为外部任务会话（打字机订阅判定）
+        try:
+            from langgraph_integration.models import ChatSession
+
+            await sync_to_async(ChatSession.objects.filter(session_id=session_id).update)(
+                title=f"套件执行 - {execution.execution_id} - {testcase.name}"
+            )
+        except Exception:
+            pass
         
         # 6. 生成认证令牌并调用 Agent Loop SSE API
         def generate_token():
@@ -580,7 +591,26 @@ async def _execute_testcase_via_chat_api(result: TestCaseResult):
                         
                         data = json.loads(data_str)
                         event_type = data.get('type', '')
-                        
+
+                        # 实时桥接到对话页 WS（打字机效果，best-effort 不影响执行）：
+                        # 套件会话与正常聊天同构渲染（AI 气泡逐字 + 工具卡片）；
+                        # async 消费循环内必须用 await 异步入口（async_to_sync 在
+                        # 运行中的事件循环内调用会抛 RuntimeError）
+                        try:
+                            from orchestrator_integration.stream_bridge import publish_stream_event_async
+                            await publish_stream_event_async(session_id, {
+                                'type': event_type,
+                                'data': data.get('data'),
+                                'message': data.get('message'),
+                                'summary': data.get('summary'),
+                                'tool_name': data.get('name') or data.get('tool'),
+                                'step': data.get('step'),
+                                'content': data.get('content'),
+                                'session_id': session_id,
+                            })
+                        except Exception:
+                            pass
+
                         if event_type == 'step_start':
                             step_count += 1
                             current_step_response = ""  # 重置当前步骤响应

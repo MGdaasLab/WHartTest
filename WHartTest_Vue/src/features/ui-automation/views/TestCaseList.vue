@@ -206,6 +206,18 @@
         <a-form-item field="description" :label="pageText.caseDescription">
           <a-textarea v-model="formData.description" :placeholder="pageText.enterCaseDescription" :auto-size="{ minRows: 2, maxRows: 4 }" />
         </a-form-item>
+
+        <a-form-item field="env_config_id" :label="pageText.execEnvLabel">
+          <a-select
+            v-model="formData.env_config_id"
+            :placeholder="pageText.execEnvPlaceholder"
+            allow-clear
+          >
+            <a-option v-for="env in envConfigs" :key="env.id" :value="env.id">
+              {{ env.name }}{{ env.is_default ? pageText.defaultSuffix : '' }}
+            </a-option>
+          </a-select>
+        </a-form-item>
       
           <a-form-item label="附件">
             <FileAttachmentPicker
@@ -303,6 +315,10 @@ const pageText = computed(() => (
         caseName: 'Case name',
         enterCaseName: 'Enter case name',
         caseDescription: 'Case description',
+        execEnvLabel: 'Execution Environment',
+        authEnvMismatchTitle: 'Login state environment mismatch',
+        authEnvMismatchContent: 'Some steps are bound to login states from a different environment than the case execution environment. Execution will be rejected by strict validation. Please fix the case environment binding or the step login state binding.',
+        execEnvPlaceholder: 'Follow project default environment',
         enterCaseDescription: 'Enter case description',
         caseSteps: 'Case steps',
         selectModuleRequired: 'Select module',
@@ -381,6 +397,10 @@ const pageText = computed(() => (
         caseName: '用例名称',
         enterCaseName: '请输入用例名称',
         caseDescription: '用例描述',
+        execEnvLabel: '执行环境',
+        authEnvMismatchTitle: '登录态环境不一致',
+        authEnvMismatchContent: '部分步骤绑定的登录态与用例执行环境不一致，执行时将被严格校验拒绝。请修正用例的环境绑定或步骤的登录态绑定。',
+        execEnvPlaceholder: '跟随项目默认环境',
         enterCaseDescription: '请输入用例描述',
         caseSteps: '用例步骤',
         selectModuleRequired: '请选择模块',
@@ -536,6 +556,7 @@ const formData = reactive<UiTestCaseForm>({
   file_ids: [],
   project: 0,
   module: undefined as unknown as number,
+  env_config_id: null,
   name: '',
   description: '',
   level: 'P2',
@@ -670,6 +691,7 @@ const resetForm = () => {
   Object.assign(formData, {
     project: projectId.value || 0,
     module: undefined,
+    env_config_id: null,
     name: '',
     description: '',
     level: 'P2',
@@ -689,6 +711,7 @@ const showAddModal = async () => {
     formData.module = props.selectedModuleId
   }
   if (!moduleOptions.value.length) await fetchModules()
+  if (!envConfigs.value.length) await fetchEnvConfigs()
   modalVisible.value = true
 }
 
@@ -703,6 +726,7 @@ const editTestCase = async (record: UiTestCase) => {
       Object.assign(formData, {
         project: detail.project,
         module: detail.module,
+        env_config_id: detail.env_config ?? null,
         name: detail.name,
         description: detail.description || '',
         level: detail.level,
@@ -712,12 +736,23 @@ const editTestCase = async (record: UiTestCase) => {
         parametrize: detail.parametrize,
         case_flow: detail.case_flow || '',
       })
+
+      // 跨环境登录态编辑期预警：步骤登录态环境与用例绑定环境不一致，
+      // 执行时会被严格校验拒绝，提示用户提前修正
+      if (detail.env_config && detail.auth_env_mismatch === true) {
+        Notification.warning({
+          title: pageText.value.authEnvMismatchTitle,
+          content: pageText.value.authEnvMismatchContent,
+          duration: 8000,
+        });
+      }
     }
   } catch {
     // 降级使用列表数据
     Object.assign(formData, {
       project: record.project,
       module: record.module,
+      env_config_id: record.env_config ?? null,
       name: record.name,
       description: record.description || '',
       level: record.level,
@@ -729,6 +764,7 @@ const editTestCase = async (record: UiTestCase) => {
     })
   }
   if (!moduleOptions.value.length) await fetchModules()
+  if (!envConfigs.value.length) await fetchEnvConfigs()
   modalVisible.value = true
 }
 

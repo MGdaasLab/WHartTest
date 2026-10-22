@@ -1484,7 +1484,12 @@ async function cmdStart(params) {
   state.running = true;
   if (url) {
     try {
-      await state.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // SSO 系（如 OA 首页加载后立即整页跳 oauth 登录）：domcontentloaded 时
+      // 往往还在第一跳，首帧画面停留在启动页。等 load 后再追一小段
+      // networkidle，让重定向链走稳、首次画面即登录页；短暂网络噪声由
+      // 短超时兜底，跳转链过长时也不至于卡死启动。
+      await state.page.goto(url, { waitUntil: 'load', timeout: 45000 });
+      await state.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
     } catch (e) {
       serverLog('初始导航失败:', e && e.message ? e.message : String(e));
     }
@@ -1795,6 +1800,23 @@ const PAGE_LEVEL_OPS = new Set([
   'wait', 'wait_load', 'wait_network', 'screenshot',
 ]);
 
+/** 地址等价比较：去掉 hash 与尾斜杠。SPA 地址（/#/Home）hash 变化不触发整页
+ * 导航，地址相同时重复 goto 会打断进行中的 SSO 重定向链（ERR_ABORTED 后页面
+ * 卡在启动加载页，登录表单永不渲染），必须视为同一地址跳过导航。 */
+function sameUrl(a, b) {
+  const norm = (u) => {
+    try {
+      const p = new URL(u);
+      return p.origin + p.pathname.replace(/\/+$/, '');
+    } catch (_) {
+      return String(u || '').split('#')[0].replace(/\/+$/, '');
+    }
+  };
+  const na = norm(a);
+  const nb = norm(b);
+  return na !== '' && na === nb;
+}
+
 /** 执行一步平台步骤（ope_key 词汇表与执行器对齐）。
  * 返回：null 成功；string 失败错误信息；{ screenshot } 成功且携带产物（data URL）。 */
 async function runOneStep(page, step) {
@@ -1805,12 +1827,13 @@ async function runOneStep(page, step) {
   );
 
   if (opeKey === 'goto') {
-    // 与上一跳同址时跳过：站点自身跳转（如登录页重定向）在途中时重复导航
-    // 会以 net::ERR_ABORTED 中止当前跳转
-    const target = inputValue;
-    const cur = page.url();
-    if (target && cur === target) return null;
-    await gotoWithRetry(page, target);
+    // 同地址去重（含 hash/尾斜杠等价）：启动或上一组已导航到同一地址时不重复
+    // goto，避免打断进行中的 SSO 重定向链（ERR_ABORTED 后页面卡死在启动加载页）
+    if (sameUrl(inputValue, page.url())) {
+      serverLog('goto 目标与当前地址相同，跳过导航:', inputValue);
+      return null;
+    }
+    await gotoWithRetry(page, inputValue);
     return null;
   }
   if (opeKey === 'reload') {

@@ -271,6 +271,13 @@ class UiTestCase(models.Model):
         UiModule, on_delete=models.PROTECT,
         related_name='testcases', verbose_name=_('所属模块')
     )
+    env_config = models.ForeignKey(
+        'UiEnvironmentConfig', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='bound_testcases',
+        verbose_name=_('执行环境'),
+        help_text=_('用例绑定的执行环境（base_url/DB/登录态解析来源）；为空则跟随项目默认环境。'
+                    '优先级：用例绑定环境 > 项目默认环境。绑定后其步骤登录态必须属于该环境（执行前严格校验）')
+    )
     name = models.CharField(_('用例名称'), max_length=255)
     description = models.TextField(_('用例描述'), blank=True, null=True)
     level = models.CharField(_('用例等级'), max_length=2, choices=LEVEL_CHOICES, default='P2')

@@ -58,10 +58,6 @@
           <TodoSummaryCard :payload="pinnedTodoPayload" />
         </div>
 
-        <!-- 自愈实时流（打字机）：WS 事件驱动的增量文本，任务节后结束清空 -->
-        <div v-if="healLiveText" class="heal-live-panel">
-          <pre class="heal-live-text">{{ healLiveText }}</pre>
-        </div>
       </div>
 
       <!-- 工具图片悬浮面板（可拖动） -->
@@ -194,6 +190,7 @@ import { getCurrentRuntimeLlmConfig, patchLlmConfigBundle } from '@/features/lan
 import { getUserPrompts } from '@/features/prompts/services/promptService';
 import type { ChatRequest, ChatHistoryMessage, ChatSessionDetail } from '@/features/langgraph/types/chat';
 import { subscribeHealChat, type HealChatSubscription, type HealStreamEvent } from '@/features/langgraph/services/healChatSocket';
+import { getTaskSessionInfo } from '@/features/langgraph/services/chatService';
 import type { LlmRuntimeConfig } from '@/features/langgraph/types/llmConfig';
 import { useProjectStore } from '@/store/projectStore';
 import { useAuthStore } from '@/store/authStore';
@@ -418,26 +415,6 @@ const HTML_PREVIEW_BASE_STYLE = `
   *, *::before, *::after {
     box-sizing: border-box;
   }
-.heal-live-panel {
-  margin: 8px 16px;
-  padding: 10px 14px;
-  background: var(--color-fill-1, #f2f3f5);
-  border-left: 3px solid rgb(var(--primary-6));
-  border-radius: 6px;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.heal-live-text {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--color-text-2, #4e5969);
-  font-family: inherit;
-}
-
 </style>`;
 
 const buildHtmlPreviewSrcdoc = (html: string): string => {
@@ -553,19 +530,20 @@ const startExternalPolling = () => {
   }, EXTERNAL_POLL_INTERVAL_MS);
 };
 
-// 判断当前会话是否可能是外部任务会话（定时自愈/一键生成）：
-// 会话标题带任务标记，或会话创建于近 30 分钟内（外部任务窗口期）
-const maybeStartExternalPolling = () => {
+// 外部任务会话跟踪入口：后端判定（module_key=testcase_execution），
+// 是任务会话则同时启动打字机 WS 订阅与低频轮询兜底
+const startExternalTaskTracking = async () => {
   stopExternalPolling();
-  if (!sessionId.value) return;
-  const current = chatSessions.value.find(s => s.id === sessionId.value);
-  const isTaskSession = !!current && (
-    current.title?.includes('自愈') ||
-    current.title?.includes('生成') ||
-    (current.lastTime && Date.now() - new Date(current.lastTime).getTime() < 30 * 60 * 1000)
-  );
-  if (isTaskSession) {
+  stopHealSubscription();
+  const sid = sessionId.value;
+  if (!sid) return;
+  try {
+    const info = await getTaskSessionInfo(sid);
+    if (!info?.isTaskSession || sessionId.value !== sid) return;
     startExternalPolling();
+    await startHealSubscription();
+  } catch {
+    // 查询失败静默：轮询兜底由下次会话切换再触发
   }
 };
 
@@ -575,75 +553,156 @@ const maybeStartExternalPolling = () => {
 // 触发一次 history 轻刷新（复用现有渲染管线拼装工具卡片）。轮询降级为断线补偿。
 // ---------------------------------------------------------------------------
 let healSubscription: HealChatSubscription | null = null;
-let healRefreshInFlight = false;
-const healLiveText = ref('');
 
 const stopHealSubscription = () => {
   healSubscription?.close();
   healSubscription = null;
-  healLiveText.value = '';
 };
 
-/** 结构类事件到达：轻量拉取最新一页并增量合并（复用轮询的合并管线） */
-const refreshFromHealEvent = async () => {
-  if (healRefreshInFlight || !sessionId.value) return;
-  healRefreshInFlight = true;
-  try {
-    const response = await getChatHistory(sessionId.value, projectStore.currentProjectId, historyLimit, 0);
-    if (response.status === 'success' && response.data?.history) {
-      const data = response.data;
-      const latestMessages = buildHistoryMessages(data.history, formatHistoryTime);
-      const existingIds = new Set(messages.value.map(m => (m as any).message_id ?? (m as any).id));
-      const appended = latestMessages.filter(m => !existingIds.has((m as any).message_id ?? (m as any).id));
-      if (appended.length) {
-        messages.value = mergeThinkingProcessMessages([...messages.value, ...appended]);
-        externalPollLastTotalCount = data.total_messages ?? externalPollLastTotalCount;
-        // 最终内容已随落库消息渲染，清空实时条避免重复
-        healLiveText.value = '';
-        await nextTick();
-        chatMessagesRef.value?.scrollToBottom?.();
-      }
+/** 确保（或获取）当前自愈会话的流渲染状态：与正常聊天同一渲染管线 */
+const ensureHealStreamState = () => {
+  if (!sessionId.value) return null;
+  if (!activeStreams.value[sessionId.value]) {
+    activeStreams.value[sessionId.value] = {
+      content: '',
+      isComplete: false,
+      messages: [],
+    };
+  }
+  return activeStreams.value[sessionId.value];
+};
+
+const healStreamTime = () => new Date().toLocaleTimeString('zh-CN', { hour12: false });
+
+/**
+ * 处理自愈流事件：复刻正常聊天 chatService 的事件写入模式，
+ * 把事件写进 activeStreams[sessionId]，让 displayedMessages 走同一管线渲染
+ * （AI 气泡 Markdown 逐字、工具卡片、步骤指示，与用户手动对话视觉完全一致）。
+ */
+const handleHealStreamEvent = (event: HealStreamEvent) => {
+  const stream = ensureHealStreamState();
+  if (!stream) return;
+
+  switch (event.type) {
+    case 'stream': {
+      if (event.data) stream.content += event.data;
+      break;
     }
-  } catch {
-    // 静默：下一事件会再触发
-  } finally {
-    healRefreshInFlight = false;
+    case 'tool_result': {
+      const toolOutput = (event as any).tool_output || (event as any).content || event.summary || '';
+      const time = healStreamTime();
+      // 有 AI 流式内容先固化为独立 AI 消息（与 chatService 行为一致）
+      if (stream.content && stream.content.trim()) {
+        stream.messages.push({
+          content: stream.content,
+          type: 'ai',
+          time,
+          isExpanded: false,
+        });
+        stream.content = '';
+      }
+      if (toolOutput) {
+        stream.messages.push({
+          content: typeof toolOutput === 'string' ? toolOutput : JSON.stringify(toolOutput),
+          type: 'tool',
+          time,
+          toolName: event.tool_name,
+          isExpanded: false,
+        });
+      }
+      break;
+    }
+    case 'step_start': {
+      if (typeof event.step === 'number') stream.currentStep = event.step;
+      break;
+    }
+    case 'step_complete': {
+      if (typeof event.step === 'number') stream.currentStep = event.step;
+      break;
+    }
+    case 'context_update': {
+      break;
+    }
+    case 'warning': {
+      stream.messages.push({
+        content: event.message || '警告',
+        type: 'system',
+        time: healStreamTime(),
+      });
+      break;
+    }
+    case 'content':
+    case 'message':
+    case 'ai': {
+      // 套件执行通道的文本事件（等价正常聊天的 stream）：逐字追加
+      const text = (event as any).content || event.data || event.message || '';
+      if (typeof text === 'string' && text) stream.content += text;
+      break;
+    }
+    case 'tool_call':
+    case 'tool_start': {
+      // 工具开始：固化为工具卡片（tool_result 到达时更新内容的场景较少，先占位显示调用）
+      if (event.tool_name) {
+        stream.messages.push({
+          content: `调用工具: ${event.tool_name}`,
+          type: 'tool',
+          time: healStreamTime(),
+          toolName: event.tool_name,
+          isExpanded: false,
+        });
+      }
+      break;
+    }
+    case 'stream_end':
+    case 'step_end': {
+      break;
+    }
+    case 'error': {
+      stream.error = event.message || '执行异常';
+      break;
+    }
+    case 'complete': {
+      stream.isComplete = true;
+      // 完成后延时固化：拉 history 把最终消息写入 messages.value，
+      // 再移除流状态（displayedMessages 此时无缝切换到固化消息，不闪断）
+      window.setTimeout(async () => {
+        if (!sessionId.value) return;
+        try {
+          const response = await getChatHistory(sessionId.value, projectStore.currentProjectId, historyLimit, 0);
+          if (response.status === 'success' && response.data?.history) {
+            messages.value = mergeThinkingProcessMessages(
+              buildHistoryMessages(response.data.history, formatHistoryTime),
+            );
+            externalPollLastTotalCount = response.data.total_messages ?? externalPollLastTotalCount;
+          }
+        } catch {
+          // 固化失败时保留流状态，由轮询兜底
+          return;
+        }
+        const current = activeStreams.value[sessionId.value];
+        if (current?.isComplete) {
+          delete activeStreams.value[sessionId.value];
+        }
+      }, 5000);
+      break;
+    }
+    default:
+      break;
   }
-};
-
-/** 处理自愈流事件：stream 文本打字机追加，其余触发轻刷新 */
-const handleHealStreamEvent = async (event: HealStreamEvent) => {
-  if (event.type === 'stream' && typeof event.data === 'string' && event.data) {
-    healLiveText.value += event.data;
-    await nextTick();
-    chatMessagesRef.value?.scrollToBottom?.();
-    return;
-  }
-  if (event.type === 'error') {
-    healLiveText.value += `\n[错误] ${event.message || '执行异常'}\n`;
-    return;
-  }
-  // 工具调用 / 步骤完成等结构事件：刷新拿真实落库卡片
-  await refreshFromHealEvent();
 };
 
 /** 为当前会话建立自愈 WS 订阅（仅任务会话） */
-const startHealSubscription = () => {
+const startHealSubscription = async () => {
   stopHealSubscription();
-  if (!sessionId.value) return;
-  const current = chatSessions.value.find(s => s.id === sessionId.value);
-  const isTaskSession = !!current && (
-    current.title?.includes('自愈') ||
-    current.title?.includes('生成')
-  );
-  if (!isTaskSession) return;
+  const sid = sessionId.value;
+  if (!sid) return;
   const authStore = useAuthStore();
   const token = authStore.getAccessToken;
   if (!token) return;
   healSubscription = subscribeHealChat(
     sessionId.value,
     token,
-    (event) => { void handleHealStreamEvent(event); },
+    (event) => { handleHealStreamEvent(event); },
     () => {
       // 连接关闭（任务结束服务端不关，一般为网络问题）：由低频轮询兜底
     },
@@ -734,8 +793,7 @@ const closeFloatingImage = () => {
 watch(sessionId, () => {
   floatingToolImageSrc.value = null;
   panelPos.value = null;
-  maybeStartExternalPolling();
-  startHealSubscription();
+  void startExternalTaskTracking();
 });
 
 // 提示词相关
@@ -2883,6 +2941,10 @@ onMounted(async () => {
 
     // 尝试加载当前会话的历史记录（只加载消息，不更新会话列表）
     await loadChatHistory();
+
+    // 会话列表已就绪：补启自愈 WS 订阅与外部轮询（从任务中心跳转进来的路径
+    // sessionId 在列表加载前已恢复，此前 find 不到标题会漏订阅）
+    void startExternalTaskTracking();
   }
 
   // 加载当前LLM配置（不依赖项目）

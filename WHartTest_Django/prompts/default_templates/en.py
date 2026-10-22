@@ -691,7 +691,7 @@ Start executing now.''',
 
       1. **Single-interface principle**: process only the interface specified in the user message. Batch scenarios are triggered by the caller; never mix definitions across interfaces.
       2. **Generate only requested categories**: the user message declares the generation scope (Happy-path verification / Parameter validation - two categories). Skip unselected categories. The two categories are independent: Parameter validation takes its "valid params" directly from interface sample values or the constraint snapshot, not from Happy-path cases. Business rules in user notes (duplicate-submission limits, state preconditions, dependencies) fold into Happy-path branch scenarios or Parameter-validation combination checks regardless of category selection.
-      3. **Total cap**: never exceed the per-interface cap declared in the user message (default 12). Trim by P0 > P1 > P2 and list trimmed scenarios in the final "to-be-added" list.
+      3. **Natural case count**: no fixed cap - each category produces cases per its own rules (happy path 2-4; parameter validation converged per parameter: 1 missing-required per required param, 1 wrong-type per representative type, 2 boundary cases per ranged param, etc.). Never skip or trim cases citing any "total/quota/round" reason.
       4. **Baseline assertions are immutable**: existing validators on the interface are the baseline. Append to them in main-step assertions; never delete or modify.
       5. **Decidability**: every step must carry concrete assertions. Vague wording like "check it works" is forbidden.
       6. **Comparator whitelist**: only eq, ne, lt, le, gt, ge, str_eq, contains, contained_by, type_match, regex_match are executed by the runner. Anything else (startswith, length_*, etc.) is forbidden.
@@ -775,7 +775,7 @@ Start executing now.''',
       Summarize: cases saved per category (Happy-path / Parameter validation), whether the sub-agent was invoked, trimmed scenarios (to-be-added), skipped cases due to unknown constraints (to-be-confirmed), and reasons for any save failures.
 
       Notes:
-      1. Interface definition, dimensions, and caps are declared in the user message; parameter constraints come from the get_interface_constraints tool.
+      1. Interface definition and dimensions are declared in the user message; parameter constraints come from the get_interface_constraints tool.
       2. Must call create_interface_case; text-only output is not completion.
       3. Finish one case before starting the next.''').strip()
     },

@@ -123,17 +123,6 @@
         </a-select>
       </div>
 
-      <!-- 条数上限（仅单接口模式；场景模式条数由命中业务来源决定） -->
-      <div v-if="formState.caseType === 'interface_case'" class="form-row">
-        <span class="form-row-label">{{ pageText.caseLimit }}</span>
-        <a-input-number
-          v-model="formState.caseLimit"
-          :min="1"
-          :max="30"
-          style="width: 120px;"
-        />
-      </div>
-
     </a-form>
     <FunctionalCasePickerModal
       v-model:visible="casePickerVisible"
@@ -192,7 +181,6 @@ const pageText = computed(() => isEnglish.value ? {
   targetGroup: 'Target Group',
   groupPlaceholder: 'Ungrouped',
   groupLoadFailedText: 'Group list failed to load',
-  caseLimit: 'Case Limit',
   promptTemplate: 'Prompt',
 } : {
   modalTitle: 'AI 生成接口测试用例',
@@ -217,7 +205,6 @@ const pageText = computed(() => isEnglish.value ? {
   targetGroup: '目标分组',
   groupPlaceholder: '未分组',
   groupLoadFailedText: '分组列表加载失败',
-  caseLimit: '条数上限',
   promptTemplate: '提示词',
 });
 
@@ -230,7 +217,6 @@ interface FormState {
   loginInterfaceId: number | null;
   businessNotes: string;
   groupId: number | null;
-  caseLimit: number;
   promptId: number | null;
 }
 
@@ -241,7 +227,6 @@ const formState = ref<FormState>({
   loginInterfaceId: null,
   businessNotes: '',
   groupId: null,
-  caseLimit: 12,
   promptId: null,
 });
 
@@ -518,7 +503,6 @@ const handleSubmit = async () => {
       functionalCaseRefs:
         formState.value.caseType === 'scenario' ? selectedFunctionalCases.value : [],
       groupId: formState.value.groupId,
-      caseLimit: formState.value.caseType === 'scenario' ? 0 : formState.value.caseLimit,
       promptId: formState.value.promptId,
     };
     emit('submit', payload);
@@ -538,7 +522,6 @@ watch(() => props.visible, (visible) => {
     interfaceSearch.value = '';
     if (props.presetCaseType) {
       formState.value.caseType = props.presetCaseType;
-      formState.value.caseLimit = props.presetCaseType === 'scenario' ? 6 : 12;
     }
     fetchData();
   }

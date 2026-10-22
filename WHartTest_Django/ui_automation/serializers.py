@@ -337,11 +337,24 @@ class UiTestCaseSerializer(serializers.ModelSerializer):
     module_name = serializers.CharField(source='module.name', read_only=True)
     creator_name = serializers.CharField(source='creator.username', read_only=True)
     step_count = serializers.SerializerMethodField()
+    env_config_id = serializers.PrimaryKeyRelatedField(
+        source='env_config', queryset=UiEnvironmentConfig.objects.all(),
+        required=False, allow_null=True,
+    )
+    env_config_name = serializers.CharField(source='env_config.name', read_only=True)
 
     class Meta:
         model = UiTestCase
         fields = '__all__'
         read_only_fields = ['status', 'result_data', 'error_message', 'creator', 'created_at', 'updated_at']
+
+    def validate_env_config_id(self, value):
+        """绑定环境必须属于本用例所在项目。"""
+        if value is not None:
+            project_id = self.initial_data.get('project') or getattr(self.instance, 'project_id', None)
+            if project_id and value.project_id != project_id:
+                raise serializers.ValidationError('执行环境必须属于用例所在项目')
+        return value
 
     def get_step_count(self, obj):
         return obj.case_steps.count()
@@ -350,9 +363,32 @@ class UiTestCaseSerializer(serializers.ModelSerializer):
 class UiTestCaseDetailSerializer(UiTestCaseSerializer):
     """测试用例详情序列化器（含步骤列表）"""
     case_steps = UiCaseStepsDetailedSerializer(many=True, read_only=True)
+    auth_env_mismatch = serializers.SerializerMethodField()
 
     class Meta(UiTestCaseSerializer.Meta):
         fields = '__all__'
+
+    def get_auth_env_mismatch(self, obj):
+        """编辑期跨环境登录态预警：用例绑定了环境，但步骤登录态属于其他环境时返回 True。
+
+        返回 None 表示无法判断或无需预警（用例未绑定环境 / 步骤未绑定登录态 / 登录态缺失）。
+        执行期同规则严格拒绝（执行器与录制器通道），此处仅做编辑期提示。
+        """
+        if obj.env_config_id is None:
+            return None
+        auth_ids = [
+            cs.page_step.auth_state_id
+            for cs in obj.case_steps.select_related('page_step')
+            if cs.page_step and cs.page_step.auth_state_id
+        ]
+        if not auth_ids:
+            return None
+        from .models import UiAuthState
+
+        mismatched = UiAuthState.objects.filter(id__in=auth_ids).exclude(
+            env_config_id=obj.env_config_id
+        ).exists()
+        return mismatched
 
 
 class UiTestCaseExecuteSerializer(UiTestCaseSerializer):

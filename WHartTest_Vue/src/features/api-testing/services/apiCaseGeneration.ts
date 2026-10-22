@@ -25,7 +25,6 @@ export interface GenerationFormData {
   businessNotes: string;
   functionalCaseRefs: FunctionalCaseRef[];
   groupId: number | null;
-  caseLimit: number;
   promptId: number | null;
 }
 
@@ -101,9 +100,8 @@ export function buildGenerationMessage(options: {
   if (formData.caseType === 'interface_case') {
     const dimNames = formData.dimensions.map(d => (d === 'D2' ? '参数验证' : '基本功能验证'));
     lines.push(`本次生成范围：${dimNames.join('、')}（未列出的类别跳过，只生成勾选类别的用例）`);
-    lines.push(`条数上限：每个接口最多 ${formData.caseLimit} 条（这是"单接口上限"，不是全部接口的总上限）`);
-    lines.push(`接口数量：${formData.interfaceIds.length} 个，全部 ${formData.interfaceIds.length} 个接口都必须逐一处理并生成用例，理论总量最多 ${formData.interfaceIds.length * formData.caseLimit} 条。`);
-    lines.push('处理方式：按接口逐个生成，每个接口独立按上述上限与维度处理。禁止以任何"总量/配额/轮次"理由跳过未处理的接口——确实无法生成用例的接口（如纯文件依赖缺失）才允许登记到待补充清单。');
+    lines.push(`接口数量：${formData.interfaceIds.length} 个，全部 ${formData.interfaceIds.length} 个接口都必须逐一处理并生成用例。`);
+    lines.push('条数说明：不设固定上限，每个接口的用例条数按勾选类别的规则自然生成（基本功能验证 2~4 条；参数验证按参数收敛：必填缺失、类型错误、边界值、长度限制、组合校验），禁止以任何"总量/配额/轮次"理由跳过未处理的接口——确实无法生成用例的接口（如纯文件依赖缺失）才允许登记到待补充清单。');
     lines.push(`处理进度自检：每完成一个接口，确认剩余待处理接口数量；全部 ${formData.interfaceIds.length} 个接口处理完毕后才输出最终总结。`);
   } else {
     lines.push('场景条数由命中的业务来源决定（一条功能用例映射一条场景，每条 2~8 步），无固定上限。');

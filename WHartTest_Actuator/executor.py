@@ -172,6 +172,7 @@ class PlaywrightExecutor:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._stop_requested = False
+        self._stopped_cases: set[str] = set()  # 精确停止单用例（并发批次内互不影响）
         self._current_trace_path: Optional[str] = None
         self._page_errors = []
         # 任务级认证配置（auth），通过 apply_runtime_options 注入，执行后随 restore 还原
@@ -804,6 +805,16 @@ class PlaywrightExecutor:
     def get_current_trace_path(self) -> Optional[str]:
         """获取当前执行的 trace 文件路径"""
         return self._current_trace_path
+
+    def stop_case(self, case_id: str) -> None:
+        """精确停止单个用例：仅该用例的执行循环检测到停止，批次内其他用例不受影响。"""
+        self._stopped_cases.add(str(case_id))
+
+    def is_case_stopped(self, case_id) -> bool:
+        """用例是否被停止：精确停止命中，或全局停止标志已置。"""
+        if str(case_id) in self._stopped_cases:
+            return True
+        return self._stop_requested
 
     def stop(self):
         """请求停止执行（置标志；由调用方决定是否 force 硬中断）"""
@@ -1486,7 +1497,7 @@ class PlaywrightExecutor:
         last_result: tuple[bool, str, str | None] = (False, "步骤执行失败", None)
 
         for attempt in range(attempts):
-            if self._stop_requested:
+            if self.is_case_stopped(getattr(self, '_current_case_id', None)):
                 return False, "用例被手动停止", None
             try:
                 success, message, screenshot = await self._execute_step(page, step, env_config)
@@ -1552,6 +1563,7 @@ class PlaywrightExecutor:
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
         
         self._stop_requested = False
+        self._current_case_id = config.case_id
         trace_name = f"case_{config.case_id}"
         
         try:
@@ -1572,7 +1584,7 @@ class PlaywrightExecutor:
 
                 pending_auth = None
                 for page_step in config.page_steps:
-                    if self._stop_requested:
+                    if self.is_case_stopped(config.case_id):
                         raise Exception("用例被手动停止")
 
                     # 组间登录态切换：未绑定步骤"向上匹配"最近绑定的登录态
@@ -1612,7 +1624,7 @@ class PlaywrightExecutor:
                     
                     # 执行页面内的步骤
                     for step in page_step.steps:
-                        if self._stop_requested:
+                        if self.is_case_stopped(config.case_id):
                             raise Exception("用例被手动停止")
                         
                         # 确保总是使用最新的活跃页签进行操作

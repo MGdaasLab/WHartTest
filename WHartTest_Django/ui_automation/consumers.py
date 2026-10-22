@@ -45,9 +45,29 @@ class SocketUserManager:
     _web_users: dict[str, 'UiAutomationConsumer'] = {}      # 前端用户连接
     _actuator_users: dict[str, 'UiAutomationConsumer'] = {} # 执行器连接
     _actuator_last_seen: dict[str, float] = {}               # 执行器最后活跃时间（time.monotonic）
+    _case_actuators: dict[str, tuple[str, float]] = {}       # case_id(str) -> (执行器ID, 登记时间)
     # 判活阈值：超过该时长无任何消息（含协议层 ping 之外的应用层活动）视为连接失活，
     # 允许同 ID 新连接接管注册（网络半开时旧连接的 disconnect 永远不会触发）
     ACTUATOR_STALE_SECONDS = 60.0
+
+    _CASE_MAP_TTL_SECONDS = 6 * 60 * 60  # 用例→执行器映射保留 6 小时（覆盖批次最长下发 TTL）
+
+    @classmethod
+    def register_actuator_cases(cls, case_ids, actuator_id: str) -> None:
+        """批次下发时登记用例与执行器的归属（供精确停止路由）。"""
+        import time
+        now = time.monotonic()
+        # 顺带过期清理，防无限增长
+        expired = [k for k, (_, ts) in cls._case_actuators.items() if now - ts > cls._CASE_MAP_TTL_SECONDS]
+        for k in expired:
+            cls._case_actuators.pop(k, None)
+        for cid in case_ids or []:
+            cls._case_actuators[str(cid)] = (str(actuator_id), now)
+
+    @classmethod
+    def get_actuator_id_by_case(cls, case_id) -> Optional[str]:
+        entry = cls._case_actuators.get(str(case_id))
+        return entry[0] if entry else None
 
     @classmethod
     def touch_actuator(cls, actuator_id: str):
@@ -658,6 +678,15 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         """
         if actuator is None:
             return
+        # 登记用例→执行器归属（供前端精确停止路由；单用例/批量均覆盖）
+        try:
+            _case_ids = (args or {}).get('case_ids') or (
+                [args['case_id']] if (args or {}).get('case_id') else []
+            )
+            if _case_ids and actuator.user_id:
+                SocketUserManager.register_actuator_cases(_case_ids, actuator.user_id)
+        except Exception:
+            pass
         token = uuid.uuid4().hex
         now = time.monotonic()
         tokens = getattr(actuator, 'actuator_task_tokens', None)
@@ -1075,12 +1104,37 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 await self._recorder_exec_error(kind, args, user, '用例没有可执行的页面步骤')
                 return
 
+            # 用例级环境覆盖（两级优先级：用例绑定环境 > 请求/项目默认）：
+            # 录制器浏览器执行与执行器执行保持一致，用 base_url 到登录态解析都跟随用例绑定环境
+            if case.env_config_id and (
+                env_config is None or env_config.id != case.env_config_id
+            ):
+                bound_env = await sync_to_async(
+                    UiEnvironmentConfig.objects.filter(id=case.env_config_id).first
+                )()
+                if bound_env is not None:
+                    logger.info(
+                        f"[recorder-exec] 用例 {case.id} 绑定环境覆盖: "
+                        f"{bound_env.name}(base_url={bound_env.base_url})"
+                    )
+                    env_config = bound_env
+
         # 仅注入显式绑定的登录态（取首个步骤的绑定）；未绑定 → 无痕启动
         storage_state = None
         first_auth_id = getattr(groups[0], 'auth_state_id', None) if groups else None
         if first_auth_id:
             bound = await sync_to_async(_auth_state_by_id)(first_auth_id)
             if bound is not None:
+                # 跨环境登录态严格校验（与执行器通道一致）：登录态所属环境
+                # 必须与生效环境一致，否则拒绝执行并提示修正
+                if env_config is not None and bound.env_config_id and bound.env_config_id != env_config.id:
+                    await self._recorder_exec_error(
+                        kind, args, user,
+                        f"步骤绑定登录态(id={first_auth_id})属于环境 {bound.env_config_id}，"
+                        f"与执行环境 {env_config.id}({env_config.name}) 不一致，"
+                        f"请修正用例的环境绑定或登录态绑定后重试"
+                    )
+                    return
                 storage_state = bound.state_json
 
         try:
@@ -1201,7 +1255,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 #（与执行器 total_steps 口径一致：sum(len(ps.steps))）
                 group_step_count = len(steps)
                 base_url = group_bases[group_index - 1]
-                if base_url:
+                # 首组不插入 goto：start 已导航到 group_bases[0]（start_url 取自
+                # 同一来源），重复 goto 会打断 SPA 启动即触发的 SSO 重定向链
+                # （ERR_ABORTED 后页面卡在启动加载页，登录表单永不渲染）。
+                # 首组也不会发生登录态切换（start 按首组登录态注入）；后续组保持
+                # 原行为每组 goto（此时 SSO 链早已走稳，同地址由录制器 sameUrl 兜底）。
+                if base_url and group_index > 1:
                     steps = [{
                         'ope_key': 'goto',
                         'ope_value': {'url': base_url},
@@ -1600,6 +1659,10 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             target_id = args.get("actuator_id")
             if not target_id and isinstance(args.get("effective_runtime"), dict):
                 target_id = args.get("effective_runtime", {}).get("actuator_id")
+            # 前端画布关闭携带 task_id（=case_id）：按下发登记精确路由到该用例
+            # 所在执行器，避免无差别广播误杀同执行器上正在运行的其他任务
+            if not target_id and args.get("task_id"):
+                target_id = SocketUserManager.get_actuator_id_by_case(args["task_id"])
 
         actuators = SocketUserManager.get_all_actuators()
         if target_id:

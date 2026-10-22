@@ -176,29 +176,12 @@ def _ensure_heal_session_title(session_id: str, task_name: str, case_name: str):
 def _publish_heal_event(session_id: str, payload: dict) -> None:
     """把自愈流事件转发到通道层，供对话页 WS 订阅实时渲染（打字机效果）。
 
-    best-effort：通道层不可用时静默跳过（对话页退化为轮询兜底），
-    不影响自愈主流程。
+    委托公共桥接 orchestrator_integration.stream_bridge（best-effort：
+    通道层不可用时静默跳过，对话页退化为轮询兜底）。
     """
-    try:
-        import asyncio
-        from channels.layers import get_channel_layer
+    from orchestrator_integration.stream_bridge import publish_stream_event
 
-        channel_layer = get_channel_layer()
-        if channel_layer is None:
-            return
-        # Celery worker 是同步环境，用全新事件循环执行 async group_send
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(
-                channel_layer.group_send(
-                    f"heal_chat.{session_id}",
-                    {"type": "heal.event", "payload": payload},
-                )
-            )
-        finally:
-            loop.close()
-    except Exception:
-        logger.debug("[自愈] 流事件转发通道层失败（前端将走轮询兜底）", exc_info=True)
+    publish_stream_event(session_id, payload)
 
 
 def _call_agent_loop_stream(headers: dict, payload: dict) -> dict:
