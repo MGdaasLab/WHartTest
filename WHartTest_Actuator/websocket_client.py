@@ -96,6 +96,18 @@ class WebSocketClient:
             # 连接成功后发送执行器信息
             await self._send_actuator_info()
             return True
+        except websockets.exceptions.InvalidStatus as e:
+            # 握手被拒（如后端严格模式拒绝无 token/错 token 的连接）：
+            # HTTP 403 里看不到业务关闭码，按认证问题给可操作的提示。
+            logger.error("连接被服务端拒绝（HTTP %s）", e.response.status_code)
+            logger.error(
+                "最常见原因：后端开启了 WS 严格认证（UI_WS_AUTH_STRICT=1），"
+                "本执行器未配置或配置了错误的 ws_token。"
+                "请在 config.toml [server] 段配置 ws_token（值同后端 UI_WS_ACTUATOR_TOKEN），"
+                "或联系平台管理员获取。5 秒后重试。"
+            )
+            self.connected = False
+            return False
         except Exception as e:
             logger.error(f"连接失败: {e}")
             self.connected = False

@@ -60,7 +60,7 @@ async def run_grace(port, secret):
     ws = await websockets.connect(WS.format(port=port) + "/ws/ui/web/?token=forged-token")
     ok, detail = await expect_close(ws, 4401)
     record("grace/伪造token拒绝(4401)", ok, detail)
-    await ws.wait_closed()
+    await asyncio.wait_for(ws.wait_closed(), timeout=3)
 
     # 3. 有效 JWT：放行且识别为登录用户
     async with websockets.connect(WS.format(port=port) + f"/ws/ui/web/?token={token}") as ws:
@@ -77,7 +77,7 @@ async def run_grace(port, secret):
     ws = await websockets.connect(WS.format(port=port) + "/ws/ui/actuator/?id=act-B&token=wrong")
     ok, detail = await expect_close(ws, 4401)
     record("grace/执行器错误密钥拒绝(4401)", ok, detail)
-    await ws.wait_closed()
+    await asyncio.wait_for(ws.wait_closed(), timeout=3)
 
     # 6/7. 抢注：act-A 在线时，第二个同 ID 连接被拒 4409，原连接不受影响
     ws_first = await websockets.connect(WS.format(port=port) + f"/ws/ui/actuator/?id=act-H&token={secret}")
@@ -85,7 +85,7 @@ async def run_grace(port, secret):
     ws_second = await websockets.connect(WS.format(port=port) + f"/ws/ui/actuator/?id=act-H&token={secret}")
     ok, detail = await expect_close(ws_second, 4409)
     record("grace/同ID抢注被拒(4409)", ok, detail)
-    await ws_second.wait_closed()
+    await asyncio.wait_for(ws_second.wait_closed(), timeout=3)
     # 原连接仍可用（能收发）
     try:
         await ws_first.send(json.dumps({"code": 200, "msg": "ping", "is_notice": 0}))
@@ -121,13 +121,13 @@ async def run_strict(port, secret):
     ws = await websockets.connect(WS.format(port=port) + "/ws/ui/web/")
     ok, detail = await expect_close(ws, 4401)
     record("strict/匿名web拒绝(4401)", ok, detail)
-    await ws.wait_closed()
+    await asyncio.wait_for(ws.wait_closed(), timeout=3)
 
     # 2. 匿名执行器：拒绝 4401
     ws = await websockets.connect(WS.format(port=port) + "/ws/ui/actuator/?id=act-anon")
     ok, detail = await expect_close(ws, 4401)
     record("strict/匿名执行器拒绝(4401)", ok, detail)
-    await ws.wait_closed()
+    await asyncio.wait_for(ws.wait_closed(), timeout=3)
 
     # 3. 有效 JWT web：放行
     async with websockets.connect(WS.format(port=port) + f"/ws/ui/web/?token={token}") as ws:
