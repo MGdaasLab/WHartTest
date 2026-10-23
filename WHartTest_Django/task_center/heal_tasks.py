@@ -386,6 +386,28 @@ def heal_failed_cases(self, batch_id: int):
         f"已处理 {len(healed)} 个，中断 {len(interrupted)} 个，待人工确认 {len(manual_required) + skipped_count} 个"
         f"（自愈会话 session_id={session_id}，可在 AI 对话页回看）"
     )
+
+    # 方案B（执行记录状态翻转）：定时任务因批次失败被置 failed，若本轮自愈把
+    # 该批次全部失败用例都修复成功（无中断、无超上限裁剪、无待人工），则把该执行
+    # 记录翻转为 success——自愈的成功让定时任务的最终结果恢复为通过。
+    # 仅定时任务触发的自愈链路（本函数）会执行此翻转：手动自愈/双模自愈不走这里，
+    # 天然不涉及任务中心执行记录。
+    all_healed = (
+        len(healed) > 0
+        and not interrupted
+        and not manual_required
+        and skipped_count == 0
+    )
+    if all_healed:
+        if _flip_execution_record_to_success(batch, len(healed)):
+            log_lines.append(
+                f"[{timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M:%S')}] "
+                f"执行记录状态已翻转为成功（自愈全部成功）"
+            )
+            logger.info(
+                f"[自愈] 批次 {batch_id} 全部失败用例自愈成功，执行记录状态已翻转为成功"
+            )
+
     _append_heal_log(batch, log_lines)
 
     return {
@@ -411,3 +433,33 @@ def _append_heal_log(batch, log_lines: list):
             )
     except Exception:
         logger.warning("[自愈] 自愈日志写入执行记录失败", exc_info=True)
+
+def _flip_execution_record_to_success(batch, healed_count: int) -> bool:
+    """自愈全部成功时，把批次关联的任务中心执行记录 failed → success。
+
+    条件更新（仅 failed 行），与并发回写互斥；finished_at 保持不变
+    （记录任务的触发完成时间，不因状态翻转改变）；翻转原因追加到日志。
+    返回是否发生了翻转。
+    """
+    from .models import TaskExecution
+
+    try:
+        execution = batch.scheduled_task.executions.order_by('-started_at').first()
+        if execution is None or execution.status != TaskExecution.ExecutionStatus.FAILED:
+            return False
+        flip_note = (
+            f"\n[{timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"自愈成功：批次 {batch.id} 的全部 {healed_count} 个失败用例已修复并复测通过，"
+            f"执行记录状态翻转为成功"
+        )
+        updated = TaskExecution.objects.filter(
+            id=execution.id,
+            status=TaskExecution.ExecutionStatus.FAILED,
+        ).update(
+            status=TaskExecution.ExecutionStatus.SUCCESS,
+            log=((execution.log or '') + flip_note),
+        )
+        return updated > 0
+    except Exception:
+        logger.warning("[自愈] 执行记录状态翻转失败", exc_info=True)
+        return False

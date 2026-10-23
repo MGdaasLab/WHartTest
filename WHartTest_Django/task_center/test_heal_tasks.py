@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase
 
 from projects.models import Project
-from task_center.models import ScheduledTask
+from task_center.models import ScheduledTask, TaskExecution
 from task_center.heal_tasks import (
     AgentLoopCallError,
     _build_failure_message,
@@ -217,3 +217,75 @@ class MaybeDispatchHealTaskTestCase(TestCase):
         with patch('task_center.heal_tasks.heal_failed_cases.delay') as mock_delay:
             self.consumer._maybe_dispatch_heal_task(batch)
             mock_delay.assert_not_called()
+
+
+class FlipExecutionRecordTests(TestCase):
+    """方案B：自愈全部成功时执行记录 failed → success 翻转。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='flipuser', password='pwd', email='f@t.com')
+        self.project = Project.objects.create(name='FlipProject', creator=self.user)
+        self.task = ScheduledTask.objects.create(
+            name='翻转任务', project=self.project,
+            module=ScheduledTask.TaskModule.UI_AUTOMATION,
+            schedule_type=ScheduledTask.ScheduleType.DAILY, daily_time='08:00',
+            creator=self.user, auto_heal_enabled=True,
+        )
+        self.ui_module = UiModule.objects.create(project=self.project, name='模块', creator=self.user)
+
+    def _failed_execution_with_batch(self, failed_cases=1):
+        batch = UiBatchExecutionRecord.objects.create(
+            name='批次', total_cases=failed_cases + 1, status=3,
+            trigger_type='scheduled', scheduled_task=self.task,
+        )
+        execution = TaskExecution.objects.create(
+            task=self.task, trigger_type=TaskExecution.TriggerType.SCHEDULED,
+            status=TaskExecution.ExecutionStatus.FAILED,
+            test_status=TaskExecution.ExecutionStatus.FAILED,
+            batch_record=batch,
+        )
+        return batch, execution
+
+    def test_all_healed_flips_to_success(self):
+        from task_center.heal_tasks import _flip_execution_record_to_success
+
+        batch, execution = self._failed_execution_with_batch()
+        result = _flip_execution_record_to_success(batch, healed_count=1)
+        self.assertTrue(result)
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, TaskExecution.ExecutionStatus.SUCCESS)
+        self.assertIn('自愈成功', execution.log)
+
+    def test_partial_heal_gate_does_not_flip(self):
+        # 部分自愈（有 manual_required）→ all_healed 门控为 False，不调用翻转
+        from task_center.heal_tasks import _flip_execution_record_to_success
+
+        batch, execution = self._failed_execution_with_batch(failed_cases=2)
+        healed = [{'case_id': 1, 'case_name': 'c1', 'summary': ''}]
+        interrupted = []
+        healed_ids = {i['case_id'] for i in healed} | {i['case_id'] for i in interrupted}
+        failed_records = [type('R', (), {'test_case_id': cid, 'test_case': type('C', (), {'name': f'c{cid}'})()}) for cid in (1, 2)]
+        manual_required = [r for r in failed_records if r.test_case_id not in healed_ids]
+
+        all_healed = (
+            len(healed) > 0 and not interrupted and not manual_required
+        )
+        self.assertFalse(all_healed)
+        if all_healed:
+            _flip_execution_record_to_success(batch, len(healed))
+
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, TaskExecution.ExecutionStatus.FAILED)
+
+    def test_already_success_does_not_revert(self):
+        # 执行记录已是 success（防并发重复翻转）：条件更新 0 行
+        from task_center.heal_tasks import _flip_execution_record_to_success
+
+        batch, execution = self._failed_execution_with_batch()
+        execution.status = TaskExecution.ExecutionStatus.SUCCESS
+        execution.save(update_fields=['status'])
+
+        result = _flip_execution_record_to_success(batch, healed_count=1)
+        self.assertFalse(result)
+        execution.refresh_from_db()
+        self.assertEqual(execution.status, TaskExecution.ExecutionStatus.SUCCESS)
