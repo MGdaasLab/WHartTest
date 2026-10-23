@@ -2,13 +2,14 @@ import json
 import subprocess
 import sys
 import uuid
+import os
 from pathlib import Path
 from urllib import error, parse, request
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SKILL_PATH = Path(__file__).resolve().with_name('api_automation_tools.py')
 BASE_URL = 'http://127.0.0.1:8000'
-API_KEY = 'wharttest-default-mcp-key-2025'
+API_KEY = os.environ.get('WHARTTEST_API_KEY', '')  # 安全：不再内置默认密钥
 DEFAULT_HEADERS = {
     'accept': 'application/json',
     'Content-Type': 'application/json',

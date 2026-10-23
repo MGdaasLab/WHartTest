@@ -542,7 +542,6 @@ const LEGACY_EXACT_EN_MAP: Record<string, string> = {
   '执行数据': 'Execution Data',
   '轨迹数据': 'Trace Data',
   '按项目查询': 'Query by Project',
-  '上传截图': 'Upload Screenshot',
   '上传轨迹': 'Upload Trace',
   '触发批量执行': 'Trigger Batch Execution',
   '接口自动化': 'API Automation',

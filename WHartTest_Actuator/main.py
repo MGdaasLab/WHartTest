@@ -89,7 +89,8 @@ ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
 api_url = "http://127.0.0.1:8000"
 use_gui = true
 api_username = "admin"
-api_password = "admin123"
+# 安全：不内置默认口令，请首次配置时填写（或改用 api_key 认证）
+api_password = ""
 
 [actuator]
 
@@ -442,8 +443,9 @@ async def main():
             ws_url = api_url.replace('http://', 'ws://', 1)
         config.ws_url = f"{ws_url}/ws/ui/actuator/"
         
-        config.api_username = login_result['username']
-        config.api_password = login_result['password']
+        config.api_username = login_result.get('username', config.api_username)
+        config.api_password = login_result.get('password', config.api_password)
+        config.api_key = login_result.get('api_key', config.api_key)
         # 更新执行器名称
         if login_result.get('actuator_name'):
             config.actuator_name = login_result['actuator_name']
@@ -477,6 +479,10 @@ async def main():
         logger.info(f"执行器名称: {config.actuator_name}")
     logger.info(f"WebSocket服务器: {config.ws_url}")
     logger.info(f"API服务器: {config.api_url}")
+    if config.api_key:
+        logger.info("认证方式: API Key（X-API-Key，不触发单设备登录挤占）")
+    else:
+        logger.info(f"认证方式: 账号密码（{config.api_username}）")
     logger.info(f"浏览器类型: {config.browser_type}")
     logger.info(f"无头模式: {config.headless}")
     logger.info("=" * 50)
@@ -491,6 +497,7 @@ async def main():
         config,
         api_username=config.api_username,
         api_password=config.api_password,
+        api_key=config.api_key,
         config_path=str(config_path)
     )
     

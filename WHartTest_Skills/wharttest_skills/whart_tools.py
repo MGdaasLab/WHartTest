@@ -24,7 +24,7 @@ except ImportError:
 
 # 配置（运行时读取环境变量，避免 import 时固化导致父进程注入的 Key 失效）
 _DEFAULT_BASE_URL = "http://127.0.0.1:8000"
-_DEFAULT_API_KEY = "wharttest-default-mcp-key-2025"
+_DEFAULT_API_KEY = ""  # 安全：不再内置默认密钥，必须由 WHARTTEST_API_KEY 注入
 IMAGE_MIME_TYPES = {
     '.png': 'image/png',
     '.jpg': 'image/jpeg',

@@ -172,6 +172,14 @@ export interface PaginationParams {
   ordering?: string; // 排序字段，支持 id/-id/created_at/-created_at/updated_at/-updated_at
 }
 
+export interface TestCaseNavigationFilters {
+  search?: string;
+  module_id?: number;
+  level?: string;
+  test_type?: string;
+  review_status_in?: ReviewStatus[];
+}
+
 // 测试用例列表响应接口
 export interface TestCaseListResponse {
   success: boolean;
@@ -282,6 +290,36 @@ export const getTestCaseList = async (projectId: number, params?: PaginationPara
       statusCode: error.response?.status,
     };
   }
+};
+
+export const getAllTestCaseIds = async (
+  projectId: number,
+  filters: TestCaseNavigationFilters = {},
+): Promise<{ success: boolean; data?: number[]; error?: string; statusCode?: number }> => {
+  const response = await getTestCaseList(projectId, {
+    page: 1,
+    pageSize: 10000,
+    search: filters.search,
+    module_id: filters.module_id,
+    level: filters.level,
+    test_type: filters.test_type,
+    review_status_in: filters.review_status_in,
+    ordering: 'id',
+  });
+
+  if (!response.success) {
+    return {
+      success: false,
+      error: response.error,
+      statusCode: response.statusCode,
+    };
+  }
+
+  return {
+    success: true,
+    data: (response.data || []).map(testCase => testCase.id),
+    statusCode: response.statusCode,
+  };
 };
 
 /**

@@ -55,8 +55,7 @@ export interface UpdateTestCaseModuleRequest {
 // 使用统一的 API 基础 URL（与其它服务一致，开发环境走 Vite 代理，生产环境走 Nginx 转发）
 const APP_API_BASE_URL = API_BASE_URL;
 
-// TODO: CSRF TOKEN 管理需要更健壮的方案
-const CSRF_TOKEN = 'kMNlyN2uN6c2QRr9r2rDQbfxBGsVzjPFY1h1as93VNMRTjo5kRpDbVq5ii8FFcKW'; // 暂时使用 authService 中的一个
+// CSRF 由 utils/request.ts 的请求拦截器从 cookie 动态注入。
 
 const getApiBasePath = (projectId: string | number | undefined | null) => {
   if (!projectId) {
@@ -182,8 +181,7 @@ export const createTestCaseModule = async (
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'X-CSRFTOKEN': CSRF_TOKEN, // 添加 CSRF Token
-      },
+              },
     });
 
     // 处理API响应格式
@@ -278,8 +276,7 @@ export const updateTestCaseModule = async (
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'X-CSRFTOKEN': CSRF_TOKEN, // 添加 CSRF Token
-      },
+              },
     });
 
     // 处理API响应格式
@@ -326,8 +323,7 @@ export const deleteTestCaseModule = async (
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'X-CSRFTOKEN': CSRF_TOKEN, // 添加 CSRF Token
-      },
+              },
     });
 
     // 处理API响应格式
@@ -382,8 +378,7 @@ export const moveTestCaseModule = async (
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': 'application/json',
           'Accept': 'application/json',
-          'X-CSRFTOKEN': CSRF_TOKEN,
-        },
+                  },
       }
     );
 

@@ -31,6 +31,11 @@ export interface ChatRequest {
     username?: string; // 账号（未选登录态时使用）
     password?: string; // 密码（未选登录态时使用）
   };
+  // 兼容旧版 LLMConfig 与智能执行调用方的可选运行时字段
+  module_key?: string;
+  runtime_mode?: string;
+  resolved_source?: string;
+  resolved_bundle_id?: number;
 }
 
 /**
@@ -68,6 +73,7 @@ export interface ChatHistoryMessage {
   step?: number; // Agent Loop步骤号
   max_steps?: number; // Agent Loop最大步骤数
   sse_event_type?: string; // 'message' | 'tool_result' SSE事件类型
+  tool_input?: unknown;
 }
 
 /**
@@ -83,6 +89,7 @@ export interface ChatHistoryResponseData {
   history: ChatHistoryMessage[];
   context_token_count?: number; // 上下文Token使用量
   context_limit?: number; // 上下文Token限制
+  has_more?: boolean;
 }
 
 /**

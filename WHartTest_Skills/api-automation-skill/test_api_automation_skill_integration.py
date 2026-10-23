@@ -104,6 +104,7 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
         group_child_name = self.unique_name('group-child')
         testcase_name = self.unique_name('tc-main')
         slow_testcase_name = self.unique_name('tc-slow')
+        interface_case_name = self.unique_name('ic-main')
         suite_name = self.unique_name('suite-main')
         cancel_suite_name = self.unique_name('suite-cancel')
         sync_name = self.unique_name('sync')
@@ -121,6 +122,11 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
         self.run_action('update_module', payload={'description': 'updated root module'}, module_id=self.ids['module_root'])
         self.run_action('get_module_tree')
         self.run_action('search_modules', params={'keyword': module_child_name})
+        self.run_action(
+            'move_module',
+            payload={'target_id': self.ids['module_root'], 'drop_position': 0},
+            module_id=self.ids['module_child'],
+        )
 
         database_config = self.run_action(
             'create_database_config',
@@ -232,6 +238,28 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
         interface_url_a = f'{BASE_URL}/api/projects/{self.project_id}/api-modules/'
         interface_url_b = f'{BASE_URL}/api/projects/{self.project_id}/api-modules/?page=1'
         interface_url_c = f'{BASE_URL}/api/projects/{self.project_id}/api-modules/?page=2'
+        interface_validators = [
+            {'eq': ['$request_method', 'GET']},
+            {'ne': ['$request_method', 'POST']},
+            {'str_eq': ['$request_method', 'GET']},
+            {'contains': ['$request_method', 'E']},
+            {'contained_by': ['$request_method', 'GETPOST']},
+            {'regex_match': ['$request_method', '^GET$']},
+            {'startswith': ['$request_method', 'G']},
+            {'endswith': ['$request_method', 'T']},
+            {'length_equal': ['$request_method', 3]},
+            {'length_greater_than': ['$request_method', 2]},
+            {'length_less_than': ['$request_method', 4]},
+            {'length_greater_or_equals': ['$request_method', 3]},
+            {'length_less_or_equals': ['$request_method', 3]},
+            {'type_match': ['$request_method', 'str']},
+            {'ge': ['status_code', 200]},
+            {'gte': ['status_code', 200]},
+            {'le': ['status_code', 200]},
+            {'lte': ['status_code', 200]},
+            {'lt': ['status_code', 500]},
+            {'gt': ['status_code', 199]},
+        ]
         interface = self.run_action(
             'create_interface',
             payload={
@@ -241,17 +269,33 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
                 'url': interface_url_a,
                 'module': self.ids['module_child'],
                 'headers': {'X-API-Key': API_KEY},
+                'extract': {'request_method': 'method'},
+                'extract_meta': {
+                    'request_method': {'variable_type': 'temporary', 'source': 'request'},
+                },
+                'validators': interface_validators,
             },
         )
         self.ids['interface'] = ResultReader.extract_id(interface)
         self.run_action('list_interfaces')
-        self.run_action('get_interface', interface_id=self.ids['interface'])
+        interface_detail = self.run_action('get_interface', interface_id=self.ids['interface'])
+        interface_extract_meta = ResultReader.data(interface_detail).get('extract_meta', {})
+        self.assertEqual(
+            interface_extract_meta.get('request_method'),
+            {'variable_type': 'temporary', 'source': 'request'},
+        )
         self.run_action(
             'update_interface',
             payload={'description': 'updated interface'},
             interface_id=self.ids['interface'],
         )
-        self.run_action(
+        duplicated_interface = self.run_action(
+            'duplicate_interface',
+            payload={'name': self.unique_name('iface-copy')},
+            interface_id=self.ids['interface'],
+        )
+        self.ids['duplicated_interface'] = ResultReader.extract_id(duplicated_interface)
+        quick_debug_result = self.run_action(
             'quick_debug_interface',
             payload={
                 'name': self.unique_name('quick-debug'),
@@ -259,9 +303,50 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
                 'method': 'GET',
                 'url': f'{BASE_URL}/api/projects/',
                 'headers': {'X-API-Key': API_KEY},
+                'extract': {'request_method': 'method'},
+                'extract_meta': {
+                    'request_method': {'variable_type': 'temporary', 'source': 'request'},
+                },
+                'validators': interface_validators,
             },
         )
-        self.run_action('run_interface', interface_id=self.ids['interface'])
+        quick_debug_data = ResultReader.data(quick_debug_result)
+        self.assertEqual(
+            quick_debug_data.get('extracted_variables', {}).get('request_method'),
+            'GET',
+        )
+        self.assertTrue(
+            any(
+                item.get('check_value') == 'GET'
+                and item.get('expect_value') == 'GET'
+                and item.get('check_result') == 'pass'
+                for item in quick_debug_data.get('validation_results', [])
+            ),
+            quick_debug_data.get('validation_results'),
+        )
+        self.assertEqual(
+            len(quick_debug_data.get('validation_results', [])),
+            len(interface_validators),
+        )
+        run_interface_result = self.run_action('run_interface', interface_id=self.ids['interface'])
+        run_interface_data = ResultReader.data(run_interface_result)
+        self.assertEqual(
+            run_interface_data.get('extracted_variables', {}).get('request_method'),
+            'GET',
+        )
+        self.assertTrue(
+            any(
+                item.get('check_value') == 'GET'
+                and item.get('expect_value') == 'GET'
+                and item.get('check_result') == 'pass'
+                for item in run_interface_data.get('validation_results', [])
+            ),
+            run_interface_data.get('validation_results'),
+        )
+        self.assertEqual(
+            len(run_interface_data.get('validation_results', [])),
+            len(interface_validators),
+        )
         interface_result_id = self.ensure_list_has_id('list_interface_results', 'interface_result')
         self.run_action('get_interface_result', interface_result_id=interface_result_id)
 
@@ -355,6 +440,50 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
         test_report_id = self.ensure_list_has_id('list_test_reports', 'test_report')
         self.run_action('get_test_report', test_report_id=test_report_id)
 
+        interface_case = self.run_action(
+            'create_interface_case',
+            payload={
+                'name': interface_case_name,
+                'group': self.ids['group_child'],
+                'tags': [self.ids['tag']],
+                'interface_id': self.ids['interface'],
+                'steps_info': [
+                    {
+                        'name': 'interface-precondition',
+                        'role': 'precondition',
+                        'order': 1,
+                        'interface_id': self.ids['interface'],
+                        'interface_data': {
+                            'extract': {'module_count': 'body.count'},
+                            'extract_meta': {'module_count': {'variable_type': 'temporary'}},
+                        },
+                    }
+                ],
+            },
+        )
+        self.ids['interface_case'] = ResultReader.extract_id(interface_case)
+        self.run_action('list_interface_cases', params={'interface_id': self.ids['interface']})
+        self.run_action('get_interface_case', interface_case_id=self.ids['interface_case'])
+        self.run_action(
+            'update_interface_case',
+            payload={'description': 'updated interface case'},
+            interface_case_id=self.ids['interface_case'],
+        )
+        copied_interface_case = self.run_action(
+            'copy_interface_case',
+            payload={'name': f'{interface_case_name}-copy'},
+            interface_case_id=self.ids['interface_case'],
+        )
+        self.ids['copied_interface_case'] = ResultReader.extract_id(copied_interface_case)
+        self.run_action(
+            'run_interface_case',
+            payload={'environment_id': self.ids['environment']},
+            interface_case_id=self.ids['interface_case'],
+        )
+        self.run_action('get_interface_case_history_reports', interface_case_id=self.ids['interface_case'])
+        interface_case_report_id = self.ensure_list_has_id('list_interface_case_reports', 'interface_case_report')
+        self.run_action('get_interface_case_report', interface_case_report_id=interface_case_report_id)
+
         suite = self.run_action('create_task_suite', payload={'name': suite_name})
         self.ids['task_suite'] = ResultReader.extract_id(suite)
         cancel_suite = self.run_action('create_task_suite', payload={'name': cancel_suite_name})
@@ -364,7 +493,10 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
         self.run_action('update_task_suite', payload={'fail_fast': True}, task_suite_id=self.ids['task_suite'])
         self.run_action(
             'add_suite_testcases',
-            payload={'testcase_ids': [self.ids['testcase'], self.ids['copied_testcase']]},
+            payload={
+                'testcase_ids': [self.ids['testcase'], self.ids['copied_testcase']],
+                'interface_case_ids': [self.ids['interface_case'], self.ids['copied_interface_case']],
+            },
             task_suite_id=self.ids['task_suite'],
         )
         self.run_action(
@@ -386,6 +518,17 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
             'remove_suite_testcase',
             task_suite_id=self.ids['task_suite'],
             testcase_id=self.ids['copied_testcase'],
+        )
+        self.run_action(
+            'remove_suite_interface_case',
+            task_suite_id=self.ids['task_suite'],
+            interface_case_id=self.ids['copied_interface_case'],
+        )
+        self.run_action(
+            'remove_suite_case',
+            task_suite_id=self.ids['task_suite'],
+            case_type='interface',
+            case_id=self.ids['interface_case'],
         )
 
         self.run_action(
@@ -475,12 +618,15 @@ class ApiAutomationSkillIntegrationTest(unittest.TestCase):
         self.run_action('delete_sync_config', sync_config_id=self.ids['sync_config'])
         self.run_action('delete_task_suite', task_suite_id=self.ids['cancel_task_suite'])
         self.run_action('delete_task_suite', task_suite_id=self.ids['task_suite'])
+        self.run_action('delete_interface_case', interface_case_id=self.ids['copied_interface_case'])
+        self.run_action('delete_interface_case', interface_case_id=self.ids['interface_case'])
         self.run_action('delete_testcase', testcase_id=self.ids['copied_testcase'])
         self.run_action('delete_testcase', testcase_id=self.ids['slow_testcase'])
         self.run_action('delete_testcase', testcase_id=self.ids['testcase'])
         self.run_action('delete_testcase_group', group_id=self.ids['group_child'])
         self.run_action('delete_testcase_group', group_id=self.ids['group_root'])
         self.run_action('delete_testcase_tag', tag_id=self.ids['tag'])
+        self.run_action('delete_interface', interface_id=self.ids['duplicated_interface'])
         self.run_action('delete_interface', interface_id=self.ids['interface'])
         self.run_action('delete_function', function_id=self.ids['function'])
         self.run_action('delete_global_header', header_id=self.ids['header'])

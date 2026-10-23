@@ -33,6 +33,12 @@ const tryParseJsonString = (value: string): unknown | null => {
   }
 };
 
+const normalizeToolValue = (value: unknown): unknown => {
+  if (typeof value !== 'string') return value;
+  const parsed = tryParseJsonString(value);
+  return parsed === null ? value : parsed;
+};
+
 const toImageDataUrl = (item: Record<string, unknown>): string | undefined => {
   const rawBase64 = item.base64;
   if (typeof rawBase64 !== 'string' || !rawBase64.trim()) return undefined;
@@ -90,14 +96,11 @@ const toFileAttachment = (item: Record<string, unknown>): ToolFileAttachment | n
   return attachment;
 };
 
-export const parseToolResultDisplayPayload = (rawToolOutput: unknown): ToolResultDisplayPayload => {
-  let normalized: unknown = rawToolOutput;
-  if (typeof normalized === 'string') {
-    const parsed = tryParseJsonString(normalized);
-    if (parsed !== null) {
-      normalized = parsed;
-    }
-  }
+export const parseToolResultDisplayPayload = (
+  rawToolOutput: unknown,
+  _rawToolInput?: unknown,
+): ToolResultDisplayPayload => {
+  let normalized: unknown = normalizeToolValue(rawToolOutput);
 
   if (Array.isArray(normalized)) {
     let imageDataUrl: string | undefined;

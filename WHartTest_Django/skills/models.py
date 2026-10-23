@@ -269,13 +269,25 @@ class Skill(models.Model):
         if not parsed_url.netloc:
             raise ValidationError('无效的 Git 仓库地址')
 
+        # 与 zip-url 导入对齐：复用同一套 SSRF 校验（拒绝内网/回环/保留地址），
+        # 避免服务端被诱导去克隆内网 Git 服务。
+        cls._validate_remote_url(git_url)
+
+        # 分支名参与 git 参数，需排除被解析成选项或注入额外参数的可能。
+        if branch.startswith('-') or any(ch in branch for ch in (' ', '..', '~', '^', ':', '?', '*', '[', '\\')):
+            raise ValidationError('仓库分支名包含非法字符')
+
         path_parts = [p for p in (parsed_url.path or '').split('/') if p]
         if len(path_parts) < 2:
             raise ValidationError('无效的 Git 仓库地址')
 
         try:
             subprocess.run(
-                ['git', 'clone', '--depth', '1', '--branch', branch, git_url, dest_dir],
+                [
+                    'git', 'clone', '--depth', '1',
+                    f'--branch={branch}',
+                    '--', git_url, dest_dir,
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -325,6 +337,12 @@ class Skill(models.Model):
 
         if cls.objects.filter(project=project, name=parsed['name']).exists():
             raise ValidationError(f"项目中已存在名为 '{parsed['name']}' 的 Skill")
+
+        # 供应链体检：导入即入库，Skill 包属于外部投递物，先静态扫描再落盘。
+        # 策略见 skills/scanning.py（SKILL_IMPORT_SCAN_MODE=warn|block）。
+        from .scanning import enforce_scan_policy, scan_skill_package
+
+        enforce_scan_policy(parsed['name'], scan_skill_package(skill_root))
 
         # 内部平台 Skill 必须使用用户确认的 API Key 再落盘
         if is_internal_platform_skill(parsed['name']):

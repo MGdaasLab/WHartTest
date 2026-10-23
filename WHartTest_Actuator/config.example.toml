@@ -41,6 +41,10 @@ user_data_dir = "./data/browser"
 launch_timeout = 30
 # 操作超时（秒）
 action_timeout = 30
+# 是否隐藏自动化特征（仅 Chromium 注入启动参数；所有浏览器注入 context 初始化脚本）
+stealth_enabled = true
+# 自定义 User-Agent（留空使用执行器默认值）
+# stealth_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 [execution]
 # 失败重试次数

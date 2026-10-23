@@ -101,7 +101,8 @@ services:
       - USER_AGENT=${USER_AGENT:-WHartTest/2.7.2-ce}
       - DJANGO_ADMIN_USERNAME=${DJANGO_ADMIN_USERNAME:-admin}
       - DJANGO_ADMIN_EMAIL=${DJANGO_ADMIN_EMAIL:-admin@example.com}
-      - DJANGO_ADMIN_PASSWORD=${DJANGO_ADMIN_PASSWORD:-admin123456}
+      # 安全：不再默认 admin123456。未设置时 init_admin 会生成随机初始密码并打印一次
+      - DJANGO_ADMIN_PASSWORD=${DJANGO_ADMIN_PASSWORD:-}
       # Celery配置
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -114,6 +115,15 @@ services:
       # Qdrant向量数据库
       - QDRANT_URL=http://qdrant:6333
       - HF_ENDPOINT=${DOCKER_HF_ENDPOINT:-https://huggingface.co}
+      # Skill 执行模式：runner（默认，第 2 层独立沙箱）或 inprocess（第 1 层进程内加固，
+      # 文件系统/业务网段不做隔离，仅建议本地开发）
+      - SKILL_EXEC_MODE=${SKILL_EXEC_MODE:-runner}
+      - SKILL_RUNNER_URL=${SKILL_RUNNER_URL:-http://skill-runner:8923}
+      - SKILL_RUNNER_TOKEN=${SKILL_RUNNER_TOKEN:-}
+      - SKILL_EXEC_TIMEOUT_SECONDS=${SKILL_EXEC_TIMEOUT_SECONDS:-120}
+      # 沙箱内 Skill 访问 backend 的地址：沙箱容器里的 127.0.0.1 是它自己，
+      # 必须用容器网络内可达的地址（compose 服务名 backend）
+      - WHARTTEST_RUNNER_BACKEND_URL=${WHARTTEST_RUNNER_BACKEND_URL:-http://backend:8000}
     depends_on:
       postgres:
         condition: service_healthy
@@ -123,9 +133,29 @@ services:
         condition: service_started
       weixin-plugin-host:
         condition: service_started
+      # runner 是默认执行面：先等它健康再启动 backend，避免首批 skill 调用直接失败
+      skill-runner:
+        condition: service_healthy
     networks:
       - wharttest-network
+      # 同时接入执行网，才能把作业提交给 skill-runner（反向不可达：runner 进不了业务网）
+      - skill-runner-net
     restart: unless-stopped
+    # Skill 命令由 LLM 生成，可能在 backend 容器内执行；这里收紧容器级权限，
+    # 作为进程内加固（orchestrator_integration/builtin_tools/skill_exec_guard.py）之外的兜底：
+    # - no-new-privileges：禁止 setuid/setcap 提权
+    # - 丢弃与业务无关的高危 capability
+    # - pids_limit：限制进程/线程总数，缓解 fork bomb（与 RLIMIT_NPROC 互补，root 下后者不生效）
+    # 说明：mem_limit 需按客户实际负载评估后再启用，避免影响嵌入模型与浏览器流程。
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - NET_RAW
+      - MKNOD
+      - AUDIT_WRITE
+      - SETFCAP
+      - SYS_CHROOT
+    pids_limit: 8192
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/')" ]
       interval: 30s
@@ -154,7 +184,8 @@ services:
       #   注意：后端必须监听 0.0.0.0（不能是 127.0.0.1），否则容器无法访问
       #   启动命令示例：uvicorn wharttest_django.asgi:application --host 0.0.0.0 --port 8000
       - WHARTTEST_BACKEND_URL=${WHARTTEST_BACKEND_URL:-http://backend:8000}
-      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}
+      # 安全：不再回退到源码里公开过的固定演示密钥，请通过 .env 显式配置
+      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-}
       - WHARTTEST_SHARED_DATA_DIR=/app/data
       - OPENCLAW_STATE_DIR=/app/data/openclaw-state
       - OPENCLAW_CONFIG=/app/data/openclaw-state/openclaw.json
@@ -309,6 +340,8 @@ services:
   # 启用前必须在 .env 配置 MCP_SHARED_TOKEN（未配置会 fail-closed 拒绝启动），
   # 并在客户端请求头带上 Authorization: Bearer <同一密钥>。
   mcp:
+    profiles:
+      - mcp
     # 本地构建模式
     build:
       context: ./WHartTest_MCP
@@ -323,17 +356,25 @@ services:
     environment:
       # WHartTest Tools 配置
       - WHARTTEST_BACKEND_URL=${WHARTTEST_BACKEND_URL:-http://backend:8000}
-      # 使用系统自动生成的默认API Key，生产环境请在.env中覆盖
-      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-wharttest-default-mcp-key-2025}
+      # 安全：不再回退到源码里公开过的固定演示密钥，请通过 .env 显式配置
+      - WHARTTEST_API_KEY=${WHARTTEST_API_KEY:-}
       # MS MCP API 配置（可选）
       - MS_API_HOST=${MS_API_HOST:-http://ms.example.com}
       - MS_ACCESS_KEY=${MS_ACCESS_KEY:-your_16byte_key1}
       - MS_SECRET_KEY=${MS_SECRET_KEY:-your_16byte_key2}
+      # MCP 共享密钥：未配置时服务会拒绝启动（fail closed，防止无鉴权裸奔）；
+      # 客户端请求头需带 Authorization: Bearer <同一密钥>。
+      # 本机联调可临时设 MCP_ALLOW_UNAUTHENTICATED=true，严禁暴露到任何网络。
+      - MCP_SHARED_TOKEN=${MCP_SHARED_TOKEN:-}
+      - MCP_ALLOW_UNAUTHENTICATED=${MCP_ALLOW_UNAUTHENTICATED:-false}
     ports:
       - "0.0.0.0:8914:8006" # WHartTest_tools 服务端口
       - "0.0.0.0:8915:8007" # ms_mcp_api 服务端口
     volumes:
       - ./data/playwright-screenshots:/tmp/playwright-output # 使用本地目录挂载
+      # 鉴权模块以只读方式挂入（不再写进镜像 COPY 清单）：
+      # 未提供该文件时两个入口会 fail-closed 拒绝启动，不会退化成无鉴权裸奔。
+      - ./WHartTest_MCP/mcp_auth.py:/app/mcp_auth.py:ro
     depends_on:
       - backend
     networks:
@@ -347,7 +388,14 @@ services:
       start_period: 30s
 
   # Playwright MCP 服务（官方Docker镜像）
+  # 官方 Playwright MCP（默认不启动，与 WHartTest MCP 同属 mcp profile）
+  #
+  # 该服务以 --allowed-hosts "*" 与 --no-sandbox 运行并对外暴露 8916 端口，
+  # 默认关闭；需要对接 MCP 客户端时一并启用：
+  #     docker compose --profile mcp up -d
   playwright-mcp:
+    profiles:
+      - mcp
     image: ${DOCKER_PLAYWRIGHT_MCP_IMAGE:-mcr.microsoft.com/playwright/mcp}
     container_name: wharttest-playwright-mcp
     user: root # 以 root 用户运行,确保有权限写入挂载目录
@@ -411,6 +459,10 @@ services:
 
 networks:
   wharttest-network:
+    driver: bridge
+  # 独立执行网：skill-runner 与 backend 在此互通，但 postgres/redis/qdrant
+  # 只挂在 wharttest-network 上，因此被 skill 执行的代码到不了数据面。
+  skill-runner-net:
     driver: bridge
 
 volumes:

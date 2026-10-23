@@ -28,7 +28,22 @@ except ImportError:
 
 # ─── WeKnora API 配置 ─────────────────────────────────────
 BASE_URL = os.getenv("WEKNORA_BASE_URL", "http://127.0.0.1:8056/api/v1").rstrip("/")
-API_KEY = os.getenv("WEKNORA_API_KEY", "sk--6q_YbIK88neAU8c4AA_ynFgQ5G2qCYxWmimaiGk-qBw5xSJ")
+API_KEY = os.getenv("WEKNORA_API_KEY", "")
+
+
+def _require_api_key() -> str:
+    """调用期校验密钥：不在导入期 raise，否则 --help/参数校验等路径也会直接崩。
+
+    平台侧注入方式：运维在后端环境设置
+    ``SKILL_ENV_ALLOWLIST_EXTRA=WEKNORA_API_KEY,WEKNORA_BASE_URL``
+    并提供对应变量，skill 子进程才会拿到（白名单外变量不会透传）。
+    """
+    if not API_KEY:
+        raise RuntimeError(
+            "缺少 WEKNORA_API_KEY：该 Skill 不再内置默认密钥。请在运维侧设置 "
+            "SKILL_ENV_ALLOWLIST_EXTRA=WEKNORA_API_KEY,WEKNORA_BASE_URL 并配置对应变量"
+        )
+    return API_KEY
 
 _http = requests.Session()
 _http.headers.update({"Content-Type": "application/json"})
@@ -40,7 +55,8 @@ _http.mount("https://", _adapter)
 
 
 def _api(method: str, path: str, **kwargs) -> dict:
-    """请求 WeKnora API。"""
+    """请求 WeKnora API。调用期校验密钥，缺失时给出可操作的配置指引。"""
+    _require_api_key()
     resp = _http.request(method, f"{BASE_URL}{path}", timeout=30, **kwargs)
     resp.raise_for_status()
     return resp.json()

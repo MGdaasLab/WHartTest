@@ -25,7 +25,19 @@ from pydantic.v1.networks import host_regex
 import os
 
 # mcp 初始化
-mcp = FastMCP(name="WHartTest_tools")
+from mcp_auth import build_mcp_auth
+
+# 鉴权模块缺失时 fail-closed：宁可起不来，也不要以无鉴权形态对外提供服务
+# （镜像不再 COPY 该文件，由 compose 以只读方式挂载；见 docker-compose.local.yml）
+try:
+    from mcp_auth import build_mcp_auth
+except ImportError as exc:
+    raise SystemExit(
+        "缺少 mcp_auth.py：MCP 服务拒绝在无法启用鉴权的情况下启动。"
+        "请确认 docker-compose 已把 WHartTest_MCP/mcp_auth.py 挂载到 /app/。"
+    ) from exc
+
+mcp = FastMCP(name="WHartTest_tools", auth=build_mcp_auth())
 
 # 从环境变量读取后端地址
 # 默认使用 Docker 网络中的 backend 服务名称
@@ -759,4 +771,12 @@ if __name__ == "__main__":
     # 使用 streamable-http 传输方式
     # host="0.0.0.0" 允许从其他容器访问
     # port=8006 指定端口
+    #
+    # 鉴权（必须）：服务以 root 绑定 0.0.0.0，历史上无任何鉴权，任何可达方都能
+    # 调用全部工具（含本地文件读取与后端 API 代理）。现在通过共享密钥校验 Bearer token；
+    # 未配置 MCP_SHARED_TOKEN 且未显式 MCP_ALLOW_UNAUTHENTICATED=true 时拒绝启动。
+    from mcp_auth import enforce_auth_or_exit
+
+    # 未配置 MCP_SHARED_TOKEN 且未显式允许裸奔时拒绝启动（fail closed）
+    enforce_auth_or_exit("WHartTest_tools")
     mcp.run(transport="streamable-http", host="0.0.0.0", port=8006)

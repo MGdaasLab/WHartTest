@@ -20,9 +20,14 @@ export interface LlmConfig {
   updated_at: string; // ISO 8601 date string
 }
 
-/**
- * 创建 LLM 配置的请求体
- */
+export interface LlmRuntimeConfig extends LlmConfig {
+  bundle_id?: number;
+  bundle_name?: string;
+  module_key?: string;
+  default_runtime_mode?: string;
+  resolved_source?: string;
+}
+
 export interface CreateLlmConfigRequest {
   config_name: string; // 配置名称
   provider: string; // 供应商

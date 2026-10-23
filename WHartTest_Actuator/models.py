@@ -26,6 +26,7 @@ class UiSocketEnum:
     """UI自动化Socket端点枚举"""
     PAGE_STEPS = 'u_page_steps'
     TEST_CASE = 'u_test_case'
+    TEST_CASE_ACK = 'u_test_case_ack'
     TEST_CASE_BATCH = 'u_test_case_batch'
     STOP_EXECUTION = 'u_stop_execution'
     STEP_RESULT = 'u_step_result'
