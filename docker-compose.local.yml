@@ -222,38 +222,6 @@ services:
       retries: 3
       start_period: 20s
 
-  # UI 自动化执行器（默认无头浏览器容器）
-  actuator:
-    build:
-      context: ./WHartTest_Actuator
-      dockerfile: Dockerfile
-      args:
-        PLAYWRIGHT_PYTHON_IMAGE: ${DOCKER_PLAYWRIGHT_PYTHON_IMAGE:-mcr.microsoft.com/playwright/python:v1.60.0-jammy}
-        PIP_INDEX_URL: ${DOCKER_PIP_INDEX_URL:-https://pypi.org/simple}
-    container_name: wharttest-actuator
-    shm_size: "1gb"
-    volumes:
-      - ./data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - WHARTTEST_ACTUATOR_DOCKER=1
-      - WHARTTEST_ACTUATOR_WS_URL=${WHARTTEST_ACTUATOR_WS_URL:-ws://host.docker.internal:8000/ws/ui/actuator/}
-      - WHARTTEST_ACTUATOR_API_URL=${WHARTTEST_ACTUATOR_API_URL:-http://host.docker.internal:8000}
-      - WHARTTEST_ACTUATOR_USE_GUI=false
-      - WHARTTEST_ACTUATOR_HEADLESS=false
-      - WHARTTEST_ACTUATOR_PERSISTENT=false
-      # API Key 认证（推荐）：配置后执行器不再调用 /api/token/ 登录，
-      # 避免触发后端「单设备登录」导致浏览器会话被挤掉
-      # 安全：不再回退到源码里公开过的固定演示密钥，请通过 .env 显式配置
-      - WHARTTEST_ACTUATOR_API_KEY=${WHARTTEST_ACTUATOR_API_KEY:-}
-      # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 同值（run_compose.sh 自动生成回写 .env）
-      - WHARTTEST_ACTUATOR_WS_TOKEN=${WHARTTEST_ACTUATOR_WS_TOKEN:-}
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-    networks:
-      - wharttest-network
-    restart: unless-stopped
-
   # Skill 命令的独立执行面（第 2 层安全加固，默认执行模式）
   #
   # 与 backend 的关系：backend 只做鉴权与取可见 skill 目录，把命令交给本服务执行；
