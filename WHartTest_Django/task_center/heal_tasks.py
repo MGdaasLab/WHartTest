@@ -421,11 +421,17 @@ def heal_failed_cases(self, batch_id: int):
 
 
 def _append_heal_log(batch, log_lines: list):
-    """把自愈过程摘要追加到定时任务最近一次执行记录的日志中。"""
+    """把自愈过程摘要追加到批次关联的任务中心执行记录日志中。"""
     from .models import TaskExecution
 
     try:
-        execution = batch.scheduled_task.executions.order_by('-started_at').first()
+        # 按批次精确关联：同"最新一条"取法会把日志写到自愈期间新产生的其他执行记录上
+        execution = (
+            batch.scheduled_task.executions
+            .filter(batch_record=batch)
+            .order_by('-started_at')
+            .first()
+        )
         if execution:
             append_text = '\n'.join(log_lines)
             TaskExecution.objects.filter(id=execution.id).update(

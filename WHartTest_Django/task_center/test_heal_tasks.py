@@ -329,3 +329,55 @@ class FlipExecutionRecordTests(TestCase):
                 task=self.task, status=TaskExecution.ExecutionStatus.SUCCESS
             ).exists()
         )
+
+
+class AppendHealLogTests(TestCase):
+    """自愈日志按批次关联精确追加到执行记录。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='loguser', password='pwd', email='l@t.com')
+        self.project = Project.objects.create(name='LogProject', creator=self.user)
+        self.task = ScheduledTask.objects.create(
+            name='日志任务', project=self.project,
+            module=ScheduledTask.TaskModule.UI_AUTOMATION,
+            schedule_type=ScheduledTask.ScheduleType.DAILY, daily_time='08:00',
+            creator=self.user, auto_heal_enabled=True,
+        )
+
+    def _batch_with_execution(self):
+        batch = UiBatchExecutionRecord.objects.create(
+            name='批次', total_cases=1, status=3,
+            trigger_type='scheduled', scheduled_task=self.task,
+        )
+        execution = TaskExecution.objects.create(
+            task=self.task, trigger_type=TaskExecution.TriggerType.SCHEDULED,
+            status=TaskExecution.ExecutionStatus.FAILED,
+            batch_record=batch,
+        )
+        return batch, execution
+
+    def test_log_appends_to_own_batch_execution(self):
+        from task_center.heal_tasks import _append_heal_log
+
+        batch, execution = self._batch_with_execution()
+        _append_heal_log(batch, ['第一行', '第二行'])
+
+        execution.refresh_from_db()
+        self.assertIn('第一行\n第二行', execution.log)
+
+    def test_log_skips_newer_unrelated_execution(self):
+        """自愈期间同任务产生了更新的 manual 记录：日志必须追加到批次自己的记录。"""
+        from task_center.heal_tasks import _append_heal_log
+
+        batch, own_execution = self._batch_with_execution()
+        newer_manual = TaskExecution.objects.create(
+            task=self.task, trigger_type=TaskExecution.TriggerType.MANUAL,
+            status=TaskExecution.ExecutionStatus.FAILED,
+        )
+
+        _append_heal_log(batch, ['自愈日志'])
+
+        own_execution.refresh_from_db()
+        newer_manual.refresh_from_db()
+        self.assertIn('自愈日志', own_execution.log)
+        self.assertNotIn('自愈日志', newer_manual.log or '')
