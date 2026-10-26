@@ -5,7 +5,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('task_center', '0007_alter_scheduledtask_env_config_id_and_more'),
+        ('task_center', '0004_remove_executing_status'),
     ]
 
     operations = [
