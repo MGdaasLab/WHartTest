@@ -1,5 +1,6 @@
 """平台侧 WebSocket 认证冒烟测试（对真实 uvicorn 实例执行）。
 
+WS 认证为硬性要求（恒严格），strict 参数仅为兼容旧脚本签名保留，实际忽略。
 用法: python smoke.py <port> <strict:0|1> <actuator_secret>
 """
 import asyncio
@@ -38,23 +39,24 @@ async def expect_close(ws, expected_code):
         return False, "3s 内未关闭"
 
 
-async def get_token(port):
+async def get_token(port, username, password):
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             BASE.format(port=port) + "/api/token/",
-            json={"username": "smoketest", "password": "SmokePass123!"},
+            json={"username": username, "password": password},
         )
         data = resp.json()
         return data["data"]["access"]
 
 
-async def run_grace(port, secret):
-    token = await get_token(port)
+async def run_legacy_grace_check(port, secret, username, password):
+    token = await get_token(port, username, password)
 
-    # 1. 匿名 web 连接：兼容模式放行
-    async with websockets.connect(WS.format(port=port) + "/ws/ui/web/") as ws:
-        msg = await recv_welcome(ws)
-        record("grace/匿名web连接放行", msg is not None and msg["code"] == 200)
+    # 1. 匿名 web 连接：一律拒绝（硬性认证）
+    ws = await websockets.connect(WS.format(port=port) + "/ws/ui/web/")
+    ok, detail = await expect_close(ws, 4401)
+    record("匿名web连接被拒(4401)", ok, detail)
+    await asyncio.wait_for(ws.wait_closed(), timeout=3)
 
     # 2. 伪造 token：拒绝 4401
     ws = await websockets.connect(WS.format(port=port) + "/ws/ui/web/?token=forged-token")
@@ -107,15 +109,14 @@ async def run_grace(port, secret):
             }))
             try:
                 got = json.loads(await asyncio.wait_for(victim.recv(), timeout=3))
-                forwarded = got.get("data", {}).get("func_args", {}).get("message") == "forged"
+                forwarded = bool(got.get("data", {})) and got["data"].get("func_args", {}).get("message") == "forged"
             except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed):
                 forwarded = False
-            record("grace/伪造结果被放行(预期行为:兼容模式不拦)", forwarded,
-                   "兼容模式设计上放行，strict 模式拦截")
+            record("伪造结果被拦截(受害者未收到)", not forwarded)
 
 
-async def run_strict(port, secret):
-    token = await get_token(port)
+async def run_strict(port, secret, username, password):
+    token = await get_token(port, username, password)
 
     # 1. 匿名 web：拒绝 4401
     ws = await websockets.connect(WS.format(port=port) + "/ws/ui/web/")
@@ -132,7 +133,8 @@ async def run_strict(port, secret):
     # 3. 有效 JWT web：放行
     async with websockets.connect(WS.format(port=port) + f"/ws/ui/web/?token={token}") as ws:
         msg = await recv_welcome(ws)
-        record("strict/有效JWT放行", msg is not None and msg.get("user") == "smoketest")
+        record("strict/有效JWT放行", msg is not None and bool(msg.get("user")) and not str(msg.get("user")).startswith("web_"),
+               f"user={msg.get('user') if msg else None}")
 
     # 4. 执行器正确密钥放行
     async with websockets.connect(WS.format(port=port) + f"/ws/ui/actuator/?id=act-S&token={secret}") as ws:
@@ -162,10 +164,10 @@ async def run_strict(port, secret):
 
 async def main():
     port, strict, secret = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-    if strict == "0":
-        await run_grace(port, secret)
-    else:
-        await run_strict(port, secret)
+    username = sys.argv[4] if len(sys.argv) > 4 else "smoketest"
+    password = sys.argv[5] if len(sys.argv) > 5 else "SmokePass123!"
+    # WS 认证恒严格，无论参数如何都执行 strict 检查
+    await run_strict(port, secret, username, password)
     failed = [r for r in results if not r[1]]
     print(f"\n{'=' * 50}\n总计: {len(results)}  通过: {len(results) - len(failed)}  失败: {len(failed)}")
     sys.exit(1 if failed else 0)

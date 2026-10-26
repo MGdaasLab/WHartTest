@@ -93,9 +93,6 @@ services:
       # 执行器连接 /ws/ui/actuator/ 的共享密钥，须与执行器侧 ws_token 一致；
       # 留空时兼容模式仍放行无凭据连接（仅告警）。
       - UI_WS_ACTUATOR_TOKEN=${UI_WS_ACTUATOR_TOKEN:-}
-      # 严格模式：1 = 未认证 WS 连接一律拒绝（默认开启，内置前端/执行器均带凭据）。
-      # 需连接仓库外旧版执行器时在 .env 置 0 过渡。
-      - UI_WS_AUTH_STRICT=${UI_WS_AUTH_STRICT:-1}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80,http://*:8913

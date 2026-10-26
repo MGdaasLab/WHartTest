@@ -144,8 +144,8 @@ class Config:
         # API Key 认证（可选，优先级高于账号密码）：不发 /api/token/ 登录请求，
         # 不会触发后端单设备 session_version 递增，避免挤掉浏览器登录会话
         self.api_key = ""
-        # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 一致；后端开启严格模式
-        # （UI_WS_AUTH_STRICT=1）后，无 token 的执行器连接会被拒绝（close 4401）
+        # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 一致（硬性要求，
+        # 未配置或配置错误时连接会被拒绝 close 4401；run_compose.sh 会自动同步）
         self.ws_token = ""
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None

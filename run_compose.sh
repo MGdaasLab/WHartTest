@@ -147,6 +147,48 @@ ensure_env_secret() {
   echo "已自动生成 $name 并写入 $ENV_FILE（无需手工配置）"
 }
 
+# 同步 WS 认证密钥到本机执行器配置（config.toml / config.example.toml）。
+# 只改 [server] ws_token 一行，其余内容原样保留；文件不存在时从 example 复制生成。
+sync_actuator_ws_token() {
+  local token_value="$1"
+  local actuator_dir="$SCRIPT_DIR/WHartTest_Actuator"
+  local example_path="$actuator_dir/config.example.toml"
+  local config_path="$actuator_dir/config.toml"
+
+  # 首次部署：config.toml 尚未生成（用户还没跑过 main.py），
+  # 先从 example 复制一份，保证用户之后首次启动即带密钥。
+  if [ ! -f "$config_path" ] && [ -f "$example_path" ]; then
+    cp "$example_path" "$config_path"
+    echo "已从 config.example.toml 生成 $config_path"
+  fi
+
+  local target
+  for target in "$config_path" "$example_path"; do
+    [ -f "$target" ] || continue
+    if grep -qE '^[[:space:]]*ws_token[[:space:]]*=' "$target"; then
+      # 已有 ws_token 行：值一致则跳过，不一致则覆盖为新密钥
+      local current
+      current=$(grep -E '^[[:space:]]*ws_token[[:space:]]*=' "$target" | tail -n 1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/')
+      if [ "$current" = "$token_value" ]; then
+        continue
+      fi
+      sed -i -E "s|^[[:space:]]*ws_token[[:space:]]*=.*|ws_token = \"$token_value\"|" "$target"
+      echo "已更新 $target 中的 ws_token（与本机后端密钥保持一致）"
+    else
+      # 无 ws_token 行：追加到 [server] 段末尾（第一个 [ 区块结束前）
+      if grep -qE '^[[:space:]]*\[server\]' "$target"; then
+        awk -v tok="ws_token = \"$token_value\"" '
+          BEGIN{done=0} /^\[server\]/{insrv=1}
+          insrv && /^[[:space:]]*\[/ && !/^\[server\]/ && !done {print tok; done=1}
+          {print}
+          END{if(!done) print tok}
+        ' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
+        echo "已在 $target 的 [server] 段写入 ws_token"
+      fi
+    fi
+  done
+}
+
 # 首次运行引导：补齐 .env 与密钥，使“复制 .env.example 后直接执行”即可使用
 bootstrap_env_secrets() {
   local secret_key=""
@@ -192,6 +234,13 @@ bootstrap_env_secrets() {
     env_file_set WHARTTEST_ACTUATOR_WS_TOKEN "$ws_token"
   fi
   export WHARTTEST_ACTUATOR_WS_TOKEN="$ws_token"
+
+  # 本地执行器配置同步：把 WS 认证密钥写进 WHartTest_Actuator/config.toml
+  # 的 [server] ws_token（不存在则从 config.example.toml 生成后再写），
+  # 使本机手动运行的执行器（python main.py）与容器后端密钥一致，升级后
+  # 无需手工配置。config.example.toml 同步写入：保证"先跑执行器、后跑
+  # 本脚本"时由 example 生成的 config.toml 也带上密钥。
+  sync_actuator_ws_token "$ws_token"
 
   # 示例中的占位密钥：未替换时自动生成，避免以公开占位值上线
   secret_key=$(env_file_value DJANGO_SECRET_KEY)

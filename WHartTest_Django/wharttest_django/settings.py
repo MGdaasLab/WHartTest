@@ -457,11 +457,8 @@ SIMPLE_JWT = {
 # /ws/ui/web/ 校验 SimpleJWT access token；/ws/ui/actuator/ 校验本共享密钥。
 # 部署时必须通过环境变量注入，勿使用代码内默认值（默认空 = 密钥未配置）。
 UI_WS_ACTUATOR_TOKEN = os.environ.get("UI_WS_ACTUATOR_TOKEN", "")
-# 兼容模式开关：0 = 缺 token 的旧客户端连接放行（带了 token 则必须有效）；
-# 1 = 一律拒绝未认证连接。
-# 代码内默认 0（本地手动开发最常用）；compose 部署经 .env.example 默认 1
-# （内置前端/执行器均已内置认证，开箱即安全）。连旧版外置执行器的部署置 0 过渡。
-UI_WS_AUTH_STRICT = os.environ.get("UI_WS_AUTH_STRICT", "0")
+# WS 认证为硬性安全要求，严格模式恒开（websocket_auth.auth_strict_mode 恒 True），
+# 不提供关闭开关。旧版本遗留的 UI_WS_AUTH_STRICT 环境变量不再被读取。
 
 # 日志输出目录
 LOGS_DIR = BASE_DIR / "data" / "logs"

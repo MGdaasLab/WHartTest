@@ -70,17 +70,17 @@ class MiddlewareWebAuthTests(TransactionTestCase):
         finally:
             await communicator.disconnect()
 
-    async def test_no_token_allowed_in_grace_mode(self):
-        accepted, first, communicator = await self._connect_and_first_message('/ws/ui/web/')
+    async def test_no_token_rejected_always(self):
+        """WS 认证为硬性要求：匿名连接无条件拒绝（无兼容模式）。"""
+        communicator = WebsocketCommunicator(_middleware_app(), '/ws/ui/web/')
         try:
-            self.assertTrue(accepted)
-            self.assertEqual(first['type'], 'websocket.send')
-            # 匿名连接：user 为 web_xxx 形式
-            self.assertIn('web_', first['text'])
+            self.assertTrue(await communicator.connect())
+            close = await communicator.receive_output(timeout=2)
+            self.assertEqual(close['type'], 'websocket.close')
+            self.assertEqual(close['code'], WS_CLOSE_UNAUTHENTICATED)
         finally:
             await communicator.disconnect()
 
-    @override_settings(UI_WS_AUTH_STRICT='1')
     async def test_no_token_rejected_in_strict_mode(self):
         communicator = WebsocketCommunicator(_middleware_app(), '/ws/ui/web/')
         try:
@@ -133,7 +133,7 @@ class MiddlewareActuatorAuthTests(TransactionTestCase):
         finally:
             await communicator.disconnect()
 
-    @override_settings(UI_WS_ACTUATOR_TOKEN=SECRET, UI_WS_AUTH_STRICT='1')
+    @override_settings(UI_WS_ACTUATOR_TOKEN=SECRET)
     async def test_missing_secret_rejected_in_strict_mode(self):
         communicator = WebsocketCommunicator(_middleware_app(), '/ws/ui/actuator/?id=act-1')
         try:
@@ -144,11 +144,13 @@ class MiddlewareActuatorAuthTests(TransactionTestCase):
             await communicator.disconnect()
 
     @override_settings(UI_WS_ACTUATOR_TOKEN=SECRET)
-    async def test_missing_secret_allowed_in_grace_mode(self):
-        accepted, first, communicator = await self._connect('/ws/ui/actuator/?id=act-grace')
+    async def test_missing_secret_rejected_always(self):
+        """无凭据执行器连接无条件拒绝（WS 认证硬性要求）。"""
+        communicator = WebsocketCommunicator(_middleware_app(), '/ws/ui/actuator/?id=act-grace')
         try:
-            self.assertTrue(accepted)
-            self.assertIn('act-grace', first['text'])
+            self.assertTrue(await communicator.connect())
+            close = await communicator.receive_output(timeout=2)
+            self.assertEqual(close['code'], WS_CLOSE_UNAUTHENTICATED)
         finally:
             await communicator.disconnect()
 
@@ -190,23 +192,21 @@ class ResultSourceVerificationTests(TestCase):
 
     def test_unregistered_user_rejected_in_strict_mode(self):
         consumer = self._actuator_consumer()
-        with override_settings(UI_WS_AUTH_STRICT='1'):
-            self.assertFalse(consumer.verify_result_source('web_victim'))
+        self.assertFalse(consumer.verify_result_source('web_victim'))
 
-    def test_unregistered_user_allowed_in_grace_mode(self):
+    def test_unregistered_user_rejected_without_strict_override(self):
+        """严格模式恒开：未登记来源一律拒绝（无需 override）。"""
         consumer = self._actuator_consumer()
-        self.assertTrue(consumer.verify_result_source('web_anyone'))
+        self.assertFalse(consumer.verify_result_source('web_anyone'))
 
     def test_empty_user_rejected_in_strict_mode(self):
         consumer = self._actuator_consumer()
-        with override_settings(UI_WS_AUTH_STRICT='1'):
-            self.assertFalse(consumer.verify_result_source(''))
+        self.assertFalse(consumer.verify_result_source(''))
 
     def test_web_connection_always_passes(self):
         consumer = cons.UiAutomationConsumer()
         consumer.is_actuator = False
-        with override_settings(UI_WS_AUTH_STRICT='1'):
-            self.assertTrue(consumer.verify_result_source('nobody'))
+        self.assertTrue(consumer.verify_result_source('nobody'))
 
     def test_register_task_records_user_and_token(self):
         consumer = self._actuator_consumer()
@@ -239,39 +239,36 @@ class ResultSourceVerificationTests(TestCase):
         args: dict = {}
         consumer.register_actuator_task(consumer, args, 'web_9')
         token = args['task_token']
-        with override_settings(UI_WS_AUTH_STRICT='1'):
-            first_args = {'task_token': token, 'case_id': 1}
-            self.assertTrue(consumer.verify_result_source('web_9', first_args))
-            # token 已从 args 剥离（不随结果入库/广播）
-            self.assertNotIn('task_token', first_args)
-            # 非消费式：再次回显同一 token 仍命中
-            self.assertTrue(
-                consumer.verify_result_source('web_9', {'task_token': token})
-            )
+        first_args = {'task_token': token, 'case_id': 1}
+        self.assertTrue(consumer.verify_result_source('web_9', first_args))
+        # token 已从 args 剥离（不随结果入库/广播）
+        self.assertNotIn('task_token', first_args)
+        # 非消费式：再次回显同一 token 仍命中
+        self.assertTrue(
+            consumer.verify_result_source('web_9', {'task_token': token})
+        )
 
     def test_token_user_mismatch_rejected(self):
         """task_token 与 claimed_user 不符（伪造/串扰）→ 拒绝。"""
         consumer = self._actuator_consumer()
         args: dict = {}
         consumer.register_actuator_task(consumer, args, 'web_9')
-        with override_settings(UI_WS_AUTH_STRICT='1'):
-            mismatch_args = {'task_token': args['task_token']}
-            self.assertFalse(
-                consumer.verify_result_source('web_victim', mismatch_args)
-            )
-            # 拒绝路径同样剥离 token
-            self.assertNotIn('task_token', mismatch_args)
+        mismatch_args = {'task_token': args['task_token']}
+        self.assertFalse(
+            consumer.verify_result_source('web_victim', mismatch_args)
+        )
+        # 拒绝路径同样剥离 token
+        self.assertNotIn('task_token', mismatch_args)
 
     def test_unknown_token_falls_back_to_user_record(self):
         """未知 token（伪造/过期）→ 回退按 user 近期记录校验。"""
         consumer = self._actuator_consumer()
         consumer.register_actuator_task(consumer, {}, 'web_9')
-        with override_settings(UI_WS_AUTH_STRICT='1'):
-            # 已登记用户 + 伪造 token：user 命中放行
-            self.assertTrue(
-                consumer.verify_result_source('web_9', {'task_token': 'forged'})
-            )
-            # 未登记用户 + 伪造 token：拒绝
-            self.assertFalse(
-                consumer.verify_result_source('web_victim', {'task_token': 'forged'})
-            )
+        # 已登记用户 + 伪造 token：user 命中放行
+        self.assertTrue(
+            consumer.verify_result_source('web_9', {'task_token': 'forged'})
+        )
+        # 未登记用户 + 伪造 token：拒绝
+        self.assertFalse(
+            consumer.verify_result_source('web_victim', {'task_token': 'forged'})
+        )

@@ -10,21 +10,12 @@
 
 | 变量 | 作用 | 默认值 |
 |---|---|---|
-| `UI_WS_ACTUATOR_TOKEN` | 执行器连接共享密钥，须与执行器侧 `ws_token` 一致 | 空（compose 部署自动生成） |
-| `UI_WS_AUTH_STRICT` | `1` = 未认证连接一律拒绝（close 4401） | 代码内 `0`（本地开发）；`.env.example`/compose `1`（新部署默认严格） |
+| `UI_WS_ACTUATOR_TOKEN` | 执行器连接共享密钥，须与执行器侧 `ws_token` 一致 | 空（compose 部署由 run_compose.sh 自动生成并同步） |
 
-模式行为：
-
-| 连接方式 | 兼容模式（STRICT=0） | 严格模式（STRICT=1） |
-|---|---|---|
-| 匿名（不带 token） | 放行（启动日志有 WARNING） | 拒绝 4401 |
-| 带错误/过期 token | 拒绝 4401 | 拒绝 4401 |
-| 有效凭据（前端 JWT / 执行器密钥） | 放行，连接带真实身份 | 放行 |
-
-**为什么两处默认值不同**：compose 部署的内置前端与执行器随同一份源码构建，均内置
-认证能力，新部署默认严格即开箱即安全；本地手动开发环境可能有旧版前端/执行器在跑，
-代码内默认保持兼容，需要时手动设 `UI_WS_AUTH_STRICT=1`。存量部署（升级前已生成
-`.env`）不受 `.env.example` 变更影响，需手动补该变量。
+**WS 认证为硬性安全要求，不存在开关**：未认证连接一律拒绝（4401），不提供兼容
+模式。历史版本的 `UI_WS_AUTH_STRICT` 环境变量已废弃、不再被读取。密钥未配置时
+执行器连接同样被拒（fail-closed），`run_compose.sh` 会自动生成并同步到本机执行器
+的 `config.toml`，正常部署无需手工配置。
 
 ## 部署步骤
 
@@ -57,16 +48,12 @@ WHARTTEST_ACTUATOR_WS_TOKEN=<同值>
 前端 `websocket.ts` 已自动从 `localStorage` 读取登录 access token 附加到连接 URL，
 收到 4401 时自动刷新 token 重连一次。无需额外配置。
 
-### 4. 严格模式
+### 4. 严格模式（恒开，无需操作）
 
-`.env.example` 与 compose 默认已开启（`UI_WS_AUTH_STRICT=1`）：全新部署启动即严格，
-密钥由 `run_compose.sh` 自动生成，内置前端/执行器自动带凭据，无需任何手工步骤。
-
-存量部署升级或本地手动环境：确认所有执行器已配置 `ws_token` 后，在 `.env` 补
-`UI_WS_AUTH_STRICT=1` 并重启。日志出现 `UI WS 认证失败` 且路径为 actuator，
-说明还有执行器没带凭据被拒——升级该执行器或临时置 0 过渡。
-
-回滚：把 `UI_WS_AUTH_STRICT` 改回 `0` 重启即可，兼容模式不会拒绝任何合法旧客户端。
+WS 认证严格模式为系统硬性行为，无开关、不可关闭。`run_compose.sh` 每次运行都会
+校验并同步密钥（根 `.env` 与本机 `WHartTest_Actuator/config.toml`），升级部署后
+本地执行器直接启动即可。若日志出现 `UI_WS_ACTUATOR_TOKEN 未配置` 或执行器反复
+4401，运行一次 `run_compose.sh` 即可自动修复。
 
 ## 安全验证
 

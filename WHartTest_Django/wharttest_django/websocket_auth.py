@@ -1,20 +1,21 @@
 """
 UI 自动化 WebSocket 认证中间件
 
-为以下两个端点提供连接级认证（未认证连接直接拒绝，close code 4401）：
+为以下端点提供连接级认证（未认证连接一律拒绝，close code 4401）：
 - /ws/ui/web/      前端浏览器连接：校验 SimpleJWT access token（query 参数 token）
 - /ws/ui/actuator/ 执行器连接：校验共享密钥（query 参数 token）
+- /ws/heal/chat/   自愈对话订阅：与 web 同为 JWT 认证
 
-背景：这两个端点此前完全匿名（asgi.py 无认证中间件，consumer.connect() 无条件
-accept），任意攻击者可注册执行器抢注任务载荷、接收广播结果并伪造结果/画面帧注入
-受害者会话。本中间件是第一层修复；consumer 内的第二层校验见 consumers.py。
+背景：这些端点此前完全匿名（asgi.py 无认证中间件，consumer.connect() 无条件
+accept），任意攻击者可注册执行器抢注任务载荷、接收广播结果并伪造结果/画面帧
+注入受害者会话。本中间件是第一层修复；consumer 内的第二层校验见 consumers.py。
 
-设计说明：
-- token 经查询参数传递：浏览器 WebSocket API 无法自定义请求头，这是现实做法；
-  生产环境应启用 HTTPS 防止 token 出现在代理日志。
-- 兼容模式（grace）：UI_WS_AUTH_STRICT=0 时，缺 token 的连接放行（保持与尚未
-  改造的旧版前端/执行器兼容），但带了 token 就必须校验通过；=1 时严格拒绝。
-  该开关仅为平滑过渡设计，客户端改造完成后应尽快切换为 1 并移除 grace 分支。
+硬性要求：WS 认证不可关闭——不存在兼容模式开关，未携带有效凭据的连接一律
+拒绝。执行器侧密钥由 run_compose.sh 自动生成并同步到 config.toml，前端自动
+携带登录 JWT，正常部署下用户无需任何手工配置。
+
+设计说明：token 经查询参数传递（浏览器 WebSocket API 无法自定义请求头），
+生产环境应启用 HTTPS 防止 token 出现在代理日志。
 """
 
 import logging
@@ -44,14 +45,12 @@ def _get_setting(name: str, default: str = '') -> str:
 
 
 def auth_strict_mode() -> bool:
-    """认证严格模式是否开启（UI_WS_AUTH_STRICT）。
+    """WS 认证严格模式恒为开启（硬性安全要求，不可配置关闭）。
 
-    True：未认证连接一律拒绝；False（默认）：缺 token 的旧客户端放行（带了
-    token 则必须有效）。consumer 侧第二层校验同样引用本开关保持行为一致。
+    保留函数形态：consumer 等多处仍以 auth_strict_mode() 表达"未认证即拒绝"
+    的判定，收敛在此便于将来如需调整策略只改一处。
     """
-    return _get_setting('UI_WS_AUTH_STRICT', '0').strip().lower() in {
-        '1', 'true', 'yes', 'on',
-    }
+    return True
 
 
 class UiWebSocketAuthMiddleware:
@@ -75,20 +74,13 @@ class UiWebSocketAuthMiddleware:
         query = parse_qs(scope.get('query_string', b'').decode('utf-8'))
         token = (query.get('token') or [''])[0]
 
-        if path.startswith('/ws/heal/chat/'):
-            # 自愈对话订阅：与 UI web 同为 JWT 认证
-            authed, principal = await self._authenticate_web(token)
-        elif path.startswith('/ws/ui/web/'):
-            authed, principal = await self._authenticate_web(token)
-        else:
+        if path.startswith('/ws/ui/actuator/'):
             authed, principal = self._authenticate_actuator(token)
+        else:
+            # /ws/ui/web/ 与 /ws/heal/chat/ 同为 JWT 认证
+            authed, principal = await self._authenticate_web(token)
 
         if not authed:
-            # grace 模式：未携带凭据的连接放行（兼容旧客户端）；
-            # 携带了错误凭据则无论何种模式都拒绝。
-            if token == '' and not self._strict_mode():
-                logger.warning('UI WS 匿名连接放行（兼容模式）: %s', path)
-                return await self.app(scope, receive, send)
             logger.warning(
                 'UI WS 认证失败，拒绝连接: path=%s ip=%s',
                 path,
@@ -103,13 +95,9 @@ class UiWebSocketAuthMiddleware:
         scope[SCOPE_AUTH_KEY] = {
             'kind': 'actuator' if path.startswith('/ws/ui/actuator/') else 'web',
             'authenticated': True,
-            'token_kind': 'jwt' if path.startswith('/ws/ui/web/') else 'shared_secret',
+            'token_kind': 'jwt' if not path.startswith('/ws/ui/actuator/') else 'shared_secret',
         }
         return await self.app(scope, receive, send)
-
-    @staticmethod
-    def _strict_mode() -> bool:
-        return auth_strict_mode()
 
     @staticmethod
     async def _authenticate_web(token: str):
@@ -144,7 +132,7 @@ class UiWebSocketAuthMiddleware:
         """校验执行器共享密钥，成功返回 (True, None)。"""
         expected = _get_setting('UI_WS_ACTUATOR_TOKEN')
         if not expected:
-            # 未配置密钥：无法校验，视为未认证（grace 模式下仍可匿名放行）
+            # 未配置密钥：无标准答案可比对，一律拒绝（fail-closed）
             return False, None
         if not token:
             return False, None
@@ -160,25 +148,9 @@ class UiWebSocketAuthMiddleware:
 
 
 def warn_insecure_ws_config() -> None:
-    """启动时检查 WS 认证配置，不安全组合打 WARNING（只提示，不阻断启动）。"""
-    import django.conf
-
-    token_set = bool(_get_setting('UI_WS_ACTUATOR_TOKEN'))
-    strict = auth_strict_mode()
-    logger_ws = logging.getLogger('ui_automation')
-    if not token_set and not strict:
-        logger_ws.warning(
-            "UI WS 认证处于开放状态：UI_WS_ACTUATOR_TOKEN 未配置且 UI_WS_AUTH_STRICT=0，"
-            "匿名连接仍可访问 /ws/ui/web/ 与 /ws/ui/actuator/（兼容模式）。"
-            "生产环境请配置密钥并在客户端改造完成后开启 UI_WS_AUTH_STRICT=1"
-        )
-    elif not token_set and strict:
-        logger_ws.warning(
-            "UI_WS_AUTH_STRICT=1 但 UI_WS_ACTUATOR_TOKEN 未配置：所有执行器连接"
-            "都将被拒绝（4401）。请先为执行器配置共享密钥"
-        )
-    elif token_set and not strict:
-        logger_ws.info(
-            "UI WS 执行器密钥已配置（兼容模式）：带错误 token 的连接会被拒绝，"
-            "未带 token 的匿名连接仍放行。全部客户端就绪后建议开启 UI_WS_AUTH_STRICT=1"
+    """启动时检查 WS 认证配置，关键缺失打 WARNING（只提示，不阻断启动）。"""
+    if not _get_setting('UI_WS_ACTUATOR_TOKEN'):
+        logger.warning(
+            "UI_WS_ACTUATOR_TOKEN 未配置：所有执行器 WS 连接都将被拒绝（4401）。"
+            "请运行 run_compose.sh（自动生成并同步密钥），或手动设置该环境变量"
         )
