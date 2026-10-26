@@ -103,3 +103,6 @@ docs/security/
 
 # 本地 backend 直连容器 skill-runner 的混合部署覆盖配置（含宿主机绝对路径，仅本机适用）
 docker-compose.local-runner-override.yml
+
+# 本地 Actuator 运行时配置（各机器各自维护）
+WHartTest_Actuator/config.toml
