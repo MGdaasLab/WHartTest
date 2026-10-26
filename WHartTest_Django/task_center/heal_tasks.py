@@ -444,8 +444,15 @@ def _flip_execution_record_to_success(batch, healed_count: int) -> bool:
     from .models import TaskExecution
 
     try:
-        execution = batch.scheduled_task.executions.order_by('-started_at').first()
-        if execution is None or execution.status != TaskExecution.ExecutionStatus.FAILED:
+        # 按批次精确关联（batch_record=batch）：自愈期间同任务可能被手动触发或
+        # 再调度产生其他执行记录，取"最新一条"会把状态翻到错误的记录上
+        execution = (
+            TaskExecution.objects
+            .filter(batch_record=batch, status=TaskExecution.ExecutionStatus.FAILED)
+            .order_by('-started_at')
+            .first()
+        )
+        if execution is None:
             return False
         flip_note = (
             f"\n[{timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M:%S')}] "

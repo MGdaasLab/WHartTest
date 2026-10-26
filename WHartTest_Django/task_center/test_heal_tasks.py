@@ -289,3 +289,43 @@ class FlipExecutionRecordTests(TestCase):
         self.assertFalse(result)
         execution.refresh_from_db()
         self.assertEqual(execution.status, TaskExecution.ExecutionStatus.SUCCESS)
+
+
+    def test_flip_targets_own_batch_record_not_latest(self):
+        """自愈期间同任务产生了更新的 manual 记录：翻转必须命中自愈批次自己的记录。"""
+        from task_center.heal_tasks import _flip_execution_record_to_success
+
+        batch, own_execution = self._failed_execution_with_batch()
+        # 同任务更晚的一条 manual 记录（未关联任何批次）
+        TaskExecution.objects.create(
+            task=self.task, trigger_type=TaskExecution.TriggerType.MANUAL,
+            status=TaskExecution.ExecutionStatus.FAILED,
+        )
+
+        result = _flip_execution_record_to_success(batch, healed_count=1)
+
+        self.assertTrue(result)
+        own_execution.refresh_from_db()
+        self.assertEqual(own_execution.status, TaskExecution.ExecutionStatus.SUCCESS)
+        # manual 记录保持 failed 不被误翻
+        latest = TaskExecution.objects.filter(
+            trigger_type=TaskExecution.TriggerType.MANUAL
+        ).order_by('-started_at').first()
+        self.assertEqual(latest.status, TaskExecution.ExecutionStatus.FAILED)
+
+    def test_no_batch_linked_execution_returns_false(self):
+        """自愈批次自己的执行记录找不到（关联异常）时不翻转任何记录。"""
+        from task_center.heal_tasks import _flip_execution_record_to_success
+
+        batch = UiBatchExecutionRecord.objects.create(
+            name='无关联批次', total_cases=1, status=3,
+            trigger_type='scheduled', scheduled_task=self.task,
+        )
+        result = _flip_execution_record_to_success(batch, healed_count=1)
+        self.assertFalse(result)
+        # 同任务下任何记录都未被翻转
+        self.assertFalse(
+            TaskExecution.objects.filter(
+                task=self.task, status=TaskExecution.ExecutionStatus.SUCCESS
+            ).exists()
+        )

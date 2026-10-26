@@ -154,8 +154,8 @@
           @page-change="onExecutionPageChange"
         >
           <template #status="{ record }">
-            <a-tag :color="execStatusColorMap[record.status]">
-              {{ execStatusTextMap[record.status] }}
+            <a-tag :color="execStatusColorMap[record.status] || 'gray'">
+              {{ execStatusTextMap[record.status] || record.status }}
             </a-tag>
           </template>
           <template #trigger_type="{ record }">
