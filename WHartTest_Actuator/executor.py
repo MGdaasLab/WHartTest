@@ -9,6 +9,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import time
 import traceback
 from pathlib import Path
@@ -719,6 +720,30 @@ class PlaywrightExecutor:
         except Exception as e:
             logger.warning(f'{label} failed: {e}')
             return False
+
+    def _swap_to_ephemeral_profile(self, case_id) -> tuple[str, str]:
+        """persistent 模式下把 user_data_dir 切到一次性子目录，返回 (原目录, 临时目录)。
+
+        共享 profile 会把上一次登录的 cookie/localStorage 带进下一次执行，
+        登录类用例"开局即已登录"导致元素找不到。临时目录放在原目录下（同一
+        文件系统保证原子性），用例结束后由 _restore_profile 删除。
+        """
+        original = self.user_data_dir
+        ephemeral = str(
+            Path(original) / f".ephemeral_case_{case_id}_{int(time.time() * 1000)}_{os.getpid()}"
+        )
+        shutil.rmtree(ephemeral, ignore_errors=True)
+        Path(ephemeral).mkdir(parents=True, exist_ok=True)
+        self.user_data_dir = ephemeral
+        logger.info(f"使用一次性浏览器 profile: {ephemeral}")
+        return original, ephemeral
+
+    def _restore_profile(self, token: tuple[str, str]) -> None:
+        """恢复原 profile 目录并删除临时目录（浏览器已随会话关闭）。"""
+        original, ephemeral = token
+        self.user_data_dir = original
+        shutil.rmtree(ephemeral, ignore_errors=True)
+        logger.debug(f"已清理一次性浏览器 profile: {ephemeral}")
 
     async def close(self) -> None:
         """Close browser + Playwright driver with timeouts to avoid orphan Chromium."""
@@ -1585,7 +1610,15 @@ class PlaywrightExecutor:
         self._stopped_cases.discard(str(config.case_id))
         self._current_case_id = config.case_id
         trace_name = f"case_{config.case_id}"
-        
+
+        # persistent 模式下用一次性临时 profile 目录：默认 user_data_dir 是
+        # 所有用例共享的磁盘 profile，上一次登录留下的 cookie/localStorage 会让
+        # 下一个用例"开局即已登录"，登录类步骤找不到元素。每次执行用全新目录、
+        # 结束后删除（browser_session_with_trace finally），用例间彻底隔离。
+        profile_token = None
+        if self.persistent:
+            profile_token = self._swap_to_ephemeral_profile(config.case_id)
+
         try:
             # 使用带 trace 的浏览器会话
             async with self.browser_session_with_trace(trace_name) as page:
@@ -1753,10 +1786,10 @@ class PlaywrightExecutor:
             duration = time.time() - start_time
             error_msg = str(e)
             logger.error(f"用例执行异常: {error_msg}\n{traceback.format_exc()}")
-            
+
             # 尝试获取 trace 路径（可能已保存）
             trace_path = self.get_current_trace_path()
-            
+
             return CaseResultModel(
                 case_id=config.case_id,
                 status='failed',
@@ -1768,6 +1801,10 @@ class PlaywrightExecutor:
                 steps=step_results,
                 trace_path=trace_path
             )
+        finally:
+            # 恢复节点默认 profile 目录并删除本次临时目录（成功/失败/中断都走这里）
+            if profile_token is not None:
+                self._restore_profile(profile_token)
 
     async def execute_page_step(self, config: PageStepConfig) -> list[StepResultModel]:
         """执行单个页面步骤（包含多个操作）- 使用同一个浏览器会话"""
