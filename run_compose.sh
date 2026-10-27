@@ -2359,6 +2359,9 @@ main() {
   configure_branch_data_variant
   require_docker
 
+  # 首次运行自动补齐 .env 与密钥：两侧容器创建前就拿到同一个值，无需启动后再重启
+  bootstrap_env_secrets
+
   if [ "$RUN_ACTION" = "db-check" ] || [ "$RUN_ACTION" = "db-upgrade" ] || [ "$RUN_ACTION" = "db-init" ]; then
     validate_compose_file
   fi
