@@ -162,31 +162,30 @@ sync_actuator_ws_token() {
     echo "已从 config.example.toml 生成 $config_path"
   fi
 
-  local target
-  for target in "$config_path" "$example_path"; do
-    [ -f "$target" ] || continue
-    if grep -qE '^[[:space:]]*ws_token[[:space:]]*=' "$target"; then
-      # 已有 ws_token 行：值一致则跳过，不一致则覆盖为新密钥
-      local current
-      current=$(grep -E '^[[:space:]]*ws_token[[:space:]]*=' "$target" | tail -n 1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/')
-      if [ "$current" = "$token_value" ]; then
-        continue
-      fi
-      sed -i -E "s|^[[:space:]]*ws_token[[:space:]]*=.*|ws_token = \"$token_value\"|" "$target"
-      echo "已更新 $target 中的 ws_token（与本机后端密钥保持一致）"
-    else
-      # 无 ws_token 行：追加到 [server] 段末尾（第一个 [ 区块结束前）
-      if grep -qE '^[[:space:]]*\[server\]' "$target"; then
-        awk -v tok="ws_token = \"$token_value\"" '
-          BEGIN{done=0} /^\[server\]/{insrv=1}
-          insrv && /^[[:space:]]*\[/ && !/^\[server\]/ && !done {print tok; done=1}
-          {print}
-          END{if(!done) print tok}
-        ' "$target" > "$target.tmp" && mv "$target.tmp" "$target"
-        echo "已在 $target 的 [server] 段写入 ws_token"
-      fi
+  # 只处理 config.toml；config.example.toml 是分发模板，永不回写
+  [ -f "$config_path" ] || return 0
+
+  if grep -qE '^[[:space:]]*ws_token[[:space:]]*=' "$config_path"; then
+    # 已有 ws_token 行：值一致则跳过，不一致则覆盖为新密钥
+    local current
+    current=$(grep -E '^[[:space:]]*ws_token[[:space:]]*=' "$config_path" | tail -n 1 | sed -E 's/^[^=]*=[[:space:]]*"([^"]*)".*/\1/')
+    if [ "$current" = "$token_value" ]; then
+      return 0
     fi
-  done
+    sed -i -E "s|^[[:space:]]*ws_token[[:space:]]*=.*|ws_token = \"$token_value\"|" "$config_path"
+    echo "已更新 $config_path 中的 ws_token（与本机后端密钥保持一致）"
+  else
+    # 无 ws_token 行：追加到 [server] 段末尾（第一个 [ 区块结束前）
+    if grep -qE '^[[:space:]]*\[server\]' "$config_path"; then
+      awk -v tok="ws_token = \"$token_value\"" '
+        BEGIN{done=0} /^\[server\]/{insrv=1}
+        insrv && /^[[:space:]]*\[/ && !/^\[server\]/ && !done {print tok; done=1}
+        {print}
+        END{if(!done) print tok}
+      ' "$config_path" > "$config_path.tmp" && mv "$config_path.tmp" "$config_path"
+      echo "已在 $config_path 的 [server] 段写入 ws_token"
+    fi
+  fi
 }
 
 # 首次运行引导：补齐 .env 与密钥，使“复制 .env.example 后直接执行”即可使用
@@ -236,10 +235,9 @@ bootstrap_env_secrets() {
   export WHARTTEST_ACTUATOR_WS_TOKEN="$ws_token"
 
   # 本地执行器配置同步：把 WS 认证密钥写进 WHartTest_Actuator/config.toml
-  # 的 [server] ws_token（不存在则从 config.example.toml 生成后再写），
+  # 的 [server] ws_token（不存在则从 config.example.toml 复制生成后再写），
   # 使本机手动运行的执行器（python main.py）与容器后端密钥一致，升级后
-  # 无需手工配置。config.example.toml 同步写入：保证"先跑执行器、后跑
-  # 本脚本"时由 example 生成的 config.toml 也带上密钥。
+  # 无需手工配置。config.example.toml 是分发模板，始终保持干净、不回写。
   sync_actuator_ws_token "$ws_token"
 
   # 示例中的占位密钥：未替换时自动生成，避免以公开占位值上线
