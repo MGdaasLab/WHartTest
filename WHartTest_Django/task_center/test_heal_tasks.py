@@ -330,6 +330,34 @@ class FlipExecutionRecordTests(TestCase):
             ).exists()
         )
 
+    def test_retest_still_failed_does_not_flip(self):
+        """回归（线上案例）：模型流程走完但复测记录仍失败 → 不翻转。
+
+        模型自愈结论为失败（复测被通道故障阻塞），但 agent-loop 正常返回、
+        流程无中断——旧门控会误翻转为 success。新门控以最新执行记录为准。
+        """
+        from task_center.heal_tasks import _all_failed_cases_passed
+        from ui_automation.models import UiExecutionRecord
+
+        batch, execution = self._failed_execution_with_batch()
+        case = UiTestCase.objects.create(project=self.project, module=self.ui_module, name='复测失败用例')
+        # 原失败记录（批次内）
+        UiExecutionRecord.objects.create(
+            test_case=case, batch=batch, status=3, trigger_type='scheduled',
+        )
+        # 自愈复测记录（批外）：仍然失败
+        UiExecutionRecord.objects.create(
+            test_case=case, status=3, trigger_type='manual',
+        )
+
+        self.assertFalse(_all_failed_cases_passed(batch))
+
+        # 对照：复测通过后应判定通过
+        UiExecutionRecord.objects.create(
+            test_case=case, status=2, trigger_type='manual',
+        )
+        self.assertTrue(_all_failed_cases_passed(batch))
+
 
 class AppendHealLogTests(TestCase):
     """自愈日志按批次关联精确追加到执行记录。"""
@@ -381,3 +409,5 @@ class AppendHealLogTests(TestCase):
         newer_manual.refresh_from_db()
         self.assertIn('自愈日志', own_execution.log)
         self.assertNotIn('自愈日志', newer_manual.log or '')
+
+

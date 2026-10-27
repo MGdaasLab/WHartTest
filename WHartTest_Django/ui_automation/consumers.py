@@ -1670,7 +1670,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
     async def handle_stop_execution(self, args: dict, user: str):
         """处理停止执行请求"""
-        # 录制器浏览器执行：前端关闭执行画布时直接中断（取消任务 + 关闭会话）
+        # 录制器浏览器执行：前端关闭执行画布时直接中断（取消任务 + 关闭会话）。
+        # 本次请求即为录制器执行的中断：不再向真实执行器转发停止——
+        # 否则执行器会把该用例记入精确停止标记，毒死该用例后续的执行器执行。
         task = getattr(self, '_recorder_exec_task', None)
         if task is not None and not task.done():
             session = getattr(self, '_recorder_exec_session', None)
@@ -1682,6 +1684,11 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                     pass
                 self._recorder_exec_session = None
             task.cancel()
+            await self.send_json(SocketDataModel(
+                code=ResponseCode.SUCCESS,
+                msg=self._localize("停止信号已发送")
+            ))
+            return
         from .actuator_registry import release_all_slots, clear_actuator_leases
 
         target_id = None

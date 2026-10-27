@@ -282,8 +282,10 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 - `--exec_timeout` - 等待超时时间（秒，默认 120）
 
 **执行通道选择：**
-- `--actuator_id recorder-browser` 走**录制器浏览器**（后端本机启动无头浏览器执行，无远程执行器网络延迟，适合 AI 生成后的试跑验证）。登录态按"用例第一个页面步骤绑定的登录态"注入，可用 `update_page_step --auth_state_id` 预先绑定。
+- `--actuator_id recorder-browser` 走**录制器浏览器**（后端本机启动无头浏览器执行，无远程执行器网络延迟，适合 AI 生成后的试跑验证）。登录态按"用例第一个页面步骤绑定的登录态"注入，可用 `update_page_step --auth_state_id` 预先绑定。注意：recorder-browser 是虚拟执行通道，**不会出现在 `get_actuators` 在线列表中**，列表里没有它属正常现象，直接使用即可。
 - `--actuator_id <执行器ID>` 或不传走远程执行器（执行前需确保有执行器在线，通过 `get_actuators` 查询）。
+
+**WebSocket 认证：** 执行类动作（`execute_testcase` / `execute_page_steps`）通过 WebSocket 下发，工具会自动用 `WHARTTEST_API_KEY` 兑换短时效 JWT 完成认证（内置缓存与 4401 自动重试），无需手工处理。若仍返回"close 4401/认证失败"，请检查 `WHARTTEST_API_KEY` 是否有效（未禁用/未过期）或后端部署密钥是否轮换。
 
 ### 环境登录态管理
 

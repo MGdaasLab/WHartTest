@@ -39,6 +39,9 @@ SELF_HEAL_INSTRUCTION = """\
 ## 复测要求
 
 - 复测统一使用 execute_testcase，参数：用例 ID（用户消息中给出）、--actuator_id recorder-browser、--wait_result。
+- recorder-browser 是平台虚拟执行通道（后端本机无头浏览器），**不出现在 get_actuators 在线列表中**——列表里没有它属正常现象，无需查询执行器列表，直接传 --actuator_id recorder-browser 使用。
+- 若 execute_testcase 返回"close 4401/认证失败"等 WebSocket 认证错误，属于平台 WS 凭据问题，与执行器无关：重试一次，仍失败则如实报告该错误并停止（不要改用远程执行器反复尝试）。
+- 若返回"执行器不在线/空闲 slot 不足"等执行器侧错误，改用 execute_testcase 不带 actuator_id（自动选择在线执行器）重试一次。
 - 判定以平台回执的 u_case_result / 执行记录为准；全步骤通过才算自愈成功。
 - 复测失败时先 get_execution_record 分析新失败点，判断是"修复引入"还是"暴露更深问题"，再决定是否继续修复。
 

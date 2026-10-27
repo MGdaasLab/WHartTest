@@ -105,7 +105,7 @@ UI_CASE_GENERATION_INSTRUCTION = """\
 
 ## 七、试跑验证（强制，逐用例执行）
 
-试跑统一走录制器浏览器通道（本机执行、无远程执行器网络延迟）：调用 ui-automation 技能的 execute_testcase，**必须传 --actuator_id recorder-browser 和 --config_id <环境配置ID>**，加 --wait_result 等待结果（超时建议 180 秒）。执行结束后用 get_execution_records（--limit 1）和 get_execution_record 查看结果。**失败分析只用 get_execution_record（已过滤截图）；禁止调用 get_execution_trace --refresh——全量 trace 含截图与 DOM 快照，可达数十 MB，会拖垮会话**。若返回"执行器不在线/空闲 slot 不足"等错误，改用 execute_testcase 不带 actuator_id（自动选择在线执行器）重试一次。
+试跑统一走录制器浏览器通道（本机执行、无远程执行器网络延迟）：调用 ui-automation 技能的 execute_testcase，**必须传 --actuator_id recorder-browser 和 --config_id <环境配置ID>**，加 --wait_result 等待结果（超时建议 180 秒）。recorder-browser 是平台虚拟执行通道，**不出现在 get_actuators 在线列表中**，列表里没有它属正常现象，无需查询执行器列表直接使用。执行结束后用 get_execution_records（--limit 1）和 get_execution_record 查看结果。**失败分析只用 get_execution_record（已过滤截图）；禁止调用 get_execution_trace --refresh——全量 trace 含截图与 DOM 快照，可达数十 MB，会拖垮会话**。若返回"执行器不在线/空闲 slot 不足"等错误，改用 execute_testcase 不带 actuator_id（自动选择在线执行器）重试一次。若返回"close 4401/认证失败"等 WebSocket 认证错误，属于平台 WS 凭据问题，与执行器无关：重试一次，仍失败则如实报告并停止，不要改用远程执行器反复尝试。
 
 1. 执行通过 → 该条完成，继续下一条。
 2. 执行失败 → 用 get_execution_record 定位失败步骤与错误消息，分析原因（登录态缺失 / 定位失效 / 等待不足 / 断言预期不符），修订元素或步骤后重新执行。**失败修复上限 5 次**；禁止为通过率删改场景覆盖要求。

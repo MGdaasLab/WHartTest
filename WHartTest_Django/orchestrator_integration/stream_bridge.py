@@ -45,6 +45,25 @@ def _touch_active_session(session_id: str) -> None:
         pass
 
 
+def clear_active_session(session_id: str) -> None:
+    """任务结束时清除活跃标记：前端 task-session 接口返回 active=False，
+    据此停止打字机订阅/轮询并把按钮复位为发送。best-effort。"""
+    try:
+        import redis as _redis
+        from django.conf import settings as _settings
+
+        url = (
+            os.environ.get("UI_AUTOMATION_REDIS_URL")
+            or getattr(_settings, "UI_AUTOMATION_REDIS_URL", None)
+            or getattr(_settings, "CELERY_BROKER_URL", None)
+            or "redis://localhost:8911/0"
+        )
+        client = _redis.from_url(url, socket_connect_timeout=0.5, socket_timeout=0.5)
+        client.delete(f"task_session_active:{session_id}")
+    except Exception:
+        pass
+
+
 def publish_stream_event(session_id: str, payload: dict) -> None:
     """同步上下文入口（自愈 Celery 任务）。"""
     try:

@@ -398,11 +398,14 @@ def heal_failed_cases(self, batch_id: int):
     # 记录翻转为 success——自愈的成功让定时任务的最终结果恢复为通过。
     # 仅定时任务触发的自愈链路（本函数）会执行此翻转：手动自愈/双模自愈不走这里，
     # 天然不涉及任务中心执行记录。
+    # 判定依据是落库的执行记录真实状态（复测回执），而非模型流程完成与否——
+    # agent-loop 正常返回 ≠ 自愈成功（模型可能因复测通道故障得出失败结论但流程无异常）
     all_healed = (
         len(healed) > 0
         and not interrupted
         and not manual_required
         and skipped_count == 0
+        and _all_failed_cases_passed(batch)
     )
     if all_healed:
         if _flip_execution_record_to_success(batch, len(healed)):
@@ -415,6 +418,14 @@ def heal_failed_cases(self, batch_id: int):
             )
 
     _append_heal_log(batch, log_lines)
+
+    # 任务结束：清除活跃标记（前端 task-session 接口 active=False → 停止订阅/轮询、按钮复位）
+    try:
+        from orchestrator_integration.stream_bridge import clear_active_session
+
+        clear_active_session(session_id)
+    except Exception:
+        pass
 
     return {
         'status': 'completed' if not interrupted else 'interrupted',
@@ -445,6 +456,34 @@ def _append_heal_log(batch, log_lines: list):
             )
     except Exception:
         logger.warning("[自愈] 自愈日志写入执行记录失败", exc_info=True)
+
+def _all_failed_cases_passed(batch) -> bool:
+    """核对批次内全部失败用例的最新执行记录是否都已通过（status=2）。
+
+    自愈复测会为每个用例生成新的执行记录；以落库回执为准判定自愈是否真实成功，
+    防止"模型流程走完但复测实际失败"时误翻转执行记录状态。
+    """
+    from ui_automation.models import UiExecutionRecord
+
+    failed_case_ids = list(
+        UiExecutionRecord.objects
+        .filter(batch=batch, status=3)
+        .values_list('test_case_id', flat=True)
+        .distinct()
+    )
+    if not failed_case_ids:
+        return False
+    for case_id in failed_case_ids:
+        latest = (
+            UiExecutionRecord.objects
+            .filter(test_case_id=case_id, status__in=(2, 3))
+            .order_by('-created_at')
+            .first()
+        )
+        if latest is None or latest.status != 2:
+            return False
+    return True
+
 
 def _flip_execution_record_to_success(batch, healed_count: int) -> bool:
     """自愈全部成功时，把批次关联的任务中心执行记录 failed → success。

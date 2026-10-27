@@ -48,7 +48,18 @@ WHARTTEST_ACTUATOR_WS_TOKEN=<同值>
 前端 `websocket.ts` 已自动从 `localStorage` 读取登录 access token 附加到连接 URL，
 收到 4401 时自动刷新 token 重连一次。无需额外配置。
 
-### 4. 严格模式（恒开，无需操作）
+### 4. Skill 工具（无需手工配置）
+
+ui-automation-skill 的执行类工具（`execute_testcase` / `execute_page_steps`）
+同样连接 `/ws/ui/web/`，但 skill 只有 API Key、没有登录 JWT。这些工具已内置
+适配：连接前自动调用 `POST /api/api-keys/exchange-token/`（X-API-Key 认证）
+兑换短时效 JWT 并附加到连接 URL（进程内缓存，过期前主动刷新；4401 时强制
+重兑重试一次）。前提是环境中已注入有效的 `WHARTTEST_API_KEY`。
+
+兑换端点仅接受 API Key 认证（用 JWT 换 JWT 会被 403 拒绝），防止绕过 Key 的
+禁用/过期校验无限续签。
+
+### 5. 严格模式（恒开，无需操作）
 
 WS 认证严格模式为系统硬性行为，无开关、不可关闭。`run_compose.sh` 每次运行都会
 校验并同步密钥（根 `.env` 与本机 `WHartTest_Actuator/config.toml`），升级部署后

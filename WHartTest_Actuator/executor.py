@@ -1580,6 +1580,9 @@ class PlaywrightExecutor:
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
         
         self._stop_requested = False
+        # 同步丢弃该用例的陈旧精确停止标记（stop_case 只增不清，上一次
+        # 停止请求会永久毒死该用例的所有后续执行，第一步直接误报"手动停止"）
+        self._stopped_cases.discard(str(config.case_id))
         self._current_case_id = config.case_id
         trace_name = f"case_{config.case_id}"
         

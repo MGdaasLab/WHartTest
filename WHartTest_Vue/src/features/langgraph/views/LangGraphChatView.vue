@@ -482,6 +482,14 @@ const startExternalPolling = () => {
     }
     externalPollInFlight = true;
     try {
+      // 先查任务会话状态：任务结束（active=false）时复位按钮、停止订阅与轮询
+      const taskInfo = await getTaskSessionInfo(sessionId.value);
+      if (taskInfo?.isTaskSession && taskInfo.active === false) {
+        externalTaskRunning.value = false;
+        stopHealSubscription();
+        stopExternalPolling();
+        return;
+      }
       // 只取最新一页用于增量合并，不动用户已加载的更早历史
       const response = await getChatHistory(sessionId.value, projectStore.currentProjectId, historyLimit, 0);
       if (response.status === 'success' && response.data?.history) {
@@ -530,6 +538,11 @@ const startExternalTaskTracking = async () => {
   try {
     const info = await getTaskSessionInfo(sid);
     if (!info?.isTaskSession || sessionId.value !== sid) return;
+    // 任务已结束（后端活跃标记已清除）：不订阅、按钮保持发送
+    if (info.active === false) {
+      externalTaskRunning.value = false;
+      return;
+    }
     startExternalPolling();
     await startHealSubscription();
   } catch {

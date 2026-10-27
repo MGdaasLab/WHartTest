@@ -45,6 +45,80 @@ def _headers() -> dict:
     }
 
 
+# ==================== WS 连接凭据（API Key → JWT 兑换） ====================
+# /ws/ui/web/ 认证中间件只认 SimpleJWT access token（query 参数 token），
+# 未携带或无效时连接被立即关闭（close code 4401）。skill 持有的是长效
+# API Key，需先经 POST /api/api-keys/exchange-token/ 兑换短时效 JWT 再连 WS。
+
+_ws_token_cache = {"token": "", "expires_at": 0.0}
+
+
+def _get_ws_token(force_refresh: bool = False) -> str:
+    """用 API Key 兑换 WS 连接用 JWT（进程内缓存，过期前 60 秒主动刷新）。"""
+    import time as _time
+
+    now = _time.time()
+    if (
+        not force_refresh
+        and _ws_token_cache["token"]
+        and now < _ws_token_cache["expires_at"] - 60
+    ):
+        return _ws_token_cache["token"]
+
+    api_key_value = _api_key()
+    if not api_key_value:
+        raise RuntimeError(
+            "未配置 WHARTTEST_API_KEY，无法兑换 WebSocket 连接凭据；"
+            "请在技能环境变量中设置后再执行"
+        )
+    resp = requests.post(
+        f"{_base_url()}/api/api-keys/exchange-token/",
+        headers={"X-API-Key": api_key_value},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"兑换 WebSocket 连接凭据失败 HTTP {resp.status_code}: {resp.text[:200]}；"
+            "请检查 WHARTTEST_API_KEY 是否有效（未禁用/未过期）"
+        )
+    body = resp.json() or {}
+    # 兼容两层结构：平台 UnifiedResponseRenderer 包装后 token 在 body.data；
+    # 若后端未启用统一渲染器则退化为 body 本身
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    token = data.get("access") or ""
+    if not token:
+        raise RuntimeError(
+            f"兑换 WebSocket 连接凭据失败：响应中无 access token（响应体: {str(body)[:200]}）"
+        )
+    _ws_token_cache["token"] = token
+    _ws_token_cache["expires_at"] = now + int(data.get("expires_in") or 300)
+    return token
+
+
+def _ws_url_with_token() -> str:
+    """构造带认证 token 的 /ws/ui/web/ 连接地址。"""
+    return (
+        _base_url().replace('http://', 'ws://').replace('https://', 'wss://')
+        + '/ws/ui/web/?token='
+        + _get_ws_token()
+    )
+
+
+def _ws_auth_failure_message(close_code) -> str:
+    """把 WS 关闭码翻译成可行动的错误说明（4401=认证失败）。"""
+    if close_code == 4401:
+        return (
+            "WebSocket 连接被拒绝（close 4401：认证失败）。token 已兑换仍被拒，"
+            "通常是后端 SIMPLE_JWT 密钥轮换或 token 过期，请重试；多次失败请检查 "
+            "WHARTTEST_API_KEY 与后端部署是否匹配"
+        )
+    if close_code == 4403:
+        return "WebSocket 连接被拒绝（close 4403：凭据类型与端点不匹配）"
+    if close_code == 4409:
+        return "WebSocket 连接被拒绝（close 4409：执行器 ID 冲突）"
+    return f"WebSocket 连接异常关闭（close code {close_code}）"
+
+
 # 兼容旧引用
 BASE_URL = _base_url()
 API_KEY = _api_key()
@@ -765,29 +839,33 @@ except ImportError:
     WEBSOCKET_AVAILABLE = False
 
 
-def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: str = None, wait_result: bool = True, timeout: int = 120):
+def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: str = None, wait_result: bool = True, timeout: int = 120, _ws_retry: bool = True):
     """
     执行测试用例
-    
+
     Args:
         testcase_id: 测试用例 ID
         env_config_id: 环境配置 ID（可选，不传使用默认配置）
         actuator_id: 执行器 ID（可选，不传自动选择可用执行器）
         wait_result: 是否等待执行结果（默认 True）
         timeout: 等待超时时间（秒，默认 120）
-    
+        _ws_retry: 内部参数——4401 重兑 token 后自动重试一次，防凭据轮换误伤
+
     Returns:
         执行结果或任务状态
     """
     if not WEBSOCKET_AVAILABLE:
         return {"status": "error", "message": "执行功能需要 websocket-client 模块，请运行: pip install websocket-client"}
-    
+
     import threading
     import time
-    
-    # WebSocket 地址
-    ws_url = _base_url().replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
-    
+
+    try:
+        # WebSocket 地址（带 API Key 兑换的 JWT；4401 时强制重兑一次再连）
+        ws_url = _ws_url_with_token()
+    except RuntimeError as exc:
+        return {"status": "error", "message": str(exc)}
+
     result = {"status": "pending", "message": "任务已发送"}
     execution_done = threading.Event()
     
@@ -821,7 +899,21 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
         nonlocal result
         result = {"status": "error", "message": str(error)}
         execution_done.set()
-    
+
+    def on_close(ws, close_status_code, close_msg):
+        nonlocal result
+        # 认证被拒：强制重兑 token，供调用方重试；其余关闭码不在此处理
+        if close_status_code == 4401:
+            try:
+                _get_ws_token(force_refresh=True)
+                result = {"status": "error", "message": _ws_auth_failure_message(close_status_code)}
+            except RuntimeError as exc:
+                result = {"status": "error", "message": str(exc)}
+            execution_done.set()
+        elif close_status_code in (4403, 4409) and result.get("status") == "pending":
+            result = {"status": "error", "message": _ws_auth_failure_message(close_status_code)}
+            execution_done.set()
+
     def on_open(ws):
         # 发送执行命令，包含执行人信息
         cmd = {
@@ -860,17 +952,29 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
         on_message=on_message,
         on_error=on_error,
         on_open=on_open,
+        on_close=on_close,
     )
-    
+
     # 在后台线程运行 WebSocket
     ws_thread = threading.Thread(target=ws.run_forever)
     ws_thread.daemon = True
     ws_thread.start()
-    
+
     if wait_result:
         # 等待执行结果
         if execution_done.wait(timeout=timeout):
             ws.close()
+            # token 被拒已强制重兑：自动重连一次，避免整次执行因凭据轮换报废；
+            # _ws_retry=False 表示已在重试中，不再递归（后端持续 4401 时如实报错）
+            if _ws_retry and result.get("status") == "error" and "4401" in str(result.get("message", "")):
+                return execute_testcase(
+                    testcase_id=testcase_id,
+                    env_config_id=env_config_id,
+                    actuator_id=actuator_id,
+                    wait_result=wait_result,
+                    timeout=timeout,
+                    _ws_retry=False,
+                )
             return result
         else:
             ws.close()
@@ -885,7 +989,20 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
                 })
             return {"status": "timeout", "message": f"等待执行结果超时 ({timeout}s)"}
     else:
-        # 不等待，直接返回
+        # 不等待，直接返回：确认连接真正建立（未被 4401 等拒绝）后才报"已发送"，
+        # 避免命令实际未送达却返回成功
+        if execution_done.wait(timeout=10) and result.get("status") == "error":
+            ws.close()
+            if _ws_retry and "4401" in str(result.get("message", "")):
+                return execute_testcase(
+                    testcase_id=testcase_id,
+                    env_config_id=env_config_id,
+                    actuator_id=actuator_id,
+                    wait_result=False,
+                    timeout=timeout,
+                    _ws_retry=False,
+                )
+            return result
         time.sleep(1)  # 等待命令发送
         ws.close()
         return {"status": "sent", "message": "执行命令已发送，请稍后查询执行记录"}
@@ -902,12 +1019,21 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
     """
     if not WEBSOCKET_AVAILABLE:
         return {"status": "error", "message": "执行功能需要 websocket-client 模块，请运行: pip install websocket-client"}
-    
+
     import time
-    
-    ws_url = _base_url().replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
+
+    try:
+        ws_url = _ws_url_with_token()
+    except RuntimeError as exc:
+        return {"status": "error", "message": str(exc)}
     result = {"status": "sent", "message": "执行命令已发送"}
-    
+
+    def on_close(ws, close_status_code, close_msg):
+        # 连接级认证失败时如实上报，避免"已发送"假象
+        if close_status_code in (4401, 4403, 4409):
+            result["status"] = "error"
+            result["message"] = _ws_auth_failure_message(close_status_code)
+
     def on_open(ws):
         cmd = {
             "data": {
@@ -925,7 +1051,7 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
         time.sleep(1)
         ws.close()
     
-    ws = websocket.WebSocketApp(ws_url, on_open=on_open)
+    ws = websocket.WebSocketApp(ws_url, on_open=on_open, on_close=on_close)
     ws.run_forever()
     return result
 
