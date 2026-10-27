@@ -11,6 +11,7 @@ Celery 任务 - 定时任务失败用例自动自愈
 - 会话中断（网络/LLM 异常）按 retry_count/retry_interval 同一 session_id 重试续跑；
 - 过程写入 ChatSession/ChatMessage（module_key=testcase_execution），AI 对话页可回看。
 """
+import json
 import logging
 import uuid
 
@@ -335,10 +336,9 @@ def heal_failed_cases(self, batch_id: int):
             'module_key': 'testcase_execution',
             'use_knowledge_base': False,
             'session_id': session_id,
-            'stream': False,
         }
         try:
-            data = _call_agent_loop(headers, payload)
+            data = _call_agent_loop_stream(headers, payload)
             summary = ' '.join(str(data.get('content') or '').split())
             healed.append({'case_id': case.id, 'case_name': case.name, 'summary': summary[:200]})
             log_lines.append(
@@ -346,6 +346,8 @@ def heal_failed_cases(self, batch_id: int):
                 f"用例 [{case.name}]（ID: {case.id}）自愈完成: {summary[:200] or '详见 AI 对话页'}"
             )
         except AgentLoopCallError as exc:
+            # 无论中断与否，先把已产生的会话消息刷进 ChatMessage，保证对话页能看到已发生的自愈过程
+            _sync_heal_session_messages(session_id, task.creator_id, project_id)
             if exc.retriable and self.request.retries < (task.retry_count or 3):
                 # 会话中断：同一 session_id 续跑（LangGraph checkpointer 保留会话状态）
                 log_lines.append(
@@ -366,12 +368,16 @@ def heal_failed_cases(self, batch_id: int):
             break
         except Exception as exc:  # noqa: BLE001 - 单用例异常不阻断整体总结
             logger.exception(f"[自愈] 用例 [{case.name}] 自愈异常")
+            _sync_heal_session_messages(session_id, task.creator_id, project_id)
             interrupted.append({'case_id': case.id, 'case_name': case.name, 'error': str(exc)})
             log_lines.append(
                 f"[{timezone.localtime(timezone.now()).strftime('%Y-%m-%d %H:%M:%S')}] "
                 f"用例 [{case.name}]（ID: {case.id}）自愈异常: {exc}"
             )
             break
+        else:
+            _ensure_heal_session_title(session_id, task.name, case.name)
+            _sync_heal_session_messages(session_id, task.creator_id, project_id)
 
     # 汇总待人工清单：本轮未自愈的失败用例（超上限/中断剩余）
     healed_ids = {item['case_id'] for item in healed} | {item['case_id'] for item in interrupted}

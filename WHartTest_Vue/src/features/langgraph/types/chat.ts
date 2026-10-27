@@ -90,6 +90,7 @@ export interface ChatHistoryResponseData {
   context_token_count?: number; // 上下文Token使用量
   context_limit?: number; // 上下文Token限制
   has_more?: boolean;
+  total_messages?: number; // 会话消息总数（外部任务轮询增量合并的基准）
 }
 
 /**

@@ -79,7 +79,7 @@
       />
 
       <ChatInput
-        :is-loading="isLoading"
+        :is-loading="isLoading || externalTaskRunning"
         :supports-vision="currentLlmConfig?.supports_vision || false"
         :context-token-count="contextTokenInfo.tokenCount"
         :context-limit="contextTokenInfo.limit"
@@ -543,10 +543,13 @@ const startExternalTaskTracking = async () => {
 // 触发一次 history 轻刷新（复用现有渲染管线拼装工具卡片）。轮询降级为断线补偿。
 // ---------------------------------------------------------------------------
 let healSubscription: HealChatSubscription | null = null;
+// 外部任务（自愈/套件执行）进行中：驱动输入框发送按钮切换为停止按钮
+const externalTaskRunning = ref(false);
 
 const stopHealSubscription = () => {
   healSubscription?.close();
   healSubscription = null;
+  externalTaskRunning.value = false;
 };
 
 /** 确保（或获取）当前自愈会话的流渲染状态：与正常聊天同一渲染管线 */
@@ -649,10 +652,12 @@ const handleHealStreamEvent = (event: HealStreamEvent) => {
     }
     case 'error': {
       stream.error = event.message || '执行异常';
+      externalTaskRunning.value = false;
       break;
     }
     case 'complete': {
       stream.isComplete = true;
+      externalTaskRunning.value = false;
       // 完成后延时固化：拉 history 把最终消息写入 messages.value，
       // 再移除流状态（displayedMessages 此时无缝切换到固化消息，不闪断）
       window.setTimeout(async () => {
@@ -689,6 +694,7 @@ const startHealSubscription = async () => {
   const authStore = useAuthStore();
   const token = authStore.getAccessToken;
   if (!token) return;
+  externalTaskRunning.value = true;
   healSubscription = subscribeHealChat(
     sessionId.value,
     token,
@@ -1745,6 +1751,9 @@ const handleStopGeneration = async () => {
       const result = await stopAgentLoop(sessionId.value);
       if (result.status === 'success') {
         console.log('[LangGraphChatView] Backend stop signal sent:', result.data);
+        // 外部任务被手动停止：复位按钮状态并断开订阅
+        externalTaskRunning.value = false;
+        stopHealSubscription();
       } else {
         console.warn('[LangGraphChatView] Backend stop failed:', result.message);
       }

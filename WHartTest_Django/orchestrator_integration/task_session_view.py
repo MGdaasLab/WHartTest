@@ -31,27 +31,25 @@ class TaskSessionAPIView(APIView):
                 status=400,
             )
 
-        from langgraph_integration.models import ChatSession
+        # CE 无槽位绑定机制（ChatSession.resolved_module_key 不存在）。
+        # 任务会话判定改为：Redis 活跃标记是否存在——该标记仅由自愈/套件执行的
+        # 流桥接写入（stream_bridge），天然限定外部任务场景。
+        import redis
 
-        chat_session = ChatSession.objects.filter(session_id=session_id).first()
-        is_task_session = bool(
-            chat_session and chat_session.resolved_module_key == "testcase_execution"
+        url = (
+            os.environ.get("UI_AUTOMATION_REDIS_URL")
+            or getattr(settings, "UI_AUTOMATION_REDIS_URL", None)
+            or getattr(settings, "CELERY_BROKER_URL", None)
+            or "redis://localhost:8911/0"
         )
-
+        is_task_session = False
         active = False
         try:
-            import redis
-
-            url = (
-                os.environ.get("UI_AUTOMATION_REDIS_URL")
-                or getattr(settings, "UI_AUTOMATION_REDIS_URL", None)
-                or getattr(settings, "CELERY_BROKER_URL", None)
-                or "redis://localhost:8911/0"
-            )
             client = redis.from_url(url, socket_connect_timeout=0.5, socket_timeout=0.5)
             raw = client.get(f"task_session_active:{session_id}")
             if raw:
                 json.loads(raw)
+                is_task_session = True
                 active = True
         except Exception:
             logger.debug("[task-session] 活跃标记查询失败", exc_info=True)
