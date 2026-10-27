@@ -945,6 +945,8 @@ class RecorderBrowserExecTests(TestCase):
             (start_params[0].get('storage_state') or {}).get('cookies'),
             [{'name': 'A'}],
         )
+        # start 负责导航到首组地址（与执行器先 goto 再执行步骤同语义）
+        self.assertEqual(start_params[0].get('url'), 'http://env.local')
         run_calls = [p for m, p in session.requests if m == 'run_steps']
         self.assertEqual(len(run_calls), 1)
         self.assertEqual(run_calls[0]['steps'][0]['ope_key'], 'click')

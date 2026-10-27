@@ -1049,8 +1049,10 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                         ),
                     ))
             except Exception as exc:
+                # 帧转发失败（WS 瞬断/背压）只跳过本帧，不退出循环：
+                # 退出会让执行画布永久黑屏而执行仍在继续
                 logger.debug('[recorder-exec] 帧转发暂停: %s', exc)
-                return
+                await asyncio.sleep(0.5)
 
     async def _execute_via_recorder(self, kind: str, args: dict, user: str):
         logger.info(
@@ -1186,11 +1188,12 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             self._recorder_exec_session = session
             session.start(timeout=120)
             logger.info('[recorder-exec] 会话已启动 %s url=%s', session.session_id, start_url or 'about:blank')
-            # start 不带 url 导航（about:blank 起步）：首个组的前置 goto 负责导航。
-            # 若 start 直接导航到 start_url，紧跟的组前置 goto 同址重复导航会与
-            # 站点自身跳转竞争，导致 net::ERR_ABORTED 中止（执行器路径无此问题）
+            # start 直接导航到首组地址（与执行器先 goto 再执行步骤同语义）：
+            # 首组不再拼接前置 goto（见下方 group_index > 1），不存在同址重复
+            # 导航；Node 端 cmdStart 等待 load + networkidle，SSO 重定向链走稳后
+            # 才开始执行步骤。
             start_params = {
-                'url': 'about:blank',
+                'url': start_url or 'about:blank',
                 'viewport': {'width': 1400, 'height': 900},
             }
             if storage_state:
@@ -1258,10 +1261,10 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 group_step_count = len(steps)
                 base_url = group_bases[group_index - 1]
                 # 首组不插入 goto：start 已导航到 group_bases[0]（start_url 取自
-                # 同一来源），重复 goto 会打断 SPA 启动即触发的 SSO 重定向链
-                # （ERR_ABORTED 后页面卡在启动加载页，登录表单永不渲染）。
-                # 首组也不会发生登录态切换（start 按首组登录态注入）；后续组保持
-                # 原行为每组 goto（此时 SSO 链早已走稳，同地址由录制器 sameUrl 兜底）。
+                # 同一来源）；Node 端 cmdStart 的 goto 带 load + networkidle 等待，
+                # SSO 重定向链走稳后才执行步骤。首组也不会发生登录态切换（start
+                # 按首组登录态注入）；后续组保持原行为每组 goto（此时 SSO 链早已
+                # 走稳，同地址由录制器 sameUrl 兜底）。
                 if base_url and group_index > 1:
                     steps = [{
                         'ope_key': 'goto',
