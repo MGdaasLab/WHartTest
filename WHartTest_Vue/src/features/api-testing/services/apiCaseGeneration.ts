@@ -190,7 +190,15 @@ export function buildGenerationMessage(options: {
     lines.push('全部试跑完成后按提示词要求输出总结（含保存数量、按业务来源统计、功能用例命中情况、待补充清单、待确认清单、逐条试跑结果）。');
   } else {
     lines.push('');
-    lines.push('生成完成后按提示词要求输出总结（含保存数量、维度统计、待补充清单、待确认清单）。');
+    lines.push('## 生成后的试跑验证（必须执行，跳过即任务未完成）');
+    lines.push('每个接口的全部用例保存完成后，必须立即执行以下流程，禁止直接输出总结：');
+    lines.push('1. 调用 list_environments 确认执行环境（仅一个直接用；多个逐个列出让用户选择确认）。');
+    lines.push('2. 对每条已保存的单接口用例依次调用 run_interface_case（payload 传所选 environment_id）真实执行。');
+    lines.push('3. 执行失败按《接口用例试跑验证规范》修复重跑（update_interface_case 需传完整 interface_data，上限 5 次），仍失败保留用例并在 description 登记失败原因、列入待确认清单；预期数据依赖缺失（如 multipart 文件上传）不消耗修复次数，保留骨架用例登记待补充清单；含写操作的用例执行后清理测试数据。');
+    lines.push('4. 最终总结必须逐条列出每条用例的试跑结果（通过 / 修复后通过 / 仍失败）；存在未试跑的用例时禁止输出最终总结。');
+    lines.push('5. 仅当用户在对话中明确说"跳过验证 / 不要试跑"时才转为静态生成并在总结中说明。');
+    lines.push('');
+    lines.push('全部试跑完成后按提示词要求输出总结（含保存数量、维度统计、待补充清单、待确认清单、逐条试跑结果）。');
   }
 
   return lines.filter(line => line !== undefined).join('\n');

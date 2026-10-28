@@ -749,16 +749,15 @@ Start executing now.''',
       - **SQL interfaces**: skip parameter validation and exception scenarios; generate only the Happy-path baseline and user-rule-related business-rule cases.
       - **Constraint snapshot missing or interface in the missing list**: Parameter validation shrinks to missing-required + wrong-type; boundary dimension skipped.
 
-      ### Step 4: Per-case live verification (mandatory; skipping means the task is NOT done)
+      ### Step 5: Per-case live verification (mandatory; skipping means the task is NOT done)
 
       After all cases are saved you MUST enter this step immediately - never jump to the final summary:
 
       1. Call list_environments to confirm the execution environment (single environment: use it; multiple: list them and let the user choose).
-      2. Run every saved scenario case via run_testcase (payload carries the chosen environment_id).
-      3. On failure, fix and rerun per the Live Verification Specification, up to 5 attempts; keep still-failing cases and log them to the to-be-confirmed list.
-      4. Clean up test data after running write-operation cases.
-      5. **The final summary must list every case's run result (passed / passed-after-fix / still-failing)**; never output the final summary while any saved case has not been run.
-      6. Switch to static generation ONLY when the user explicitly says "skip verification" in the conversation, and state so in the summary.
+      2. Run every saved single-interface case via run_interface_case (payload carries the chosen environment_id).
+      3. On failure, fix and rerun per the Live Verification Specification (update_interface_case needs the full interface_data), up to 5 attempts; keep still-failing cases, log the reason in their description and to the to-be-confirmed list. Missing data dependencies (e.g. multipart file upload) do not consume attempts: keep the skeleton case and log it to the to-be-added list. Clean up test data after running write-operation cases.
+      4. **The final summary must list every case's run result (passed / passed-after-fix / still-failing)**; never output the final summary while any saved case has not been run.
+      5. Switch to static generation ONLY when the user explicitly says "skip verification" in the conversation, and state so in the summary.
 
       The Live Verification Specification injected into this session's system prompt is equally binding.
 
@@ -772,7 +771,7 @@ Start executing now.''',
 
       ## Final output
 
-      Summarize: cases saved per category (Happy-path / Parameter validation), whether the sub-agent was invoked, trimmed scenarios (to-be-added), skipped cases due to unknown constraints (to-be-confirmed), and reasons for any save failures.
+      Summarize: cases saved per category (Happy-path / Parameter validation), whether the sub-agent was invoked, **every case's live-run result (passed / passed-after-fix / still-failing)**, trimmed scenarios (to-be-added), skipped cases due to unknown constraints (to-be-confirmed), and reasons for any save failures.
 
       Notes:
       1. Interface definition and dimensions are declared in the user message; parameter constraints come from the get_interface_constraints tool.

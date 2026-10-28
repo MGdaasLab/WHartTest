@@ -2103,6 +2103,10 @@ class AgentLoopResumeAPIView(View):
                     resume_system_prompt = (
                         (resume_system_prompt or "") + "\n\n" + SELF_HEAL_INSTRUCTION
                     )
+                elif generation_mode == GENERATION_MODE_INTERFACE_CASE:
+                    resume_system_prompt = (
+                        (resume_system_prompt or "") + "\n\n" + INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
+                    )
 
                 tool_names = [t.name for t in tools] if tools else []
                 middleware = await sync_to_async(get_middleware_from_config)(
