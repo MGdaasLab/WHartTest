@@ -834,6 +834,38 @@ def _apply_ui_credential_env(env: dict, ui_credential_context: Optional[dict], a
         env["WHARTTEST_UI_AUTH_STATE_FILE"] = auth_state_file
 
 
+def _ensure_ui_login_helper(screenshots_dir: Optional[str]) -> Optional[str]:
+    """把预置登录辅助脚本 run.js 落到 skill 工作目录，返回脚本绝对路径。
+
+    playwright-cli 的 run-code 是无 process 的受限 VM，模型又没有合法途径写脚本
+    文件（重定向与解释器内联参数均被禁止），规范里的「node run.js 消费凭据」
+    模式一直没有实体入口。平台在凭据注入时把 run.js 预置到截图目录（即
+    playwright-cli 在 runner 里的 exec_cwd），模型即可 `node run.js --url ...`
+    在 node 进程内消费 WHARTTEST_UI_USERNAME/PASSWORD 完成登录并导出 storageState。
+    """
+    if not screenshots_dir:
+        return None
+    try:
+        helper_path = os.path.join(screenshots_dir, "run.js")
+        source_path = os.path.join(os.path.dirname(__file__), "ui_login_helper.js")
+        with open(source_path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+        # 已存在且内容一致时跳过写入，减少共享目录的无谓 mtime 抖动
+        try:
+            with open(helper_path, "r", encoding="utf-8") as fh:
+                if fh.read() == content:
+                    return helper_path
+        except OSError:
+            pass
+        fd = os.open(helper_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        return helper_path
+    except OSError as exc:
+        logger.warning("[execute_skill_script] 预置登录辅助脚本失败 %s: %s", screenshots_dir, exc)
+        return None
+
+
 # playwright 系技能名（env 凭据注入与截图目录处理对两类命名都生效）
 _PLAYWRIGHT_SKILL_NAMES = frozenset({"playwright-cli", "playwright-skill"})
 
@@ -1012,14 +1044,22 @@ def get_skill_tools(
             )
             runtime_env["SKILL_OUTPUT_DIR"] = artifacts_dir
             runtime_env["ARTIFACT_DIR"] = artifacts_dir
+            # skill 侧把附件的 skill_runtime/... 相对路径解析回真实文件时需要
+            # 知道 MEDIA_ROOT（登录态沉淀 create_auth_state 依赖）。
+            runtime_env["WHARTTEST_MEDIA_ROOT"] = str(settings.MEDIA_ROOT)
             env = build_skill_env(runtime_env=runtime_env)
             artifacts_before = _snapshot_artifact_files(artifacts_dir)
 
             # UI 一键生成会话：凭据/登录态以环境变量注入（不进 LLM 上下文）。
             # 运行时技能名可能是 playwright-cli（隔离+持久会话）或 playwright-skill
             # （node run.js 一次性进程），两类都要注入凭据。
+            # 凭据注入时把预置登录辅助脚本 run.js 落到截图目录（playwright-cli 的
+            # exec_cwd），模型可用 `node run.js --url ...` 在 node 进程内消费凭据。
             if current_ui_credential_context and skill_name in _PLAYWRIGHT_SKILL_NAMES:
                 _apply_ui_credential_env(env, current_ui_credential_context, current_ui_auth_state_file)
+                helper_path = _ensure_ui_login_helper(screenshots_dir)
+                if helper_path:
+                    runtime_env["WHARTTEST_UI_LOGIN_HELPER"] = helper_path
 
             # Windows 兼容：将单引号包裹的参数转换为双引号（用于 cmd.exe）
             # 同时处理多行字符串，将换行符转换为单行
@@ -1299,6 +1339,26 @@ def get_skill_tools(
                 result_output = f"[SCREENSHOT_DIR] {screenshots_dir}\n{result_output}\n\n[注意] 此次执行未使用 session_id，浏览器已关闭。如果这是多步骤测试的一部分，请在后续调用中使用 session_id 参数保持浏览器会话。"
             elif skill_name == "playwright-skill":
                 result_output = f"[SCREENSHOT_DIR] {screenshots_dir}\n{result_output}"
+
+            # UI 生成会话（playwright-cli）：告知预置登录辅助入口的存在与用法，
+            # 避免模型因 run-code VM 无 process 而误判"凭据未注入"。
+            if (
+                current_ui_credential_context
+                and skill_name in _PLAYWRIGHT_SKILL_NAMES
+                and current_ui_credential_context.get("username")
+            ):
+                result_output = (
+                    f"{result_output}\n\n"
+                    "[登录辅助] 平台已把凭据注入本会话的 skill 子进程环境变量，"
+                    f"并在工作目录（SCREENSHOT_DIR: {screenshots_dir}）预置了登录辅助脚本 run.js。"
+                    "playwright-cli 的 run-code 是无 process 的受限 VM，读不到环境变量属正常现象；"
+                    "需要账密登录时执行：node run.js --url <登录页URL> --state-out login-state.json"
+                    "（可选 --user-sel/--pass-sel/--submit-sel 覆盖默认选择器）。"
+                    "脚本在 node 进程内读取 WHARTTEST_UI_USERNAME/WHARTTEST_UI_PASSWORD 填表登录"
+                    "并导出 storageState，凭据不会出现在任何输出中。"
+                    "退出码：0 成功（stdout 为 JSON，含 state_file/cookies/final_url）；"
+                    "3 凭据未注入；4 未找到登录表单；2 其它错误。"
+                )
 
             return _finalize_skill_result(
                 result_output,

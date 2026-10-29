@@ -296,6 +296,7 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 
 **登录态说明：**
 - `--state_file` 传 Playwright storageState JSON 文件路径（`playwright-cli state-save` 的产物）
+- 路径支持绝对路径、相对路径、附件信息里的 `skill_runtime/...` 相对路径、`/media/...` 前缀路径与裸文件名（工具会自动到平台产物/截图目录匹配后上传）
 - 列表动作不返回 state_json 内容，避免登录态快照进入对话上下文
 - AI 一键生成会话中，账密登录成功后应调用 `create_auth_state` 沉淀登录态（state 文件路径可从环境变量 `WHARTTEST_UI_AUTH_STATE_FILE` 获取，账号密码从 `WHARTTEST_UI_USERNAME` / `WHARTTEST_UI_PASSWORD` 获取，禁止在任何输出中复述凭据内容）
 
@@ -304,6 +305,7 @@ python ui_automation_tools.py --action update_element --element_id <id> --locato
 ```bash
 # 账密登录成功后保存登录态
 playwright-cli state-save my-auth-state.json
+# 直接用 state-save 保存时的文件名沉淀（工具会自动解析到平台产物目录）
 python ui_automation_tools.py --action create_auth_state \
   --env_config_id 1 \
   --name "生成会话登录态" \

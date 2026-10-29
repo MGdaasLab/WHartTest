@@ -98,7 +98,7 @@ UI_CASE_GENERATION_INSTRUCTION = """\
 
 - 环境入口 URL：使用用户消息中的起始 URL（即环境配置 base_url）。
 - **已注入登录态**（平台已把 storageState 文件路径写入环境变量 WHARTTEST_UI_AUTH_STATE_FILE）：用 session_id 发起 node run.js 读取该文件并注入当前浏览器上下文（context.addCookies + localStorage 回填），再访问入口 URL；若跳回登录页说明登录态失效，停下告知用户。禁止用 shell 命令（cat/env/printenv）读取该文件——凭据内容只允许在浏览器进程内消费。
-- **账号密码登录**（平台已把凭据写入环境变量 WHARTTEST_UI_USERNAME / WHARTTEST_UI_PASSWORD）：在 node run.js 代码内用 process.env.WHARTTEST_UI_USERNAME / process.env.WHARTTEST_UI_PASSWORD 读取凭据填表登录（env 由平台注入到 skill 子进程），**禁止用 shell 命令读取或 echo 环境变量，禁止在任何输出、用例内容、总结中复述用户名密码**。登录成功后调用 create_auth_state 把当前登录态（state-save 保存的文件内容）沉淀为登录态，便于下次免登录。若环境中没有该工具（技能版本较旧），在总结中登记"请升级 ui-automation 技能包"并跳过沉淀，不要改用公共数据存凭据。
+- **账号密码登录**（平台已把凭据写入环境变量 WHARTTEST_UI_USERNAME / WHARTTEST_UI_PASSWORD，并在工作目录 SCREENSHOT_DIR 预置了登录辅助脚本 run.js）：**不要**用 playwright-cli 的 run-code 读环境变量（它是无 process 的受限 VM，读不到属正常现象，不代表凭据未注入），也不要自写脚本（平台禁止内联代码与重定向写文件）。直接执行 `node run.js --url <登录页URL> --state-out login-state.json`（如默认选择器不匹配可加 --user-sel/--pass-sel/--submit-sel 覆盖；登录页与入口页不同域时 --url 传登录页地址）。脚本在 node 进程内读取凭据填表登录并导出 storageState，**禁止用 shell 命令读取或 echo 环境变量，禁止在任何输出、用例内容、总结中复述用户名密码**。退出码 0 表示成功（stdout JSON 含 state_file/cookies/final_url），随后用 state-load 把 login-state.json 注入探索会话；退出码 3 表示凭据未注入（如实报告并停止）；退出码 4 表示未找到登录表单（用 --*-sel 指定选择器重试 1 次）。登录成功后调用 create_auth_state 沉淀登录态（--state_file 用 state-save 保存的文件路径）。若环境中没有该工具（技能版本较旧），在总结中登记"请升级 ui-automation 技能包"并跳过沉淀，不要改用公共数据存凭据。
 - **无鉴权**：直接访问入口 URL 开始探索。
 - **登录失败**：重试上限 2 次；仍失败时停止生成，向用户说明失败现象并等待指示。
 - **验证码**：遇到验证码不硬闯（不在生成会话中做验证码识别），停止并向用户说明，建议用户改用"先采集登录态再生成"。

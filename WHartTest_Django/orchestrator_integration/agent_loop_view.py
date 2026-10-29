@@ -1610,6 +1610,16 @@ class AgentLoopStreamAPIView(View):
 
         # UI 一键生成上下文（凭据/登录态等，仅凭据注入用，不落库不进 LLM 上下文）
         ui_generation_context = _parse_ui_generation_context(body_data.get("ui_generation"))
+        # 只记键名存在性，禁止记录凭据值
+        raw_ui_generation = body_data.get("ui_generation")
+        logger.info(
+            "AgentLoopStreamAPI: ui_generation payload keys=%s parsed(username=%s, password=%s, auth_state_id=%s, env_config_id=%s)",
+            sorted(raw_ui_generation.keys()) if isinstance(raw_ui_generation, dict) else type(raw_ui_generation).__name__,
+            bool((ui_generation_context or {}).get("username")),
+            bool((ui_generation_context or {}).get("password")),
+            (ui_generation_context or {}).get("auth_state_id"),
+            (ui_generation_context or {}).get("env_config_id"),
+        )
 
         # 调试日志：知识库参数
         logger.info(

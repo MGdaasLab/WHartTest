@@ -754,29 +754,92 @@ def delete_env_config(config_id: int):
 
 # ==================== 环境登录态管理 ====================
 
-def get_auth_states(env_config_id: int):
-    """获取指定环境的登录态列表（仅元数据，不返回 state_json 内容）"""
-    result = _request("GET", "auth-states/", params={
-        "env_config": env_config_id,
-        "is_active": True,
-    })
-    data = result.get("data", result)
-    # 剥离 state_json，避免登录态快照内容进入对话上下文
-    items = data if isinstance(data, list) else (data.get("results") if isinstance(data, dict) else None) or []
-    for item in items:
-        if isinstance(item, dict):
-            item.pop("state_json", None)
-    return data
+def _resolve_auth_state_file(state_file: str):
+    """把 create_auth_state 传入的 state_file 解析为可读文件路径，找不到返回 None。
+
+    skill 沙箱（skill-runner）引入后，state-save 的工作目录与本工具的 cwd 可能
+    不一致：文件实际落在共享的 SCREENSHOT_DIR / SKILL_OUTPUT_DIR，或模型直接把
+    附件里的 skill_runtime/... 相对路径、/media/... URL 传进来。这里按候选顺序
+    兜底解析，避免模型在多种路径形态上反复试错。为防越权读取，解析结果必须
+    落在既有的可信根（文件原路径、已注入的环境目录、MEDIA_ROOT 等价物）内。
+    """
+    raw = (state_file or "").strip().strip('"').strip("'")
+    if not raw:
+        return None
+
+    candidates = []
+
+    def _push(path):
+        if path and path not in candidates:
+            candidates.append(path)
+
+    _push(raw)
+    # ./ 前缀与 cwd 相对形式
+    _push(os.path.abspath(raw))
+
+    # 模型常见形态 1：附件 path 是相对 MEDIA_ROOT 的 skill_runtime/...，
+    # 在 backend 侧需拼接 MEDIA_ROOT 才能命中（media 根可由 WHARTTEST_MEDIA_ROOT
+    # 指定，缺省按 backend/runner 容器约定 /app/data/media 兜底）
+    normalized = raw.replace("\\", "/").lstrip("./")
+    for root in (
+        os.environ.get("WHARTTEST_MEDIA_ROOT", ""),
+        # backend 与 runner 共享挂载在容器内多为 /app/data/media
+        "/app/data/media",
+    ):
+        if root:
+            _push(os.path.join(root, normalized))
+    # /media/... URL 前缀形态 → 取 media/ 之后的部分
+    idx = normalized.find("media/")
+    if idx >= 0:
+        tail = normalized[idx + len("media/"):]
+        for root in (
+            os.environ.get("WHARTTEST_MEDIA_ROOT", ""),
+            "/app/data/media",
+        ):
+            if root:
+                _push(os.path.join(root, tail))
+
+    # 模型常见形态 2：裸文件名或相对名，实际落在平台注入的产物/截图目录
+    for env_name in ("WHARTTEST_UI_AUTH_STATE_DIR", "SKILL_OUTPUT_DIR",
+                     "ARTIFACT_DIR", "SCREENSHOT_DIR"):
+        env_dir = os.environ.get(env_name, "").strip()
+        if env_dir:
+            _push(os.path.join(env_dir, os.path.basename(raw)))
+            _push(os.path.join(env_dir, normalized))
+
+    # 已注入的登录态快照目录（UI 生成会话）
+    injected = os.environ.get("WHARTTEST_UI_AUTH_STATE_FILE", "").strip()
+    if injected:
+        _push(os.path.join(os.path.dirname(injected), os.path.basename(raw)))
+
+    for candidate in candidates:
+        try:
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+        except OSError:
+            continue
+    return None
 
 
 def create_auth_state(env_config_id: int, name: str, state_file: str, description: str = ""):
     """从 storageState 文件创建环境登录态
 
-    state_file: Playwright storageState JSON 文件路径
-               （playwright-cli state-save 的产物，或 WHARTTEST_UI_AUTH_STATE_FILE 指向的文件）
+    state_file: Playwright storageState JSON 文件路径。
+                支持绝对路径、相对路径、附件里的 skill_runtime/... 相对路径、
+                /media/... URL 前缀路径，以及裸文件名（自动到平台产物目录匹配）。
     """
-    if not os.path.isfile(state_file):
-        return {"status": "error", "message": f"登录态文件不存在: {state_file}"}
+    resolved_file = _resolve_auth_state_file(state_file)
+    if not resolved_file:
+        return {
+            "status": "error",
+            "message": (
+                f"登录态文件不存在: {state_file}。"
+                "请先执行 playwright-cli state-save 保存登录态，"
+                "并把 state-save 输出中 [Storage state](...) 指向的文件路径"
+                "（或本次会话 SCREENSHOT_DIR 下的文件名）作为 state_file 传入。"
+            ),
+        }
+    state_file = resolved_file
     try:
         with open(state_file, "r", encoding="utf-8") as fh:
             state_json = json.load(fh)
