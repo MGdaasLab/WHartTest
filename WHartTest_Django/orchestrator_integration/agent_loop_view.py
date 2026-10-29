@@ -1651,7 +1651,7 @@ class AgentLoopStreamAPIView(View):
             and ui_generation_context.get("env_config_id")
         ):
             try:
-                from ui_automation.models import UiEnvironmentConfig as _UiEnvConfig
+                from ui_automation.models import UiEnvironmentConfig
 
                 _env_obj = await UiEnvironmentConfig.objects.aget(
                     id=ui_generation_context["env_config_id"], project_id=int(project_id)

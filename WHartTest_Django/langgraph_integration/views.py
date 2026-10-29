@@ -1926,6 +1926,8 @@ def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
                         content = " ".join(text_parts) if text_parts else ""
                     else:
                         content = raw_content
+                    # AI 回复若原样复述了凭据标记（概率低），落库前同样剥掉
+                    content = strip_ui_credential_marker(content)
 
 
 
