@@ -807,6 +807,30 @@ def _resolve_auth_state_file(state_file: str):
             _push(os.path.join(env_dir, os.path.basename(raw)))
             _push(os.path.join(env_dir, normalized))
 
+    # 模型常见形态 3：state-save 与本命令的 case_dir_key 不一致（模型调
+    # create_auth_state 时没传 session_id，两次的 SCREENSHOT_DIR 指向
+    # screenshots/<project>/ 下不同的子目录）。向上在兄弟目录中找同名文件——
+    # 只搜 SCREENSHOT_DIR/SKILL_OUTPUT_DIR 的同级目录，不越出项目产物根。
+    for env_name in ("SCREENSHOT_DIR", "SKILL_OUTPUT_DIR", "ARTIFACT_DIR"):
+        env_dir = os.environ.get(env_name, "").strip()
+        if not env_dir:
+            continue
+        parent = os.path.dirname(os.path.abspath(env_dir))
+        base = os.path.basename(raw)
+        try:
+            if not os.path.isdir(parent):
+                continue
+            for entry in os.scandir(parent):
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                candidate = os.path.join(entry.path, base)
+                _push(candidate)
+                nested = os.path.join(candidate, normalized)
+                if normalized != base:
+                    _push(nested)
+        except OSError:
+            continue
+
     # 已注入的登录态快照目录（UI 生成会话）
     injected = os.environ.get("WHARTTEST_UI_AUTH_STATE_FILE", "").strip()
     if injected:

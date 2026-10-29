@@ -225,6 +225,8 @@ _MAX_SAFE_TOOL_MESSAGE_CHARS = _get_env_int(
     "AGENT_LOOP_MAX_SAFE_TOOL_MESSAGE_CHARS", 20000, min_value=1000
 )
 
+from .ui_credential import UI_CREDENTIAL_MARKER_TEMPLATE, strip_ui_credential_marker
+
 
 def _parse_ui_generation_context(raw: Any) -> Optional[dict]:
     """解析 UI 一键生成上下文（凭据/登录态/环境），仅保留注入所需字段。
@@ -1106,6 +1108,22 @@ class AgentLoopStreamAPIView(View):
             user_message_for_llm = user_message
             if llm_attachment_context:
                 user_message_for_llm = user_message + "\n\n以下是用户附加文件内容，请作为本轮对话上下文使用:" + llm_attachment_context
+            # UI 账密登录会话：把凭据字面值以凭据标记形式注入任务消息，模型据此亲自
+            # 填表登录并把账密写进登录步骤。凭据标记只在 LLM 消息里存在——SSE 展示、
+            # 会话历史存储均用 display_user_message（不含凭据）。
+            if (
+                generation_mode == GENERATION_MODE_UI_CASE
+                and ui_generation_context
+                and ui_generation_context.get("username")
+                and ui_generation_context.get("password")
+            ):
+                user_message_for_llm = (
+                    user_message_for_llm
+                    + UI_CREDENTIAL_MARKER_TEMPLATE.format(
+                        username=ui_generation_context["username"],
+                        password=ui_generation_context["password"],
+                    )
+                )
             (
                 human_message_content,
                 human_message_kwargs,
@@ -1116,6 +1134,8 @@ class AgentLoopStreamAPIView(View):
                 supports_vision=active_config.supports_vision,
                 uploaded_images_base64=uploaded_images_base64,
             )
+            # 展示/落库文本一律脱敏：凭据标记只存在于发给 LLM 的消息里
+            display_user_message = strip_ui_credential_marker(display_user_message)
             user_msg = HumanMessage(
                 content=human_message_content,
                 additional_kwargs=human_message_kwargs,
@@ -1620,6 +1640,42 @@ class AgentLoopStreamAPIView(View):
             (ui_generation_context or {}).get("auth_state_id"),
             (ui_generation_context or {}).get("env_config_id"),
         )
+        # 表单账密沉淀为环境配置的登录凭据（ui_login_credential），供用例执行时
+        # 替换步骤里的 ${{WHARTTEST_UI_USERNAME}} / ${{WHARTTEST_UI_PASSWORD}} 占位符——
+        # 凭据字面值不进模型上下文，模型只能生成占位符步骤。失败不阻断生成会话。
+        if (
+            generation_mode == GENERATION_MODE_UI_CASE
+            and ui_generation_context
+            and ui_generation_context.get("username")
+            and ui_generation_context.get("password")
+            and ui_generation_context.get("env_config_id")
+        ):
+            try:
+                from ui_automation.models import UiEnvironmentConfig as _UiEnvConfig
+
+                _env_obj = await UiEnvironmentConfig.objects.aget(
+                    id=ui_generation_context["env_config_id"], project_id=int(project_id)
+                )
+                _extra = _env_obj.extra_config if isinstance(_env_obj.extra_config, dict) else {}
+                _cred = _extra.get("ui_login_credential") if isinstance(_extra.get("ui_login_credential"), dict) else {}
+                if (
+                    _cred.get("username") != ui_generation_context["username"]
+                    or _cred.get("password") != ui_generation_context["password"]
+                ):
+                    _extra["ui_login_credential"] = {
+                        "username": ui_generation_context["username"],
+                        "password": ui_generation_context["password"],
+                    }
+                    _env_obj.extra_config = _extra
+                    await _env_obj.asave(update_fields=["extra_config", "updated_at"])
+                    logger.info(
+                        "AgentLoopStreamAPI: 已保存环境 %s 的登录凭据（用于占位符替换）",
+                        _env_obj.id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "AgentLoopStreamAPI: 保存环境登录凭据失败（不影响生成继续）: %s", e
+                )
 
         # 调试日志：知识库参数
         logger.info(

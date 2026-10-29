@@ -651,6 +651,51 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
 
         return await sync_to_async(_fetch)()
 
+    @staticmethod
+    def _replace_ui_credential_placeholders(steps: list, env_config) -> list:
+        """把步骤 ope_value 里的 ${{WHARTTEST_UI_USERNAME}} / ${{WHARTTEST_UI_PASSWORD}}
+        替换为环境配置保存的登录凭据（extra_config.ui_login_credential）。
+
+        生成的用例包含显式登录步骤（fill 账号/密码），但凭据字面值不进模型上下文、
+        不落步骤库——库与执行日志之间只在下发执行这一刻替换。替换失败时保留原值
+        （执行时填的是占位符字面量，用例失败原因直观可见）。
+        """
+        if not steps or env_config is None:
+            return steps
+        extra = getattr(env_config, 'extra_config', None)
+        credential = extra.get('ui_login_credential') if isinstance(extra, dict) else None
+        if not isinstance(credential, dict):
+            return steps
+        mapping = {}
+        if credential.get('username'):
+            mapping['${{WHARTTEST_UI_USERNAME}}'] = str(credential['username'])
+        if credential.get('password'):
+            mapping['${{WHARTTEST_UI_PASSWORD}}'] = str(credential['password'])
+        if not mapping:
+            return steps
+
+        replaced = 0
+        for step in steps:
+            ope_value = step.get('ope_value')
+            if not isinstance(ope_value, dict):
+                continue
+            for key, value in list(ope_value.items()):
+                if not isinstance(value, str):
+                    continue
+                new_value = value
+                for placeholder, real in mapping.items():
+                    if placeholder in new_value:
+                        new_value = new_value.replace(placeholder, real)
+                if new_value != value:
+                    ope_value[key] = new_value
+                    replaced += 1
+        if replaced:
+            logger.info(
+                '[recorder-exec] 已替换 %d 处登录凭据占位符（env=%s）',
+                replaced, getattr(env_config, 'id', None),
+            )
+        return steps
+
     # ------------------------------------------------------------------
     # 任务来源登记与结果回传校验（防伪造结果）
     # ------------------------------------------------------------------
@@ -1252,6 +1297,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                         )
                     current_auth = pending_auth
                 steps = await sync_to_async(_serialize_page_step_for_recorder)(page_step)
+                # 登录凭据占位符替换：生成会话产出的 ${{WHARTTEST_UI_*}} 在下发执行时
+                # 换成环境配置保存的真实账密（凭据不进模型上下文、不落步骤库）
+                steps = self._replace_ui_credential_placeholders(steps, env_config)
                 logger.info(
                     '[recorder-exec] 第 %d/%d 组执行 page_step=%s steps=%d base_url=%s',
                     group_index, len(groups), page_step.id, len(steps), group_bases[group_index - 1],

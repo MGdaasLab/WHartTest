@@ -728,10 +728,6 @@ class TaskConsumer:
         if not page_step_data:
             return
         
-        # 初始化数据处理器，加载项目公共变量
-        project_id = page_step_data.get('project')
-        data_processor = await self._init_data_processor(project_id)
-        
         # 获取环境配置
         env_config = None
         base_url = ''
@@ -741,6 +737,9 @@ class TaskConsumer:
             # 尝试获取项目的默认环境配置
             if project_id:
                 env_config = await self._fetch_default_env_config(project_id)
+
+        # 环境登录凭据占位符（依赖 env_config，需在其就绪后预置）
+        data_processor = await self._init_data_processor(project_id, env_config)
         
         if env_config:
             base_url = env_config.get('base_url', '') or ''
@@ -899,8 +898,8 @@ class TaskConsumer:
         if effective_env is not None:
             env_config = effective_env
 
-        # 初始化数据处理器，加载项目公共变量
-        data_processor = await self._init_data_processor(project_id)
+        # 初始化数据处理器，加载项目公共变量与环境登录凭据占位符
+        data_processor = await self._init_data_processor(project_id, env_config)
 
         # 构建配置（传入数据处理器进行变量替换）
         config = self._build_test_case_config(case_data, env_config, data_processor)
@@ -1041,7 +1040,7 @@ class TaskConsumer:
                 env_config = effective_env
 
             # 初始化数据处理器
-            data_processor = await self._init_data_processor(project_id)
+            data_processor = await self._init_data_processor(project_id, env_config)
 
             # 构建配置
             config = self._build_test_case_config(case_data, env_config, data_processor)
@@ -1558,10 +1557,14 @@ class TaskConsumer:
         logger.warning(f"公共数据格式不正确: type={type(result)}")
         return []
 
-    async def _init_data_processor(self, project_id: int) -> DataProcessor:
-        """初始化数据处理器，加载项目公共变量"""
+    async def _init_data_processor(
+        self,
+        project_id: int,
+        env_config: Optional[dict] = None,
+    ) -> DataProcessor:
+        """初始化数据处理器，加载项目公共变量与环境登录凭据"""
         data_processor = reset_data_processor()
-        
+
         if project_id:
             public_data = await self._fetch_public_data(project_id)
             logger.info(f"已加载 {len(public_data)} 个公共变量")
@@ -1570,7 +1573,22 @@ class TaskConsumer:
                 logger.debug(f"变量缓存: {data_processor.get_all()}")
         else:
             logger.warning("project_id 为空，无法加载公共变量")
-        
+
+        # 环境登录凭据占位符：用例步骤里的 ${{WHARTTEST_UI_USERNAME}} /
+        # ${{WHARTTEST_UI_PASSWORD}} 在执行时替换为环境配置保存的登录账密。
+        # 值不进日志（get_all 的 debug 输出发生在预置之前）。
+        credential = {}
+        if isinstance(env_config, dict):
+            extra = env_config.get('extra_config')
+            if isinstance(extra, dict):
+                candidate = extra.get('ui_login_credential')
+                if isinstance(candidate, dict):
+                    credential = candidate
+        if credential.get('username') and credential.get('password'):
+            data_processor.set_cache('WHARTTEST_UI_USERNAME', str(credential['username']))
+            data_processor.set_cache('WHARTTEST_UI_PASSWORD', str(credential['password']))
+            logger.info("已加载环境登录凭据占位符变量（WHARTTEST_UI_USERNAME/PASSWORD）")
+
         return data_processor
 
     def _build_page_step_config(

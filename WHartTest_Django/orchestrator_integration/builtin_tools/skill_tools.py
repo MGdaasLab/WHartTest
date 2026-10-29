@@ -425,6 +425,11 @@ def _is_allowed_artifact_file(file_path: str) -> bool:
         return False
     if os.path.basename(file_path).startswith("."):
         return False
+    # 登录态 storageState 是敏感凭据快照，只允许作为登录手段在沙箱内被消费，
+    # 不作为产物挂到工具输出（前端会展示并可下载）。
+    base = os.path.basename(file_path).lower()
+    if suffix == ".json" and ("auth-state" in base or "login-state" in base):
+        return False
     try:
         return os.path.getsize(file_path) <= _MAX_ARTIFACT_SIZE_BYTES
     except OSError:
@@ -1340,25 +1345,24 @@ def get_skill_tools(
             elif skill_name == "playwright-skill":
                 result_output = f"[SCREENSHOT_DIR] {screenshots_dir}\n{result_output}"
 
-            # UI 生成会话（playwright-cli）：告知预置登录辅助入口的存在与用法，
-            # 避免模型因 run-code VM 无 process 而误判"凭据未注入"。
+            # UI 生成会话（playwright-cli）：run.js 登录辅助只作兜底入口，存在性
+            # 通过一次性标记告知（闭包内每个生成会话只提示一次），不再逐条输出，
+            # 避免撑大上下文并误导模型放弃亲自填表登录。
             if (
                 current_ui_credential_context
                 and skill_name in _PLAYWRIGHT_SKILL_NAMES
                 and current_ui_credential_context.get("username")
             ):
-                result_output = (
-                    f"{result_output}\n\n"
-                    "[登录辅助] 平台已把凭据注入本会话的 skill 子进程环境变量，"
-                    f"并在工作目录（SCREENSHOT_DIR: {screenshots_dir}）预置了登录辅助脚本 run.js。"
-                    "playwright-cli 的 run-code 是无 process 的受限 VM，读不到环境变量属正常现象；"
-                    "需要账密登录时执行：node run.js --url <登录页URL> --state-out login-state.json"
-                    "（可选 --user-sel/--pass-sel/--submit-sel 覆盖默认选择器）。"
-                    "脚本在 node 进程内读取 WHARTTEST_UI_USERNAME/WHARTTEST_UI_PASSWORD 填表登录"
-                    "并导出 storageState，凭据不会出现在任何输出中。"
-                    "退出码：0 成功（stdout 为 JSON，含 state_file/cookies/final_url）；"
-                    "3 凭据未注入；4 未找到登录表单；2 其它错误。"
-                )
+                if "ui_login_helper_notice_shown" not in current_ui_credential_context:
+                    current_ui_credential_context["ui_login_helper_notice_shown"] = True
+                    result_output = (
+                        f"{result_output}\n\n"
+                        "[登录辅助] 工作目录已预置登录辅助脚本 run.js，仅在需要独立于"
+                        "探索会话的免登录流（如 SSO 表单选择器复杂、亲自填表反复失败）时"
+                        "作为兜底使用：node run.js --url <登录页URL> --state-out login-state.json"
+                        "（可选 --user-sel/--pass-sel/--submit-sel）。"
+                        "优先方案是直接用凭据标记中的账号密码亲自填表登录。"
+                    )
 
             return _finalize_skill_result(
                 result_output,
