@@ -2,6 +2,7 @@ import axios from 'axios';
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@/store/authStore';
 import { getCurrentServerLanguage } from '@/utils/installLocaleAdapters';
+import { joinFieldErrorMessages } from '@/utils/responseError';
 
 // 定义我们需要的请求配置类型
 type RequestConfig = {
@@ -303,20 +304,29 @@ service.interceptors.response.use(
         if (response.data) {
           if (typeof response.data === 'string') {
             message = response.data;
-          } else if (response.data.errors && response.data.errors.error) {
-            // 优先检查是否有errors.error字段（用户报告的错误格式）
-            message = response.data.errors.error;
-          } else if (response.data.errors && response.data.errors.message) {
-            // 然后检查是否有errors.message字段
-            message = response.data.errors.message;
-          } else if (response.data.detail) {
-            message = response.data.detail;
-          } else if (response.data.message) {
-            message = response.data.message;
-          } else if (response.data.error) {
-            message = response.data.error;
           } else {
-            message = JSON.stringify(response.data);
+            // 字段级校验错误优先于顶层 message：统一响应渲染器（UnifiedResponseRenderer）
+            // 对序列化器字段校验失败固定返回泛化文案「请求参数有误或处理失败」，
+            // 真实原因（如「密码只包含数字。」）在 errors 里，必须透出给用户。
+            const fieldErrorSeparator = getCurrentServerLanguage() === 'en' ? '; ' : '；';
+            const fieldErrorMessage = joinFieldErrorMessages(response.data.errors, fieldErrorSeparator);
+            if (fieldErrorMessage) {
+              message = fieldErrorMessage;
+            } else if (response.data.errors && response.data.errors.error) {
+              // 优先检查是否有errors.error字段（用户报告的错误格式）
+              message = response.data.errors.error;
+            } else if (response.data.errors && response.data.errors.message) {
+              // 然后检查是否有errors.message字段
+              message = response.data.errors.message;
+            } else if (response.data.detail) {
+              message = response.data.detail;
+            } else if (response.data.message) {
+              message = response.data.message;
+            } else if (response.data.error) {
+              message = response.data.error;
+            } else {
+              message = JSON.stringify(response.data);
+            }
           }
         } else {
           message = response.statusText;
