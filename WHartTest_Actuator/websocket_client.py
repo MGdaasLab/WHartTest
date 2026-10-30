@@ -17,18 +17,26 @@ from runtime_env import is_running_in_container
 logger = logging.getLogger('actuator')
 
 
-def build_websocket_connect_url(url: str, actuator_id: str | None = None) -> str:
-    """构建带执行器 ID 的 WebSocket 连接地址。"""
-    if not actuator_id:
-        return url
+def build_websocket_connect_url(
+    url: str,
+    actuator_id: str | None = None,
+    token: str | None = None,
+) -> str:
+    """构建带执行器 ID 与认证 token 的 WebSocket 连接地址。
 
+    token 为后端 UI_WS_ACTUATOR_TOKEN 共享密钥（wharttest_django/websocket_auth.py），
+    经查询参数传递（与 JWT 同一通道，WS 握手不便自定义头）。
+    """
     parsed_url = urlsplit(url)
     query_items = [
         (key, value)
         for key, value in parse_qsl(parsed_url.query, keep_blank_values=True)
-        if key not in {'id', 'user_id'}
+        if key not in {'id', 'user_id', 'token'}
     ]
-    query_items.append(('id', actuator_id))
+    if actuator_id:
+        query_items.append(('id', actuator_id))
+    if token:
+        query_items.append(('token', token))
     return urlunsplit(parsed_url._replace(query=urlencode(query_items)))
 
 
@@ -65,7 +73,10 @@ class WebSocketClient:
     async def connect(self) -> bool:
         """建立WebSocket连接"""
         try:
-            connect_url = build_websocket_connect_url(self.url, self.actuator_id)
+            # WS 认证 token：config.ws_token（TOML [server] ws_token 或环境变量
+            # WHARTTEST_ACTUATOR_WS_TOKEN），与后端 UI_WS_ACTUATOR_TOKEN 一致
+            token = getattr(self.config, 'ws_token', '') or None if self.config else None
+            connect_url = build_websocket_connect_url(self.url, self.actuator_id, token)
             origin = build_websocket_origin(self.url)
             connect_kwargs = {
                 'ping_interval': 30,
@@ -85,6 +96,18 @@ class WebSocketClient:
             # 连接成功后发送执行器信息
             await self._send_actuator_info()
             return True
+        except websockets.exceptions.InvalidStatus as e:
+            # 握手被拒（如后端严格模式拒绝无 token/错 token 的连接）：
+            # HTTP 403 里看不到业务关闭码，按认证问题给可操作的提示。
+            logger.error("连接被服务端拒绝（HTTP %s）", e.response.status_code)
+            logger.error(
+                "WS 认证为平台硬性安全要求（不可关闭），"
+                "本执行器未配置或配置了错误的 ws_token。"
+                "请在 config.toml [server] 段配置 ws_token（值同后端 UI_WS_ACTUATOR_TOKEN），"
+                "或联系平台管理员获取。5 秒后重试。"
+            )
+            self.connected = False
+            return False
         except Exception as e:
             logger.error(f"连接失败: {e}")
             self.connected = False
@@ -178,8 +201,18 @@ class WebSocketClient:
             self.connected = False
             return False
     
-    async def send_result(self, func_name: str, args: dict, user: Optional[str] = None):
-        """发送执行结果"""
+    async def send_result(self, func_name: str, args: dict, user: Optional[str] = None,
+                          task_token: Optional[str] = None):
+        """发送执行结果。
+
+        task_token：任务来源令牌回显。调用方未显式传入时自动取
+        consumer 挂在 ws_client 上的当前任务令牌（execute 期间通过
+        set_task_token 设置），保证所有结果消息（步骤/用例/帧）统一携带。
+        """
+        if task_token is None:
+            task_token = getattr(self, '_outbound_task_token', None)
+        if task_token and isinstance(args, dict) and not args.get('task_token'):
+            args = {**args, 'task_token': task_token}
         await self.send(SocketDataModel(
             code=ResponseCode.SUCCESS,
             msg='result',
@@ -187,6 +220,10 @@ class WebSocketClient:
             is_notice=NoticeType.WEB,
             data=QueueModel(func_name=func_name, func_args=args)
         ))
+
+    def set_task_token(self, token: Optional[str]) -> None:
+        """设置当前任务来源令牌（execute 开始/结束时由 consumer 调用）。"""
+        self._outbound_task_token = token
     
     async def receive_loop(self):
         """接收消息循环"""

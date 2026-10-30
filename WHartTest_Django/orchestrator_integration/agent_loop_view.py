@@ -48,8 +48,20 @@ from .middleware_config import (
     get_user_friendly_llm_error,
 )
 from .playwright_instructions import PLAYWRIGHT_SCRIPT_INSTRUCTION
-from .stop_signal import should_stop, clear_stop_signal
-from langgraph_integration.models import ChatSession, LLMConfig
+from .ui_generation_instructions import UI_CASE_GENERATION_INSTRUCTION
+from .self_heal_instructions import SELF_HEAL_INSTRUCTION
+from .interface_case_instructions import INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
+from .generation_guard import (
+    GENERATION_MODE_INTERFACE_CASE,
+    GENERATION_MODE_SELF_HEAL,
+    GENERATION_MODE_UI_CASE,
+    GenerationInterfaceCaseGuardMiddleware,
+    GenerationUiCaseGuardMiddleware,
+    SelfHealGuardMiddleware,
+    detect_generation_mode,
+)
+from .stop_signal import clear_stop_signal, should_stop
+from langgraph_integration.models import ChatMessage, ChatSession, LLMConfig
 from langgraph_integration.views import (
     _extract_requirement_doc_images_for_message,
     create_llm_instance,
@@ -212,6 +224,49 @@ _LINKED_IMAGE_FETCH_TIMEOUT = _get_env_float(
 _MAX_SAFE_TOOL_MESSAGE_CHARS = _get_env_int(
     "AGENT_LOOP_MAX_SAFE_TOOL_MESSAGE_CHARS", 20000, min_value=1000
 )
+
+from .ui_credential import UI_CREDENTIAL_MARKER_TEMPLATE, strip_ui_credential_marker
+
+
+def _parse_ui_generation_context(raw: Any) -> Optional[dict]:
+    """解析 UI 一键生成上下文（凭据/登录态/环境），仅保留注入所需字段。
+
+    返回 dict 含：
+    - auth_state_id: 登录态 ID（可选）
+    - env_config_id: 环境配置 ID（可选）
+    - username / password: 账号密码明文（可选，仅用于 env 注入，禁止落库/日志）
+    - start_url: 起始页面 URL（可选，仅日志脱敏使用）
+
+    非法字段一律丢弃；非 dict 输入返回 None。
+    """
+    if not isinstance(raw, dict):
+        return None
+
+    def _opt_int(key: str) -> Optional[int]:
+        value = raw.get(key)
+        try:
+            return int(value) if value is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _opt_str(key: str) -> Optional[str]:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
+    context = {
+        "auth_state_id": _opt_int("auth_state_id"),
+        "env_config_id": _opt_int("env_config_id"),
+        "username": _opt_str("username"),
+        "password": _opt_str("password"),
+        "start_url": _opt_str("start_url"),
+    }
+    if not any(
+        [context["auth_state_id"], context["env_config_id"], context["username"], context["password"]]
+    ):
+        return None
+    return context
 
 
 def _extract_linked_image_urls(text: str) -> List[str]:
@@ -854,6 +909,8 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        generation_mode: Optional[str] = None,
+        ui_generation_context: Optional[dict] = None,
     ):
         """
         创建 SSE 流式生成器（LangChain v1 重构版）
@@ -981,6 +1038,9 @@ class AgentLoopStreamAPIView(View):
                 project_id=int(project_id),
                 test_case_id=test_case_id,
                 chat_session_id=session_id,
+                ui_credential_context=(
+                    ui_generation_context if generation_mode == GENERATION_MODE_UI_CASE else None
+                ),
             )
             tools.extend(builtin_tools)
             logger.info(f"AgentLoopStreamAPI: Added {len(builtin_tools)} builtin tools")
@@ -1023,10 +1083,47 @@ class AgentLoopStreamAPIView(View):
                 ) + PLAYWRIGHT_SCRIPT_INSTRUCTION
                 logger.info(f"AgentLoopStreamAPI: 已追加脚本生成指令")
 
+            # 8.2 UI 一键生成会话：追加 UI 生成规范指令（与 default_templates 模板同源）
+            if generation_mode == GENERATION_MODE_UI_CASE:
+                effective_prompt = (
+                    (effective_prompt or "") + "\n\n" + UI_CASE_GENERATION_INSTRUCTION
+                )
+                logger.info("AgentLoopStreamAPI: 已追加 UI 用例生成规范指令")
+
+            # 8.3 UI 用例自愈会话：追加自愈规范指令（与 default_templates 模板同源）
+            if generation_mode == GENERATION_MODE_SELF_HEAL:
+                effective_prompt = (
+                    (effective_prompt or "") + "\n\n" + SELF_HEAL_INSTRUCTION
+                )
+                logger.info("AgentLoopStreamAPI: 已追加 UI 用例自愈规范指令")
+
+            # 8.4 接口用例生成会话：追加试跑验证规范（与 default_templates 模板同源）
+            if generation_mode == GENERATION_MODE_INTERFACE_CASE:
+                effective_prompt = (
+                    (effective_prompt or "") + "\n\n" + INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
+                )
+                logger.info("AgentLoopStreamAPI: 已追加接口用例试跑验证规范")
+
             # 9. 构建用户消息（支持多模态：上传图片 + HTTP(S) 图片 + 需求文档图片）
             user_message_for_llm = user_message
             if llm_attachment_context:
                 user_message_for_llm = user_message + "\n\n以下是用户附加文件内容，请作为本轮对话上下文使用:" + llm_attachment_context
+            # UI 账密登录会话：把凭据字面值以凭据标记形式注入任务消息，模型据此亲自
+            # 填表登录并把账密写进登录步骤。凭据标记只在 LLM 消息里存在——SSE 展示、
+            # 会话历史存储均用 display_user_message（不含凭据）。
+            if (
+                generation_mode == GENERATION_MODE_UI_CASE
+                and ui_generation_context
+                and ui_generation_context.get("username")
+                and ui_generation_context.get("password")
+            ):
+                user_message_for_llm = (
+                    user_message_for_llm
+                    + UI_CREDENTIAL_MARKER_TEMPLATE.format(
+                        username=ui_generation_context["username"],
+                        password=ui_generation_context["password"],
+                    )
+                )
             (
                 human_message_content,
                 human_message_kwargs,
@@ -1037,6 +1134,8 @@ class AgentLoopStreamAPIView(View):
                 supports_vision=active_config.supports_vision,
                 uploaded_images_base64=uploaded_images_base64,
             )
+            # 展示/落库文本一律脱敏：凭据标记只存在于发给 LLM 的消息里
+            display_user_message = strip_ui_credential_marker(display_user_message)
             user_msg = HumanMessage(
                 content=human_message_content,
                 additional_kwargs=human_message_kwargs,
@@ -1072,6 +1171,12 @@ class AgentLoopStreamAPIView(View):
                     tools=tools,
                     system_prompt=effective_prompt,
                 )
+                if generation_mode == GENERATION_MODE_UI_CASE:
+                    middleware = list(middleware) + [GenerationUiCaseGuardMiddleware()]
+                elif generation_mode == GENERATION_MODE_INTERFACE_CASE:
+                    middleware = list(middleware) + [GenerationInterfaceCaseGuardMiddleware()]
+                elif generation_mode == GENERATION_MODE_SELF_HEAL:
+                    middleware = list(middleware) + [SelfHealGuardMiddleware()]
 
                 agent = create_agent(
                     llm,
@@ -1081,7 +1186,7 @@ class AgentLoopStreamAPIView(View):
                     middleware=middleware,
                 )
                 logger.info(
-                    f"AgentLoopStreamAPI: Agent created with {len(tools)} tools"
+                    f"AgentLoopStreamAPI: Agent created with {len(tools)} tools (generation_mode={generation_mode or '-'})"
                 )
 
                 # 13. 配置调用参数
@@ -1515,12 +1620,62 @@ class AgentLoopStreamAPIView(View):
             return api_error_response(f"Invalid JSON: {e}", 400)
 
         user_message = body_data.get("message")
+        generation_mode = detect_generation_mode(user_message)
         session_id = body_data.get("session_id")
         project_id = body_data.get("project_id")
         knowledge_base_id = body_data.get("knowledge_base_id")
         use_knowledge_base = body_data.get("use_knowledge_base", True)
         prompt_id = body_data.get("prompt_id")
         file_ids = body_data.get("file_ids", [])
+
+        # UI 一键生成上下文（凭据/登录态等，仅凭据注入用，不落库不进 LLM 上下文）
+        ui_generation_context = _parse_ui_generation_context(body_data.get("ui_generation"))
+        # 只记键名存在性，禁止记录凭据值
+        raw_ui_generation = body_data.get("ui_generation")
+        logger.info(
+            "AgentLoopStreamAPI: ui_generation payload keys=%s parsed(username=%s, password=%s, auth_state_id=%s, env_config_id=%s)",
+            sorted(raw_ui_generation.keys()) if isinstance(raw_ui_generation, dict) else type(raw_ui_generation).__name__,
+            bool((ui_generation_context or {}).get("username")),
+            bool((ui_generation_context or {}).get("password")),
+            (ui_generation_context or {}).get("auth_state_id"),
+            (ui_generation_context or {}).get("env_config_id"),
+        )
+        # 表单账密沉淀为环境配置的登录凭据（ui_login_credential），供用例执行时
+        # 替换步骤里的 ${{WHARTTEST_UI_USERNAME}} / ${{WHARTTEST_UI_PASSWORD}} 占位符——
+        # 凭据字面值不进模型上下文，模型只能生成占位符步骤。失败不阻断生成会话。
+        if (
+            generation_mode == GENERATION_MODE_UI_CASE
+            and ui_generation_context
+            and ui_generation_context.get("username")
+            and ui_generation_context.get("password")
+            and ui_generation_context.get("env_config_id")
+        ):
+            try:
+                from ui_automation.models import UiEnvironmentConfig
+
+                _env_obj = await UiEnvironmentConfig.objects.aget(
+                    id=ui_generation_context["env_config_id"], project_id=int(project_id)
+                )
+                _extra = _env_obj.extra_config if isinstance(_env_obj.extra_config, dict) else {}
+                _cred = _extra.get("ui_login_credential") if isinstance(_extra.get("ui_login_credential"), dict) else {}
+                if (
+                    _cred.get("username") != ui_generation_context["username"]
+                    or _cred.get("password") != ui_generation_context["password"]
+                ):
+                    _extra["ui_login_credential"] = {
+                        "username": ui_generation_context["username"],
+                        "password": ui_generation_context["password"],
+                    }
+                    _env_obj.extra_config = _extra
+                    await _env_obj.asave(update_fields=["extra_config", "updated_at"])
+                    logger.info(
+                        "AgentLoopStreamAPI: 已保存环境 %s 的登录凭据（用于占位符替换）",
+                        _env_obj.id,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "AgentLoopStreamAPI: 保存环境登录凭据失败（不影响生成继续）: %s", e
+                )
 
         # 调试日志：知识库参数
         logger.info(
@@ -1600,6 +1755,8 @@ class AgentLoopStreamAPIView(View):
                     test_case_id,
                     use_pytest,
                     file_ids,
+                    generation_mode=generation_mode,
+                    ui_generation_context=ui_generation_context,
                 ):
                     yield chunk
 
@@ -1625,8 +1782,9 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                generation_mode=generation_mode,
+                ui_generation_context=ui_generation_context,
             )
-
     async def _handle_non_stream_request(
         self,
         request,
@@ -1642,6 +1800,8 @@ class AgentLoopStreamAPIView(View):
         test_case_id: Optional[int] = None,
         use_pytest: bool = True,
         file_ids: Optional[List[int]] = None,
+        generation_mode: Optional[str] = None,
+        ui_generation_context: Optional[dict] = None,
     ) -> JsonResponse:
         """
         处理非流式请求，收集所有流式事件后返回统一 JSON 响应
@@ -1673,6 +1833,8 @@ class AgentLoopStreamAPIView(View):
                 test_case_id,
                 use_pytest,
                 file_ids,
+                generation_mode=generation_mode,
+                ui_generation_context=ui_generation_context,
             ):
                 # 解析 SSE 数据
                 if isinstance(chunk, str) and chunk.startswith("data: "):
@@ -1855,6 +2017,7 @@ class AgentLoopResumeAPIView(View):
         resume_data: dict,
         knowledge_base_id: Optional[str] = None,
         use_knowledge_base: bool = False,
+        generation_mode: Optional[str] = None,
     ):
         """
         创建 Resume SSE 流式生成器
@@ -1997,6 +2160,20 @@ class AgentLoopResumeAPIView(View):
                 except Exception:
                     pass
 
+                # 5.1 生成守护模式：恢复前追加对应规范指令（与 default_templates 模板同源）
+                if generation_mode == GENERATION_MODE_UI_CASE:
+                    resume_system_prompt = (
+                        (resume_system_prompt or "") + "\n\n" + UI_CASE_GENERATION_INSTRUCTION
+                    )
+                elif generation_mode == GENERATION_MODE_SELF_HEAL:
+                    resume_system_prompt = (
+                        (resume_system_prompt or "") + "\n\n" + SELF_HEAL_INSTRUCTION
+                    )
+                elif generation_mode == GENERATION_MODE_INTERFACE_CASE:
+                    resume_system_prompt = (
+                        (resume_system_prompt or "") + "\n\n" + INTERFACE_CASE_LIVE_VERIFICATION_INSTRUCTION
+                    )
+
                 tool_names = [t.name for t in tools] if tools else []
                 middleware = await sync_to_async(get_middleware_from_config)(
                     active_config,
@@ -2007,6 +2184,12 @@ class AgentLoopResumeAPIView(View):
                     tools=tools,
                     system_prompt=resume_system_prompt,
                 )
+                if generation_mode == GENERATION_MODE_UI_CASE:
+                    middleware = list(middleware) + [GenerationUiCaseGuardMiddleware()]
+                elif generation_mode == GENERATION_MODE_INTERFACE_CASE:
+                    middleware = list(middleware) + [GenerationInterfaceCaseGuardMiddleware()]
+                elif generation_mode == GENERATION_MODE_SELF_HEAL:
+                    middleware = list(middleware) + [SelfHealGuardMiddleware()]
 
                 # 6. 创建 agent
                 agent = create_agent(
@@ -2408,8 +2591,37 @@ class AgentLoopResumeAPIView(View):
             f"AgentLoopResumeAPI: Resume request for session {session_id}, knowledge_base_id={knowledge_base_id}"
         )
 
+        # 2.1 从会话首条用户消息检测生成守护模式（主流式入口在消息头注入标记）
+        generation_mode = None
+        try:
+            first_user_message = await sync_to_async(
+                lambda: ChatMessage.objects.filter(
+                    session__session_id=session_id, role='human'
+                ).order_by('created_at').values_list('content', flat=True).first()
+            )()
+            generation_mode = detect_generation_mode(first_user_message)
+        except Exception:
+            logger.warning("[AgentLoopResumeAPI] 生成守护标记检测失败，按未启用处理")
+
         # 3. 返回 SSE 流式响应
         async def async_generator():
+            generation_mode = None
+            try:
+                first_user_message = await sync_to_async(
+                    lambda: ChatMessage.objects.filter(
+                        session__session_id=session_id,
+                        session__user=user,
+                        role="human",
+                    )
+                    .order_by("created_at")
+                    .values_list("content", flat=True)
+                    .first()
+                )()
+                generation_mode = detect_generation_mode(first_user_message)
+            except Exception:
+                logger.warning(
+                    "[AgentLoopResumeAPI] 生成守护标记检测失败，按未启用处理"
+                )
             async for chunk in self._create_resume_stream_generator(
                 user,
                 session_id,
@@ -2417,6 +2629,7 @@ class AgentLoopResumeAPIView(View):
                 resume_data,
                 knowledge_base_id,
                 use_knowledge_base,
+                generation_mode,
             ):
                 yield chunk
 

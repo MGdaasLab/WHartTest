@@ -146,6 +146,17 @@
             </a-input-number>
           </a-form-item>
         </div>
+
+        <template v-if="form.module === 'ui_automation'">
+          <a-form-item :label="modalText.autoHeal">
+            <a-switch v-model="form.auto_heal_enabled" />
+          </a-form-item>
+          <div v-if="form.auto_heal_enabled" class="retry-config">
+            <a-form-item :label="modalText.healCaseLimit" :help="modalText.healCaseLimitHelp">
+              <a-input-number v-model="form.heal_case_limit" :min="1" :max="20" style="width: 100%" />
+            </a-form-item>
+          </div>
+        </template>
       </a-form>
     </div>
   </a-modal>
@@ -216,6 +227,9 @@ const modalText = computed(() => (
         retryOnFailure: 'Retry on Failure',
         retryCount: 'Retry Count',
         retryInterval: 'Retry Interval',
+        autoHeal: 'Auto Self-Healing',
+        healCaseLimit: 'Heal Case Limit',
+        healCaseLimitHelp: 'Max failed cases to heal per run (extra failures are listed for manual handling)',
         monday: 'Mon',
         tuesday: 'Tue',
         wednesday: 'Wed',
@@ -266,6 +280,9 @@ const modalText = computed(() => (
         retryOnFailure: '失败重试',
         retryCount: '重试次数',
         retryInterval: '重试间隔',
+        autoHeal: '失败自愈',
+        healCaseLimit: '单次自愈用例数上限',
+        healCaseLimitHelp: '一次执行最多自愈的失败用例数，超出的失败用例列入待人工确认清单',
         monday: '周一',
         tuesday: '周二',
         wednesday: '周三',
@@ -322,6 +339,8 @@ const defaultForm = (): TaskFormData => ({
   retry_enabled: false,
   retry_count: 3,
   retry_interval: 2,
+  auto_heal_enabled: false,
+  heal_case_limit: 5,
   test_suite: null,
   ui_testcase_ids: [],
   actuator_id: '',
@@ -385,6 +404,8 @@ const onModuleChange = () => {
   form.test_suite = null;
   form.ui_testcase_ids = [];
   form.actuator_id = '';
+  // 失败自愈仅支持 UI 自动化任务，切换模块时关闭避免残留无效配置
+  form.auto_heal_enabled = false;
 };
 
 const resetForm = () => {
@@ -419,6 +440,8 @@ const open = (task?: ScheduledTask) => {
       retry_enabled: task.retry_enabled,
       retry_count: task.retry_count,
       retry_interval: task.retry_interval,
+      auto_heal_enabled: task.auto_heal_enabled ?? false,
+      heal_case_limit: task.heal_case_limit ?? 5,
       test_suite: task.test_suite,
       ui_testcase_ids: task.ui_testcase_ids || [],
       actuator_id: task.actuator_id || '',

@@ -48,62 +48,20 @@ python api_automation_tools.py --action list_modules --project_id 1 --base_url h
 
 > **工作流提示**：先用 `quick_debug_interface` 或 `run_interface` 验证接口定义，再沉淀为接口用例或场景用例步骤。
 
-## 真实概念边界
-
 ### 接口定义
 
 `ApiInterface` 是保存的接口定义，支持 HTTP 和 SQL。先用 `quick_debug_interface` 或 `run_interface` 验证接口定义，再沉淀为单接口用例或场景用例步骤。
 
 HTTP 的 `headers`、`params` 可以传对象或 key-value 数组，后端会规范化为数组。`body.type` 支持 `none`、`form-data`、`x-www-form-urlencoded`、`raw`、`binary`。
 
-### 提取变量
+### 接口参数约束
 
-`extract` 是变量名到 JMESPath 表达式的映射。`extract_meta` 是同名变量的元信息，支持 `variable_type: "temporary" | "project"` 和 `source: "response" | "request"`。
+接口导入/更新文档时，平台会解析每个 HTTP 接口的参数约束（path/query/header 参数、body 字段的类型/必填/枚举/范围/长度/format、响应结构与成功码）并固化存库。用 `get_interface_constraints`（`--interface_ids` 传逗号分隔的接口 ID）按需查询：
 
-- 省略 `source` 时按 `response` 处理。
-- `source: "response"` 从响应对象提取，继续使用现有写法，例如 `body.data.token`。
-- `source: "request"` 从实际发出的请求快照提取，可用根字段是 `method`、`url`、`headers`、`params`、`cookies`、`body`、`json`、`data`，例如 `method`、`url`、`headers.Authorization`、`body.username`。
-- `source` 只决定从请求还是响应提取；是否持久化到项目变量仍由 `variable_type: "project"` 决定。
-- 接口定义的 serializer 只保留变量名同时存在于 `extract` 的 `extract_meta` 项。
-- 同步配置的 `extract` 字段当前只同步提取表达式，不同步 `extract_meta`；如果改了请求/响应来源，要同步后手动检查场景步骤里的 `extract_meta`。
+- 返回 `constraints` 数组，每项含 `interface_id` 与 `constraints`（结构：`params.{path,query,header}`、`body_fields`（含 `name/type/required/constraints/default/description`，嵌套字段用点路径；所有参数逐行保留，无约束的字段 constraints 为空对象）、`body_required`、`response`（含 `success_code/fields`）、`notes`）。每个接口的快照自包含：与其他接口共享同一 schema 时也完整展开全部 body 字段，无需跳转其他接口查看。
+- `missing` 数组列出没有约束快照的接口 ID（未通过文档导入或文档中未匹配到），对应约束按"未知"处理，禁止臆造。
+- 生成接口用例时应按当前处理的接口分批调用本工具获取约束，而不是把全部接口约束一次性读入上下文。
 
-### 断言规则
-
-`validators` 是断言规则数组，支持 `{"eq": ["status_code", 200]}` 和 `{"check": "status_code", "expect": 200}` 两种格式。`check` 默认按响应对象解析，可直接断言 `status_code`、`headers`、`cookies`、`body`。
-
-断言没有独立的 `source` 或 `validators_meta` 字段。需要断言请求内容时，先用 `extract` + `extract_meta.source: "request"` 把请求字段提取成临时变量，再在同一步或后续步骤的 `validators` 里用 `$变量名` 断言。后端执行顺序是先提取、再断言。
-
-接口定义执行器 `InterfaceRunner` 当前支持这些 comparator：`eq`、`ne`、`lt`、`le`、`lte`、`gt`、`ge`、`gte`、`str_eq`、`contains`、`contained_by`、`type_match`、`regex_match`、`startswith`、`endswith`、`length_equal`、`length_greater_than`、`length_less_than`、`length_greater_or_equals`、`length_less_or_equals`。
-
-场景用例和单接口用例当前复用 `TestCaseRunner`，步骤断言实际映射的 comparator 是：`eq`、`ne`、`lt`、`le`、`gt`、`ge`、`str_eq`、`contains`、`contained_by`、`type_match`、`regex_match`。不要在场景步骤或单接口步骤里假设 `lte`、`gte`、`startswith`、`endswith`、`length_*` 会被执行，除非代码里的 `api_testcases.runner.TestCaseRunner` 已同步映射。
-
-### 单接口用例（接口用例页签）
-
-`ApiInterfaceCase` 用于"一个被测主接口"的测试。创建时顶层必须传 `interface_id`，后端会自动生成一个 `role=main` 的主步骤，主步骤绑定这个 `interface_id` 对应的接口。
-
-`steps_info` 可选，用来补前置步骤；前置步骤 `role` 为 `precondition`。如果显式传 `role=main`，后端仍只保留一个主步骤，并按"前置步骤在前，主步骤最后"的顺序重建步骤。
-
-单接口用例没有独立的批量执行接口。需要批量或混合执行时，把单接口用例加入任务套件的 `interface_cases`。
-
-### 场景用例（场景用例页签）
-
-`ApiTestCase` 是多步骤业务场景用例。创建或更新步骤使用 `steps_info`，新步骤需要 `interface_id`。每一步落库为 `ApiTestCaseStep`，可以覆盖 `interface_data` 中的请求、断言、提取、变量、hooks 等字段。
-
-`get_group_testcases` 当前只返回分组下的场景用例；标签统计 `get_tag_statistics` 当前也只统计场景用例。
-
-### 任务套件
-
-`ApiTestTaskSuite` 可以同时包含场景用例和单接口用例：
-
-- 创建/更新套件 payload 用 `test_cases` 表示场景用例 ID 列表。
-- 创建/更新套件 payload 用 `interface_cases` 表示单接口用例 ID 列表。
-- 向已有套件追加用例用 `testcase_ids` 和 `interface_case_ids`。
-- 套件内用例类型是 `case_type: "scenario" | "interface"`。
-
-## 常用枚举
-
-- 数据库类型：`mysql`、`postgresql`、`sqlite`、`oracle`、`sqlserver`
-- 环境变量类型：`string`、`integer`、`float`、`boolean`、`json`、`list`、`dict`
 - 接口类型：`http`、`sql`
 - HTTP 方法：`GET`、`POST`、`PUT`、`DELETE`、`PATCH`
 - SQL 方法：`fetchone`、`fetchmany`、`fetchall`、`insert`、`update`、`delete`
@@ -138,11 +96,11 @@ HTTP 的 `headers`、`params` 可以传对象或 key-value 数组，后端会规
 
 | Action | 说明 |
 |---|---|
-| `list_interfaces` / `get_interface` / `create_interface` / `update_interface` / `delete_interface` | 接口定义 CRUD |
+| `list_interfaces` / `get_interface` | 查询接口 |
+| `create_interface` / `update_interface` / `delete_interface` | 维护接口 |
 | `duplicate_interface` | 复制接口定义 |
-| `quick_debug_interface` | 不落库快速调试接口 |
+| `get_interface_constraints` | 查询接口参数约束快照（导入文档时固化的类型/必填/枚举/范围/长度等，按 interface_ids 批量查询） |
 | `run_interface` | 执行已保存接口 |
-| `list_interface_results` / `get_interface_result` | 查询接口调试/执行结果 |
 
 ### 接口用例页签（单接口用例 ApiInterfaceCase）
 

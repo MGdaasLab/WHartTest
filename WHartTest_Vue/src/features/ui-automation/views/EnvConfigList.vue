@@ -73,13 +73,13 @@
         JWT 系统），无需登录页与验证码。点「录制登录态」在录制窗口中完成登录后保存即可捕获。
       </a-alert>
       <div class="auth-toolbar">
-        <a-button type="primary" size="mini" @click="authCaptureVisible = true">
+        <a-button type="primary" size="mini" @click="openAuthCapture">
           <template #icon><icon-safe /></template>
           录制登录态
         </a-button>
         <span class="auth-tip">
           点击「录制登录态」，在录制窗口中登录目标系统并点「保存登录态」即可捕获。
-          登录态仅在录制/编排时显式选择绑定后才会注入。
+          登录态过期后可点对应记录的「更新」重新录制，覆盖原凭据，绑定的步骤无需重新绑定。
         </span>
       </div>
       <a-table
@@ -99,6 +99,10 @@
         </template>
         <template #auth_operations="{ record }">
           <div class="auth-ops-row">
+            <a-button type="text" size="mini" @click="openAuthUpdate(record)">
+              <template #icon><icon-refresh /></template>
+              更新
+            </a-button>
             <a-button type="text" size="mini" @click="openEditAuth(record)">
               <template #icon><icon-edit /></template>
               编辑
@@ -127,10 +131,11 @@
       </div>
     </a-modal>
 
-    <!-- 录制登录态（登录态采集录制窗口：仅保留保存登录态） -->
+    <!-- 录制登录态（登录态采集录制窗口：仅保留保存登录态；更新模式下覆盖原登录态） -->
     <AuthCaptureModal
       v-model:visible="authCaptureVisible"
       :env="currentAuthEnv"
+      :auth-state="updatingAuthState"
       @saved="onAuthRecorded"
     />
 
@@ -212,7 +217,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, watch } from 'vue'
 import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconCheck, IconSafe } from '@arco-design/web-vue/es/icon'
+import { IconPlus, IconEdit, IconDelete, IconCheck, IconSafe, IconRefresh } from '@arco-design/web-vue/es/icon'
 import { useProjectStore } from '@/store/projectStore'
 import { envConfigApi, authStateApi } from '../api'
 import AuthCaptureModal from '../components/AuthCaptureModal.vue'
@@ -273,11 +278,24 @@ const authModalVisible = ref(false)
 const authLoading = ref(false)
 const currentAuthEnv = ref<UiEnvironmentConfig | null>(null)
 const authStates = ref<UiAuthState[]>([])
-// 录制登录态（登录态采集录制窗口）
+// 录制登录态（登录态采集录制窗口）；updatingAuthState 非空时为「更新」模式（覆盖原登录态）
 const authCaptureVisible = ref(false)
+const updatingAuthState = ref<UiAuthState | null>(null)
+
+const openAuthCapture = () => {
+  updatingAuthState.value = null
+  authCaptureVisible.value = true
+}
+
+/** 点登录态记录的「更新」：重新录制并覆盖该条登录态（免填名称） */
+const openAuthUpdate = (record: UiAuthState) => {
+  updatingAuthState.value = record
+  authCaptureVisible.value = true
+}
 
 const onAuthRecorded = () => {
   authCaptureVisible.value = false
+  updatingAuthState.value = null
   fetchAuthStates()
   fetchData()
 }
@@ -287,7 +305,7 @@ const authColumns = [
   { title: '凭据摘要', slotName: 'credentials', width: 130, align: 'center' as const },
   { title: '过期时间', slotName: 'auth_expiry', width: 140, align: 'center' as const },
   { title: '更新时间', slotName: 'updated_at', width: 140, align: 'center' as const },
-  { title: '操作', slotName: 'auth_operations', width: 140, align: 'center' as const },
+  { title: '操作', slotName: 'auth_operations', width: 190, align: 'center' as const },
 ]
 
 /** ISO 时间串 → 本地 'YYYY-MM-DD HH:mm:ss' */

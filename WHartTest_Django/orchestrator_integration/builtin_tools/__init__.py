@@ -19,8 +19,13 @@ def get_builtin_tools(
     project_id: int,
     test_case_id: int = None,
     chat_session_id: str = None,
+    ui_credential_context: dict = None,
 ) -> list:
-    """获取所有内置工具"""
+    """获取所有内置工具
+
+    ui_credential_context：UI 一键生成会话的凭据上下文（auth_state_id / username /
+    password 等），仅透传给 Skill 工具用于平台侧 env 注入，不进 LLM 上下文。
+    """
     tools = []
 
     skill_tools = get_skill_tools(
@@ -28,6 +33,7 @@ def get_builtin_tools(
         project_id=project_id,
         test_case_id=test_case_id,
         chat_session_id=chat_session_id,
+        ui_credential_context=ui_credential_context,
     )
     tools.extend(skill_tools)
     logger.info(f"[BuiltinTools] 加载 {len(skill_tools)} 个 Skill 工具")

@@ -108,8 +108,8 @@ function onRefreshed(token: string) {
   refreshSubscribers = [];
 }
 
-// 刷新token
-async function refreshToken() {
+// 刷新token（供 axios 拦截器与 WebSocket 4401 重连共用）
+export async function refreshToken(): Promise<string | null> {
   const authStore = useAuthStore();
   const refreshToken = authStore.getRefreshToken;
 

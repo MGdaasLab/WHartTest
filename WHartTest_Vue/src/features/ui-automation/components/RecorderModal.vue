@@ -475,7 +475,7 @@ const text = computed(() => (
         saveLoginState: 'Save Login State',
         authNameLabel: 'Login state name',
         authNamePlaceholder: 'Enter a name (leave empty to auto-generate)',
-                saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}), executions will auto-inject it',
+        saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}, sessionStorage={sessionKeys}), executions will auto-inject it',
         saveLoginStateFailed: 'Failed to save login state',
         recordHint: 'Operate in the browser view below. Hover an element then click Assert to record an assertion.',
         noActions: 'No actions yet. Operate in the browser view.',
@@ -570,7 +570,7 @@ const text = computed(() => (
         saveLoginState: '保存登录态',
         authNameLabel: '登录态名称',
         authNamePlaceholder: '填写登录态名称（留空自动生成）',
-                saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}），执行时会自动注入',
+        saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}，sessionStorage={sessionKeys}），执行时会自动注入',
         saveLoginStateFailed: '保存登录态失败',
         recordHint: '在左侧浏览器画面中操作；悬停目标元素后点击「断言」可记录断言。',
         noActions: '暂无动作，请在浏览器画面中操作',
@@ -1008,7 +1008,8 @@ async function submitSaveLoginState() {
     Message.success(
       text.value.saveLoginStateSuccess
         .replace('{cookies}', String(result.cookies))
-        .replace('{keys}', String(result.local_storage_keys)),
+        .replace('{keys}', String(result.local_storage_keys))
+        .replace('{sessionKeys}', String(result.session_storage_keys)),
     )
     emit('refresh')
   } catch (e: any) {
@@ -1185,6 +1186,9 @@ function onKeyDown(e: KeyboardEvent) {
   if (!recording.value) return
   // 输入法组合期间/Process 等组合键不转发（最终文本走 compositionend 通道）
   if (e.isComposing || e.key === 'Process' || e.key === 'Unidentified' || e.key === 'Dead') return
+  // 粘贴快捷键不转发：远端会带着 Control 修饰符用自己的（空的）剪贴板做原生粘贴，
+  // 与 onPaste 注入的文本产生竞争，文本注入统一走 paste 事件通道
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'v' || e.key === 'V' || e.code === 'KeyV')) return
   uiWebSocket.recorderInput({ type: 'key', event: 'down', key: e.key, code: e.code })
   if (['Enter', 'Tab', ' '].includes(e.key)) e.preventDefault()
 }
@@ -1195,6 +1199,21 @@ function onCompositionEnd(e: CompositionEvent) {
   if (text) {
     uiWebSocket.recorderInput({ type: 'text', text })
   }
+}
+
+function onPaste(e: ClipboardEvent) {
+  if (!recording.value) return
+  const target = e.target as HTMLElement | null
+  // 焦点常驻在隐藏 IME 载体上（keepImeFocused），画布区 Ctrl+V 的 paste 事件
+  // target 就是它，不能按 INPUT 标签放行；只放行工具栏等真实可见的本地输入框
+  if (target && target !== imeInputRef.value && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+  // 本地剪贴板不会随 Ctrl+V 的按键转发到远端浏览器，必须拦截 paste 事件
+  // 把文本显式送过去（复用输入法的 text 通道，远端 insertText 到聚焦元素）
+  const text = e.clipboardData?.getData('text/plain') || ''
+  if (text) {
+    uiWebSocket.recorderInput({ type: 'text', text })
+  }
+  e.preventDefault()
 }
 
 function onKeyUp(e: KeyboardEvent) {
@@ -1213,6 +1232,7 @@ function bindCanvasListeners() {
   window.addEventListener('keydown', onKeyDown, true)
   window.addEventListener('keyup', onKeyUp, true)
   window.addEventListener('compositionend', onCompositionEnd, true)
+  window.addEventListener('paste', onPaste, true)
   keepImeFocused()
 }
 
@@ -1220,6 +1240,7 @@ function unbindCanvasListeners() {
   window.removeEventListener('keydown', onKeyDown, true)
   window.removeEventListener('keyup', onKeyUp, true)
   window.removeEventListener('compositionend', onCompositionEnd, true)
+  window.removeEventListener('paste', onPaste, true)
 }
 
 // ------------------------------------------------------------------

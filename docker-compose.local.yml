@@ -89,6 +89,10 @@ services:
       - MEDIA_ROOT=${MEDIA_ROOT:-/app/data/media}
       - LANGGRAPH_CHECKPOINT_SQLITE_PATH=${LANGGRAPH_CHECKPOINT_SQLITE_PATH:-/app/data/chat_history.sqlite}
       - DJANGO_DEBUG=True
+      # UI 自动化 WebSocket 认证（wharttest_django/websocket_auth.py）：
+      # 执行器连接 /ws/ui/actuator/ 的共享密钥，须与执行器侧 ws_token 一致；
+      # 留空时兼容模式仍放行无凭据连接（仅告警）。
+      - UI_WS_ACTUATOR_TOKEN=${UI_WS_ACTUATOR_TOKEN:-}
       - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-django-insecure-change-this-in-production}
       - DJANGO_ALLOWED_HOSTS=${DJANGO_ALLOWED_HOSTS:-*}
       - DJANGO_CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://localhost:80,http://*:8913
@@ -217,36 +221,6 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-  # UI 自动化执行器（默认无头浏览器容器）
-  actuator:
-    build:
-      context: ./WHartTest_Actuator
-      dockerfile: Dockerfile
-      args:
-        PLAYWRIGHT_PYTHON_IMAGE: ${DOCKER_PLAYWRIGHT_PYTHON_IMAGE:-mcr.microsoft.com/playwright/python:v1.60.0-jammy}
-        PIP_INDEX_URL: ${DOCKER_PIP_INDEX_URL:-https://pypi.org/simple}
-    container_name: wharttest-actuator
-    shm_size: "1gb"
-    volumes:
-      - ./data:/app/data
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    environment:
-      - WHARTTEST_ACTUATOR_DOCKER=1
-      - WHARTTEST_ACTUATOR_WS_URL=${WHARTTEST_ACTUATOR_WS_URL:-ws://host.docker.internal:8000/ws/ui/actuator/}
-      - WHARTTEST_ACTUATOR_API_URL=${WHARTTEST_ACTUATOR_API_URL:-http://host.docker.internal:8000}
-      - WHARTTEST_ACTUATOR_USE_GUI=false
-      - WHARTTEST_ACTUATOR_HEADLESS=false
-      - WHARTTEST_ACTUATOR_PERSISTENT=false
-      # API Key 认证（推荐）：配置后执行器不再调用 /api/token/ 登录，
-      # 避免触发后端「单设备登录」导致浏览器会话被挤掉
-      # 安全：不再回退到源码里公开过的固定演示密钥，请通过 .env 显式配置
-      - WHARTTEST_ACTUATOR_API_KEY=${WHARTTEST_ACTUATOR_API_KEY:-}
-      - PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-    networks:
-      - wharttest-network
-    restart: unless-stopped
 
   # Skill 命令的独立执行面（第 2 层安全加固，默认执行模式）
   #

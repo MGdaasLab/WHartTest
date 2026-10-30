@@ -35,6 +35,7 @@ from orchestrator_integration.middleware_config import (
     get_middleware_from_config,
     get_user_friendly_llm_error,
 )
+from orchestrator_integration.ui_credential import strip_ui_credential_marker
 
 
 # ============== 公共工具函数 ==============
@@ -1910,6 +1911,9 @@ def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
                                 image = image_urls[0]
                     else:
                         content = raw_content
+                    # UI 账密会话：剥掉凭据标记再落库（标记只允许存在于发给
+                    # LLM 的消息里，历史存储与前端展示不含凭据）
+                    content = strip_ui_credential_marker(content)
                 elif isinstance(msg, AIMessage):
                     role = "ai"
                     raw_content = msg.content if hasattr(msg, "content") else str(msg)
@@ -1922,6 +1926,8 @@ def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
                         content = " ".join(text_parts) if text_parts else ""
                     else:
                         content = raw_content
+                    # AI 回复若原样复述了凭据标记（概率低），落库前同样剥掉
+                    content = strip_ui_credential_marker(content)
 
 
 
