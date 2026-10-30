@@ -152,19 +152,26 @@ assert.ok(
   fieldExtractionIndex > -1 && topLevelMessageIndex > -1 && fieldExtractionIndex < topLevelMessageIndex,
   'field-level errors must take precedence over the generic top-level message'
 );
-// 401 登录分支（登录页凭据错误提示）与业务错误码透传不得受影响。
-assert.match(requestSource, /extractBusinessErrorCode\(responseData\)/);
-assert.match(requestSource, /extractBusinessErrorCode\(response\?\.data\)/);
+// 401 登录分支（登录页凭据错误提示）不得受本次改动影响。
+// CE 适配：CE 线无 LICENSE_* 业务码透传（extractBusinessErrorCode 为 PE 专属），
+// 此处只断言 CE 既有 401 分支的取值链保持原状。
+assert.match(requestSource, /responseData\.message/);
+assert.match(requestSource, /responseData\.detail/);
+assert.match(requestSource, /errors\?\.detail/);
 
 // ── 回归防线：通知模块必须复用共享实现，禁止再复制一份字段提取逻辑 ──
-const notificationErrorSource = readFileSync(
-  new URL('../src/features/notification-management/utils/error.ts', import.meta.url),
-  'utf8'
+// CE 适配：CE 开源线无通知管理功能（notification-management 目录不存在），按需跳过。
+const notificationErrorPath = new URL(
+  '../src/features/notification-management/utils/error.ts',
+  import.meta.url
 );
-assert.match(
-  notificationErrorSource,
-  /import \{ extractFieldErrorMessages \} from '@\/utils\/responseError';/,
-  'notification module must delegate to the shared extractor'
-);
+if (existsSync(notificationErrorPath)) {
+  const notificationErrorSource = readFileSync(notificationErrorPath, 'utf8');
+  assert.match(
+    notificationErrorSource,
+    /import \{ extractFieldErrorMessages \} from '@\/utils\/responseError';/,
+    'notification module must delegate to the shared extractor'
+  );
+}
 
 console.log('responseError tests passed');
