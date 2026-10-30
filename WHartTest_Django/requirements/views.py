@@ -415,6 +415,9 @@ class RequirementDocumentViewSet(BaseModelViewSet):
                 "chunk_size": request.data.get("chunk_size", 2000),
             }
 
+            # 记录本次拆分级别（与 PE 线一致；CharField，历史 int 值已由 0010 迁移转换）
+            document.last_split_level = str(split_options.get("split_level", "h2"))
+            document.save(update_fields=["last_split_level"])
             logger.info(f"开始拆分文档 {document.id}，选项: {split_options}")
 
             # 使用模块拆分服务

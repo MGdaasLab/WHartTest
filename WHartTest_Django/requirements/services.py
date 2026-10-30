@@ -1264,9 +1264,19 @@ class ModuleSplitter:
         try:
             # 解析拆分选项
             split_options = split_options or {}
-            split_level = split_options.get("split_level", "auto")
+            raw_split_level = split_options.get("split_level", "auto")
+            split_level = normalize_split_level(
+                raw_split_level, getattr(document, "document_type", None)
+            )
             include_context = split_options.get("include_context", True)
             chunk_size = split_options.get("chunk_size", 2000)
+
+            if split_level != str(raw_split_level or "").strip().lower():
+                logger.warning(
+                    "检测到无效拆分级别 %r，已规范化为 %s",
+                    raw_split_level,
+                    split_level,
+                )
 
             logger.info(
                 f"开始拆分文档，拆分级别: {split_level}, 包含上下文: {include_context}"

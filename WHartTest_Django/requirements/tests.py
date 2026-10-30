@@ -914,6 +914,67 @@ class LocalLLMWrapperStreamingTests(SimpleTestCase):
         self.assertIs(mock_chat.call_args.kwargs.get("streaming"), False)
 
 
+class SplitLevelNormalizationTests(SimpleTestCase):
+    """拆分级别规范化回归（补齐 master-pe 拆分加固的接线，评审 M1）。
+
+    此前历史坏值（int 时代的 "0"/数字/任意字符串）直接透传给
+    ModuleSplitter.split_into_modules，走到 else 分支抛 ValueError→500；
+    接线 normalize_split_level 后坏值规范化为合法级别继续拆分。
+    """
+
+    def test_valid_level_passes_through(self):
+        from .services import normalize_split_level
+
+        self.assertEqual(normalize_split_level("h3"), "h3")
+        self.assertEqual(normalize_split_level("auto"), "auto")
+        self.assertEqual(normalize_split_level(" H2 "), "h2")
+
+    def test_digit_level_normalized_to_heading(self):
+        from .services import normalize_split_level
+
+        self.assertEqual(normalize_split_level("3"), "h3")
+        self.assertEqual(normalize_split_level("1"), "h1")
+
+    def test_invalid_level_falls_back_by_document_type(self):
+        from .services import normalize_split_level
+
+        # "0" 是 int 时代默认值，最常见的存量坏值
+        self.assertEqual(normalize_split_level("0", "md"), "h2")
+        self.assertEqual(normalize_split_level("garbage", "docx"), "h2")
+        self.assertEqual(normalize_split_level("garbage", "pdf"), "auto")
+        self.assertEqual(normalize_split_level(None, "md"), "h2")
+
+    def test_splitter_with_legacy_bad_level_no_longer_raises(self):
+        """坏值 "0" 不再 ValueError→500，规范化为 h2 后继续按标题拆分"""
+        from .services import ModuleSplitter
+
+        with patch("requirements.services.resolve_llm_config") as mock_resolve, patch(
+            "requirements.services.create_llm_instance"
+        ) as mock_create:
+            mock_resolve.return_value = MagicMock(
+                runtime_config=MagicMock(supports_vision=False)
+            )
+            mock_create.return_value = MagicMock()
+            splitter = ModuleSplitter(user=None)
+
+        document = MagicMock(document_type="md")
+        captured = {}
+
+        def fake_heading_split(content, level, include_context):
+            captured["level"] = level
+            return [{"title": "m", "content": "c"}]
+
+        with patch.object(
+            splitter, "_split_by_heading_level", side_effect=fake_heading_split
+        ):
+            modules = splitter.split_into_modules(
+                document, "# 需求 heading-body", {"split_level": "0"}
+            )
+
+        self.assertEqual(captured["level"], "h2")
+        self.assertEqual(len(modules), 1)
+
+
 class DimensionRetryTests(TestCase):
     """单维度重试：原位更新报告，不推翻其余维度的既有结果"""
 
