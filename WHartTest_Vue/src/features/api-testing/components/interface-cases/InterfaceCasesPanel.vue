@@ -1006,11 +1006,19 @@ onMounted(() => {
 }
 
 .custom-add-button {
-  background: linear-gradient(to right, #3b82f6, #1d4ed8) !important;
+  background: var(--theme-accent) !important;
   border: none !important;
   padding: 0 24px !important;
   height: 36px !important;
   border-radius: 8px !important;
+}
+
+.custom-add-button:hover {
+  background: var(--theme-accent-hover) !important;
+}
+
+.custom-add-button:active {
+  background: var(--theme-accent-active) !important;
 }
 
 :deep(.arco-pagination-total) {

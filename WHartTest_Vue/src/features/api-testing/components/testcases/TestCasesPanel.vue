@@ -523,24 +523,25 @@ fetchTestCases()
 }
 
 .custom-add-button {
-  background: linear-gradient(to right, #3b82f6, #1d4ed8) !important;
+  background: var(--theme-accent) !important;
   border: none !important;
   padding: 0 24px !important;
   height: 36px !important;
   border-radius: 8px !important;
   font-weight: 500 !important;
   transition: all 0.3s ease !important;
-  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3) !important;
+  box-shadow: 0 2px 6px rgba(var(--theme-accent-rgb), 0.3) !important;
 
   &:hover {
     transform: translateY(-1px) !important;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
-    background: linear-gradient(to right, #2563eb, #60a5fa) !important;
+    box-shadow: 0 4px 12px rgba(var(--theme-accent-rgb), 0.4) !important;
+    background: var(--theme-accent-hover) !important;
   }
 
   &:active {
     transform: translateY(1px) !important;
-    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3) !important;
+    box-shadow: 0 1px 3px rgba(var(--theme-accent-rgb), 0.3) !important;
+    background: var(--theme-accent-active) !important;
   }
 }
 
