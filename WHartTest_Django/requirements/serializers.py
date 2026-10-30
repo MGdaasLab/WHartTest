@@ -16,7 +16,7 @@ class RequirementDocumentSerializer(serializers.ModelSerializer):
         model = RequirementDocument
         fields = [
             'id', 'title', 'description', 'document_type', 'file', 'content',
-            'status', 'version', 'is_latest', 'parent_document',
+            'status', 'error_message', 'version', 'is_latest', 'parent_document',
             'uploader', 'uploader_name', 'project', 'project_name',
             'uploaded_at', 'updated_at', 'word_count', 'page_count',
             'has_images', 'image_count', 'modules_count'
@@ -126,7 +126,7 @@ class ReviewReportSerializer(serializers.ModelSerializer):
         model = ReviewReport
         fields = [
             'id', 'document', 'document_title', 'review_date', 'reviewer',
-            'status', 'status_display', 'overall_rating', 'overall_rating_display',
+            'status', 'status_display', 'error_message', 'overall_rating', 'overall_rating_display',
             'completion_score', 'total_issues', 'high_priority_issues',
             'medium_priority_issues', 'low_priority_issues',
             'summary', 'recommendations', 'issues', 'module_results',
@@ -152,51 +152,26 @@ class ReviewReportSerializer(serializers.ModelSerializer):
         # 如果specialized_analyses字段有数据,直接返回
         if obj.specialized_analyses and isinstance(obj.specialized_analyses, dict):
             return obj.specialized_analyses
-        
-        # 如果没有(旧数据或默认),则返回基于评分字段构建的基本结构
-        return {
-            'completeness_analysis': {
-                'overall_score': obj.completeness_score,
-                'summary': f"完整性评分: {obj.completeness_score}分",
+
+        # 如果没有(旧数据或默认),则返回基于评分字段构建的基本结构。
+        # 评分为 None 表示该维度未产出有效结果，如实返回 None。
+        def _legacy_dim(score, label):
+            summary = f"{label}评分: {score}分" if score is not None else f"{label}未评估"
+            return {
+                'overall_score': score,
+                'summary': summary,
                 'issues': [],
                 'strengths': [],
-                'recommendations': []
-            },
-            'consistency_analysis': {
-                'overall_score': obj.consistency_score,
-                'summary': f"一致性评分: {obj.consistency_score}分",
-                'issues': [],
-                'strengths': [],
-                'recommendations': []
-            },
-            'testability_analysis': {
-                'overall_score': obj.testability_score,
-                'summary': f"可测性评分: {obj.testability_score}分",
-                'issues': [],
-                'strengths': [],
-                'recommendations': []
-            },
-            'feasibility_analysis': {
-                'overall_score': obj.feasibility_score,
-                'summary': f"可行性评分: {obj.feasibility_score}分",
-                'issues': [],
-                'strengths': [],
-                'recommendations': []
-            },
-            'clarity_analysis': {
-                'overall_score': obj.clarity_score,
-                'summary': f"清晰度评分: {obj.clarity_score}分",
-                'issues': [],
-                'strengths': [],
-                'recommendations': []
-            },
-            'logic_analysis': {
-                'overall_score': obj.logic_score,
-                'summary': f"逻辑分析评分: {obj.logic_score}分",
-                'issues': [],
-                'strengths': [],
-                'recommendations': []
+                'recommendations': [],
             }
+
+        return {
+            'completeness_analysis': _legacy_dim(obj.completeness_score, '完整性'),
+            'consistency_analysis': _legacy_dim(obj.consistency_score, '一致性'),
+            'testability_analysis': _legacy_dim(obj.testability_score, '可测性'),
+            'feasibility_analysis': _legacy_dim(obj.feasibility_score, '可行性'),
+            'clarity_analysis': _legacy_dim(obj.clarity_score, '清晰度'),
+            'logic_analysis': _legacy_dim(obj.logic_score, '逻辑分析'),
         }
 
 

@@ -29,8 +29,12 @@
           </div>
           <div class="version-meta">
             <span class="version-date">{{ formatDateTime(report.review_date) }}</span>
-            <span class="version-score">{{ report.completion_score }}分</span>
+            <span class="version-score">{{ report.completion_score ?? '—' }}分</span>
+            <a-tag v-if="report.status === 'failed'" color="red" size="small">
+              评审失败
+            </a-tag>
             <a-tag
+              v-else-if="report.overall_rating_display"
               :color="getRatingColor(report.overall_rating)"
               size="small"
             >

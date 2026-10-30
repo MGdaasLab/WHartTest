@@ -8,7 +8,10 @@
           返回列表
         </a-button>
         <h1 class="page-title">{{ document?.title || '评审报告' }}</h1>
-        <a-tag v-if="selectedReport" :color="getRatingColor(selectedReport.overall_rating)" class="status-tag">
+        <a-tag v-if="selectedReport?.status === 'failed'" color="red" class="status-tag">
+          {{ pageText.reportFailed }}
+        </a-tag>
+        <a-tag v-else-if="selectedReport" :color="getRatingColor(selectedReport.overall_rating)" class="status-tag">
           {{ getRatingText(selectedReport.overall_rating) }}
         </a-tag>
         <!-- 版本指示器 -->
@@ -44,6 +47,14 @@
 
     <!-- 主要内容区域 -->
     <div v-else-if="document && selectedReport" class="report-content">
+      <!-- 评审失败提示：如实展示失败原因，不渲染伪造的评分报告 -->
+      <a-alert
+        v-if="selectedReport.status === 'failed'"
+        type="error"
+        class="report-failed-alert"
+      >
+        {{ pageText.reportFailedReason(selectedReport.error_message || '') }}
+      </a-alert>
       <!-- 左侧：专项分析选择器 -->
       <div class="left-panel">
         <a-card :title="`📊 ${pageText.analysisDimensions}`" class="analysis-selector-panel">
@@ -51,7 +62,7 @@
           <div class="overall-score-card">
             <div class="score-display">
               <div class="score-circle">
-                <span class="score-number">{{ selectedReport.completion_score || selectedReport.overall_score }}</span>
+                <span class="score-number">{{ selectedReport.completion_score ?? selectedReport.overall_score ?? '—' }}</span>
                 <span class="score-label">总分</span>
               </div>
               <div class="score-details">
@@ -83,8 +94,13 @@
               </div>
               <div class="analysis-meta">
                 <div class="analysis-score">
-                  <span class="score-value">{{ getAnalysisScore(analysis.key) }}</span>
-                  <span class="score-max">/100</span>
+                  <a-tag v-if="isAnalysisFailed(analysis.key)" color="red" size="small">
+                    {{ pageText.analysisFailed }}
+                  </a-tag>
+                  <template v-else>
+                    <span class="score-value">{{ getAnalysisScore(analysis.key) ?? '—' }}</span>
+                    <span v-if="getAnalysisScore(analysis.key) !== null" class="score-max">/100</span>
+                  </template>
                 </div>
                 <span class="analysis-issues">{{ getAnalysisIssuesCount(analysis.key) }} 问题</span>
               </div>
@@ -97,12 +113,37 @@
       <div class="right-panel">
         <a-card :title="`${getCurrentAnalysis?.icon} ${getCurrentAnalysis?.title}`" class="analysis-detail-panel">
           <template v-if="currentAnalysisData">
+            <!-- 该专项分析失败：如实展示失败原因，不显示伪造评分 -->
+            <div v-if="isCurrentAnalysisFailed" class="analysis-failed">
+              <a-alert type="error">
+                {{ pageText.analysisFailedReason(currentAnalysisData.error_message || '') }}
+              </a-alert>
+              <div class="retry-actions">
+                <a-button
+                  type="primary"
+                  size="small"
+                  :loading="retryingDimension === selectedAnalysisType || isDocumentReviewing"
+                  :disabled="retryingDimension !== null || isDocumentReviewing"
+                  @click="retryCurrentDimension"
+                >
+                  <template #icon><icon-refresh /></template>
+                  {{ pageText.retryDimension }}
+                </a-button>
+                <span v-if="retryingDimension === selectedAnalysisType" class="retry-hint">
+                  {{ pageText.retryRunningHint }}
+                </span>
+                <span v-else-if="isDocumentReviewing" class="retry-hint">
+                  {{ pageText.retryOccupiedHint }}
+                </span>
+              </div>
+            </div>
+
             <!-- 评分和总结 -->
-            <div class="analysis-summary">
+            <div v-else class="analysis-summary">
               <div class="summary-header">
                 <div class="summary-score">
                   <div class="score-circle-large">
-                    <span class="score-number">{{ currentAnalysisData.overall_score }}</span>
+                    <span class="score-number">{{ currentAnalysisData.overall_score ?? '—' }}</span>
                     <span class="score-label">分</span>
                   </div>
                 </div>
@@ -182,12 +223,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Message } from '@arco-design/web-vue';
 import {
   IconArrowLeft,
-  IconDownload
+  IconDownload,
+  IconRefresh
 } from '@arco-design/web-vue/es/icon';
 import { useAppI18n } from '@/composables/useAppI18n';
 import { RequirementDocumentService } from '../services/requirementService';
@@ -202,6 +244,17 @@ const pageText = computed(() => (
   isEnglish.value
     ? {
         analysisDimensions: 'Specialized analysis dimensions',
+        reportFailed: 'Review failed',
+        reportFailedReason: (reason: string) => `Review failed: ${reason || 'unknown reason'}`,
+        analysisFailed: 'Analysis failed',
+        analysisFailedReason: (reason: string) => `This analysis failed: ${reason || 'unknown reason'}`,
+        retryDimension: 'Retry this dimension',
+        retryRunningHint: 'Retrying in background, this page will refresh automatically...',
+        retryStarted: 'Dimension retry started',
+        retryCompleted: 'Dimension retry completed, report updated',
+        retryFailed: 'Dimension retry failed. Please try again later',
+        retryTimeout: 'The retry is taking longer than expected. Refresh later to check the result.',
+        retryOccupiedHint: 'A retry or review is already running on this document. Please wait for it to finish.',
         issuesFound: (count: number) => `Issues found (${count})`,
         strengths: 'Strengths',
         improvementSuggestions: 'Improvement suggestions',
@@ -214,6 +267,17 @@ const pageText = computed(() => (
       }
     : {
         analysisDimensions: '专项分析维度',
+        reportFailed: '评审失败',
+        reportFailedReason: (reason: string) => `评审失败：${reason || '未知原因'}`,
+        analysisFailed: '分析失败',
+        analysisFailedReason: (reason: string) => `该专项分析失败：${reason || '未知原因'}`,
+        retryDimension: '重试此维度',
+        retryRunningHint: '正在后台重试，完成后自动刷新...',
+        retryStarted: '维度重试已启动',
+        retryCompleted: '维度重试完成，报告已更新',
+        retryFailed: '维度重试失败，请稍后重试',
+        retryTimeout: '重试耗时较长，本页已停止自动刷新，请稍后手动刷新查看结果。',
+        retryOccupiedHint: '该文档已有重试/评审正在进行，请等待完成后再操作。',
         issuesFound: (count: number) => `发现的问题 (${count}个)`,
         strengths: '优势',
         improvementSuggestions: '改进建议',
@@ -332,10 +396,94 @@ const selectAnalysis = (type: string) => {
   priorityFilter.value = ''; // 重置筛选
 };
 
-const getAnalysisScore = (analysisKey: string) => {
-  if (!selectedReport.value?.scores) return 0;
-  return selectedReport.value.scores[analysisKey] || 0;
+// 返回该维度的真实评分；未产出有效评分为 null（展示为未评估），不再用 0 兜底
+// 单维度重试：派发后轮询文档状态，评审完成后自动刷新报告
+const retryingDimension = ref<string | null>(null);
+// 文档级占位状态：后台已有重试/评审在跑时，禁用重试按钮并提示
+const isDocumentReviewing = computed(() => document.value?.status === 'reviewing');
+let retryPollTimer: ReturnType<typeof setTimeout> | null = null;
+
+const clearRetryPoll = () => {
+  if (retryPollTimer !== null) {
+    clearTimeout(retryPollTimer);
+    retryPollTimer = null;
+  }
 };
+
+const pollRetryStatus = (documentId: string, attempts: number) => {
+  if (attempts > 200) {
+    // 200 次 x 3 秒 = 10 分钟安全上限
+    retryingDimension.value = null;
+    clearRetryPoll();
+    Message.warning(pageText.value.retryTimeout);
+    return;
+  }
+  retryPollTimer = setTimeout(async () => {
+    try {
+      const response = await RequirementDocumentService.getDocumentDetail(documentId);
+      if (response.status === 'success') {
+        const doc = response.data;
+        if (doc.status === 'review_completed' || doc.status === 'failed') {
+          retryingDimension.value = null;
+          clearRetryPoll();
+          document.value = doc;
+          if (doc.status === 'review_completed') {
+            Message.success(pageText.value.retryCompleted);
+          } else {
+            Message.error(pageText.value.retryFailed);
+          }
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('轮询维度重试状态失败:', error);
+    }
+    pollRetryStatus(documentId, attempts + 1);
+  }, 3000);
+};
+
+const retryCurrentDimension = async () => {
+  if (!document.value || !selectedAnalysisType.value) return;
+  const documentId = String(document.value.id);
+  try {
+    const response = await RequirementDocumentService.retryAnalysis(
+      documentId,
+      selectedAnalysisType.value
+    );
+    if (response.status === 'success') {
+      retryingDimension.value = selectedAnalysisType.value;
+      Message.info(pageText.value.retryStarted);
+      pollRetryStatus(documentId, 0);
+    } else {
+      Message.error(response.message || pageText.value.retryFailed);
+    }
+  } catch (error) {
+    console.error('维度重试启动失败:', error);
+    Message.error(pageText.value.retryFailed);
+  }
+};
+
+onBeforeUnmount(() => {
+  clearRetryPoll();
+});
+
+const getAnalysisScore = (analysisKey: string): number | null => {
+  const value = selectedReport.value?.scores?.[analysisKey];
+  return typeof value === 'number' ? value : null;
+};
+
+const getAnalysisData = (analysisKey: string): any => {
+  return selectedReport.value?.specialized_analyses?.[`${analysisKey}_analysis`] || null;
+};
+
+const isAnalysisFailed = (analysisKey: string): boolean => {
+  const analysis = getAnalysisData(analysisKey);
+  return analysis?.status === 'failed';
+};
+
+const isCurrentAnalysisFailed = computed(() => {
+  return currentAnalysisData.value?.status === 'failed';
+});
 
 const getAnalysisIssuesCount = (analysisKey: string) => {
   if (!selectedReport.value?.specialized_analyses) return 0;
@@ -598,6 +746,26 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.report-failed-alert {
+  margin-bottom: 16px;
+}
+
+.analysis-failed {
+  margin-bottom: 16px;
+}
+
+.retry-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.retry-hint {
+  font-size: 12px;
+  color: #86909c;
 }
 
 .analysis-score {

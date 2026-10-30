@@ -52,10 +52,13 @@ from .permissions import (
     CanManageRequirementDocument,
     CanStartReview,
 )
+from .llm_runtime import LLMQuotaExceeded, resolve_llm_config  # CE 适配层：无商业槽位/配额系统
 from .services import (
     RequirementModuleService,
     ModuleOperationService,
     RequirementReviewService,
+    normalize_split_level,
+    sanitize_error_message,
 )
 
 logger = logging.getLogger(__name__)
@@ -693,9 +696,10 @@ class RequirementDocumentViewSet(BaseModelViewSet):
         # 如需清理历史评审报告，可在此启用删除逻辑。
         # logger.info(f"已清理文档 {document.id} 的旧评审报告。")
 
-        # 重置文档状态
+        # 重置文档状态，并清除上一轮的失败原因
         document.status = "ready_for_review"
-        document.save()
+        document.error_message = ""
+        document.save(update_fields=["status", "error_message", "updated_at"])
 
         # 为了简化，我们直接调用现有的 start_review 方法
         # 这样可以重用所有的逻辑和参数处理
@@ -767,9 +771,22 @@ class RequirementDocumentViewSet(BaseModelViewSet):
                 "direct_review": direct_review,
             }
 
-            # 立即更新文档状态为评审中
+            try:
+                resolution = resolve_llm_config(
+                    user=request.user,
+                    module_key="requirement_review",
+                )
+            except LLMQuotaExceeded as exc:
+                return Response(
+                    {"detail": exc.message, "llm_quota": exc.status},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+            resolved_bundle_id = resolution.bundle.id if resolution.bundle else None
+
+            # 立即更新文档状态为评审中，并清除上一轮的失败原因
             document.status = "reviewing"
-            document.save()
+            document.error_message = ""
+            document.save(update_fields=["status", "error_message", "updated_at"])
 
             # 启动异步评审任务
             from .tasks import execute_requirement_review
@@ -777,12 +794,29 @@ class RequirementDocumentViewSet(BaseModelViewSet):
 
 
             review_type = "direct" if direct_review else "comprehensive"
-            task = execute_requirement_review.delay(
-                str(document.id),
-                analysis_options,
-                review_type,
-                user_id=request.user.id,  # 传递用户ID用于获取提示词配置
-            )
+            try:
+                task = execute_requirement_review.delay(
+                    str(document.id),
+                    analysis_options,
+                    review_type,
+                    user_id=request.user.id,  # 传递用户ID用于获取提示词配置
+                    resolved_bundle_id=resolved_bundle_id,
+                    resolved_source=resolution.source,
+                )
+            except Exception as dispatch_error:
+                # 派发失败（如 broker 不可用）：文档已置 reviewing，必须立即
+                # 标记失败并记录原因，否则用户会在前端无限等待
+                message = sanitize_error_message(f"评审任务派发失败: {dispatch_error}")
+                document.status = "failed"
+                document.error_message = message
+                document.save(
+                    update_fields=["status", "error_message", "updated_at"]
+                )
+                logger.error(f"启动评审失败: {dispatch_error}", exc_info=True)
+                return Response(
+                    {"error": f"启动评审失败: {message}"},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
 
             # 立即返回，不等待任务完成
             return Response(
@@ -802,6 +836,92 @@ class RequirementDocumentViewSet(BaseModelViewSet):
                 {"error": f"启动评审失败: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        url_path="retry-analysis",
+        permission_classes=[CanStartReview],
+    )
+    def retry_analysis(self, request, pk=None):
+        """
+        重试单个专项分析维度，原位更新最新评审报告。
+        POST /api/requirements/documents/{id}/retry-analysis/
+        参数: dimension - completeness/consistency/testability/feasibility/clarity/logic
+        """
+        from .services import RequirementReviewService
+        from .tasks import retry_dimension_analysis
+
+        document = self.get_object()
+
+        dimension = request.data.get("dimension")
+        valid_dimensions = RequirementReviewService.DIMENSION_ANALYSIS_MAP.keys()
+        if dimension not in valid_dimensions:
+            return Response(
+                {"error": "无效的分析维度，请从六个专项维度中选择"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if document.status != "review_completed":
+            return Response(
+                {"error": "仅评审完成的文档支持单维度重试"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        latest_report = document.review_reports.order_by("-review_date").first()
+        if not latest_report or latest_report.status != "completed":
+            return Response(
+                {"error": "最新报告不是已完成状态，无法单维重试"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            resolution = resolve_llm_config(
+                user=request.user,
+                module_key="requirement_review",
+            )
+        except LLMQuotaExceeded as exc:
+            return Response(
+                {"detail": exc.message, "llm_quota": exc.status},
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        # 立即占用 reviewing 状态并清除旧错误，前端按既有轮询逻辑跟踪
+        document.status = "reviewing"
+        document.error_message = ""
+        document.save(update_fields=["status", "error_message", "updated_at"])
+
+        try:
+            task = retry_dimension_analysis.delay(
+                str(document.id),
+                dimension,
+                user_id=request.user.id,
+                resolved_bundle_id=resolution.bundle.id if resolution.bundle else None,
+                resolved_source=resolution.source,
+            )
+        except Exception as dispatch_error:
+            # 派发失败：回滚占用状态，报告旧结果不受影响
+            document.status = "review_completed"
+            document.error_message = sanitize_error_message(
+                f"维度重试任务派发失败: {dispatch_error}"
+            )
+            document.save(
+                update_fields=["status", "error_message", "updated_at"]
+            )
+            logger.error(f"维度重试派发失败: {dispatch_error}", exc_info=True)
+            return Response(
+                {"error": "维度重试任务派发失败，请稍后重试"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {
+                "message": f"维度重试任务已启动: {dimension}",
+                "task_id": task.id,
+                "dimension": dimension,
+                "document_id": str(document.id),
+            }
+        )
 
     @action(detail=True, methods=["post"], url_path="module-operations")
     def module_operations(self, request, pk=None):

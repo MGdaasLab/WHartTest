@@ -40,6 +40,7 @@ export interface RequirementDocument {
   file?: string; // 文件URL
   content?: string | null;
   status: DocumentStatus;
+  error_message?: string | null; // 最近一次处理失败的原因，failed 状态时展示
   version: string;
   is_latest: boolean;
   parent_document?: string | null;
@@ -293,9 +294,10 @@ export interface ReviewReport {
   reviewer: string;
   status: string;
   status_display: string;
-  overall_rating: Rating;
-  overall_rating_display: string;
-  completion_score: number;
+  error_message?: string | null; // 评审失败原因，failed 状态时展示
+  overall_rating: Rating | null; // failed 报告无评级
+  overall_rating_display: string | null;
+  completion_score: number | null; // null 表示未产出有效评分
   total_issues: number;
   high_priority_issues: number;
   medium_priority_issues: number;
@@ -304,10 +306,16 @@ export interface ReviewReport {
   recommendations: string;
   issues: ReviewIssue[];
   module_results: ModuleReviewResult[];
+  // 各专项维度评分；失败维度为 null（未评估）
+  scores?: Record<string, number | null>;
+  // 专项分析详情（含 status/error_message，失败维度会标记）
+  specialized_analyses?: Record<string, any>;
   // 进度跟踪字段
   progress?: number;
   current_step?: string;
   completed_steps?: string[];
+  // 距上次进度的时间戳来源（serializer 恒输出；用于评审进度区「距上次进度」提示）
+  updated_at?: string;
 }
 
 // 文档详情（包含模块和评审报告）

@@ -476,6 +476,35 @@ export class RequirementDocumentService {
   }
 
   /**
+   * 重试单个失败的专项分析维度（原位更新最新报告）
+   */
+  static async retryAnalysis(id: string, dimension: string): Promise<ApiResponse<any>> {
+    const response = await request<any>({
+      url: `${BASE_URL}/documents/${id}/retry-analysis/`,
+      method: 'POST',
+      data: { dimension }
+    });
+
+    if (response.success) {
+      return {
+        status: 'success',
+        code: 200,
+        message: response.message || 'Dimension retry started',
+        data: response.data!,
+        errors: null
+      };
+    } else {
+      return {
+        status: 'error',
+        code: 500,
+        message: response.error || 'Failed to retry dimension',
+        data: null,
+        errors: { detail: response.error }
+      };
+    }
+  }
+
+  /**
    * 查询评审进度
    */
   static async getReviewProgress(id: string): Promise<ApiResponse<ReviewProgress>> {

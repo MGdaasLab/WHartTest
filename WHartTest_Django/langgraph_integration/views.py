@@ -284,7 +284,7 @@ logger = logging.getLogger(__name__)  # Initialize logger
 
 
 # --- 辅助函数 ---
-def create_llm_instance(active_config, temperature=0.7):
+def create_llm_instance(active_config, temperature=0.7, streaming=False):
     """
     根据配置创建LLM实例
     支持多供应商：
@@ -295,6 +295,10 @@ def create_llm_instance(active_config, temperature=0.7):
     关键参数说明：
     - timeout: 请求超时时间（秒），防止无限期等待
     - max_retries: 最大重试次数，处理临时网络问题
+    - streaming: openai_compatible 供应商启用底层流式传输。
+      invoke() 仍返回聚合后的完整结果，但 HTTP 层以流式接收，
+      避免网关（nginx proxy_read_timeout）在长生成期间返回 504。
+      由调用方按需开启（如需求评审的大文档分析）。
     """
     model_identifier = active_config.name or "gpt-3.5-turbo"
     provider = (getattr(active_config, "provider", None) or "openai_compatible").strip()
@@ -362,16 +366,18 @@ def create_llm_instance(active_config, temperature=0.7):
                 "base_url": base_url,
                 "timeout": request_timeout,  # 单次请求超时
                 "max_retries": max_retries,  # 自动重试次数
+                "streaming": streaming,  # 底层流式接收，invoke 仍聚合完整结果
             }
             llm = ChatOpenAI(**llm_kwargs)
 
         logger.info(
-            "Initialized LLM: provider=%s, model=%s, base_url=%s, timeout=%ss, max_retries=%s",
+            "Initialized LLM: provider=%s, model=%s, base_url=%s, timeout=%ss, max_retries=%s, streaming=%s",
             provider,
             model_identifier,
             base_url,
             request_timeout,
             max_retries,
+            streaming if provider != "deepseek" else "n/a",
         )
     except Exception as e:
         logger.error(
