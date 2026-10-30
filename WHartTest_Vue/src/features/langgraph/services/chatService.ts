@@ -763,6 +763,27 @@ export async function sendChatMessageStream(
  * @param sessionId 会话ID
  * @param projectId 项目ID
  */
+/** 查询会话是否为外部任务会话（套件执行/自愈）及是否仍有实时推送 */
+export async function getTaskSessionInfo(
+  sessionId: string
+): Promise<{ isTaskSession: boolean; active: boolean } | null> {
+  try {
+    const response = await request({
+      url: '/orchestrator/agent-loop/task-session/',
+      method: 'GET',
+      params: { session_id: sessionId },
+    });
+    const payload: any = (response as any)?.data ?? response;
+    if (!payload) return null;
+    return {
+      isTaskSession: !!payload.is_task_session,
+      active: !!payload.active,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function getChatHistory(
   sessionId: string,
   projectId: number | string,

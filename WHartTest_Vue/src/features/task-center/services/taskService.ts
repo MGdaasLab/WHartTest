@@ -26,6 +26,8 @@ export interface ScheduledTask {
   retry_enabled: boolean;
   retry_count: number;
   retry_interval: number;
+  auto_heal_enabled: boolean;
+  heal_case_limit: number;
   status: TaskStatus;
   last_run_at: string | null;
   creator: number | null;
@@ -53,6 +55,8 @@ export interface TaskFormData {
   retry_enabled: boolean;
   retry_count: number;
   retry_interval: number;
+  auto_heal_enabled?: boolean;
+  heal_case_limit?: number;
   test_suite?: number | null;
   ui_testcase_ids?: number[];
   actuator_id?: string;
@@ -64,6 +68,8 @@ export interface TaskExecution {
   task: number;
   trigger_type: TriggerType;
   status: ExecutionStatus;
+  batch_record?: number | null;
+  suite_execution?: number | null;
   started_at: string;
   finished_at: string | null;
   duration: string;

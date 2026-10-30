@@ -13,6 +13,10 @@ import TestCaseTable from './TestCaseTable.vue'
 import ReferencedInterfacesDialog from './ReferencedInterfacesDialog.vue'
 import { showExtractPersistenceNotice } from '../../utils/extractPersistence'
 import { useAppI18n } from '@/composables/useAppI18n'
+import GenerateApiCasesModal from '../generate/GenerateApiCasesModal.vue'
+import GroupManager from './GroupManager.vue'
+import { IconFolder } from '@arco-design/web-vue/es/icon'
+import { useApiCaseGeneration } from '../../composables/useApiCaseGeneration'
 
 const projectStore = useProjectStore()
 const environmentStore = useEnvironmentStore()
@@ -128,6 +132,9 @@ const updateSearchParams = (data: Pick<QueryParams, 'name' | 'description'>) => 
 const updateFilterParams = (data: Pick<QueryParams, 'priority' | 'group' | 'tags'>) => {
   Object.assign(queryParams, data)
 }
+
+const { showGenerateModal, modalRef, handleGenerateSubmit } = useApiCaseGeneration()
+const groupManagerVisible = ref(false)
 
 const handleCreate = () => {
   router.push({ name: 'ApiTestCaseCreate', query: TEST_CASES_TAB_QUERY })
@@ -337,6 +344,13 @@ fetchTestCases()
           <a-button class="custom-reset-button" @click="handleReset">
             {{ tl('重置') }}
           </a-button>
+          <a-button class="custom-reset-button" @click="groupManagerVisible = true">
+            <template #icon><icon-folder /></template>
+            {{ tl('分组管理') }}
+          </a-button>
+          <a-button type="primary" class="custom-add-button" @click="showGenerateModal = true">
+            {{ tl('生成场景用例') }}
+          </a-button>
           <a-button type="primary" class="custom-add-button" @click="handleCreate">
             {{ tl('新增用例') }}
           </a-button>
@@ -385,6 +399,22 @@ fetchTestCases()
       :testcase-name="currentTestcase?.name || ''"
       @close="handleReferencedInterfacesClose"
     />
+    <GenerateApiCasesModal
+      ref="modalRef"
+      :visible="showGenerateModal"
+      preset-case-type="scenario"
+      @update:visible="showGenerateModal = $event"
+      @submit="handleGenerateSubmit"
+    />
+    <!-- 分组管理（列表页外部入口） -->
+    <a-drawer
+      v-model:visible="groupManagerVisible"
+      :title="tl('分组管理')"
+      :width="380"
+      unmount-on-close
+    >
+      <GroupManager :model-value="null" :project-id="projectStore.currentProjectId || 0" />
+    </a-drawer>
   </div>
 </template>
 

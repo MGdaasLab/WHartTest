@@ -17,6 +17,9 @@ import { useThemeStore } from '@/store/themeStore'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { useEnvironmentStore } from '../../stores/environmentStore'
 import { useApiTabsStore } from '../../stores/apiTabsStore'
+import GenerateApiCasesModal from '../generate/GenerateApiCasesModal.vue'
+import GroupManager from '../testcases/GroupManager.vue'
+import { useApiCaseGeneration } from '../../composables/useApiCaseGeneration'
 import { moduleService } from '../../services/moduleService'
 import { interfaceService } from '../../services/interfaceService'
 import { interfaceCaseService } from '../../services/interfaceCaseService'
@@ -359,6 +362,9 @@ const updateSearchParams = (data: Pick<QueryParams, 'name' | 'description'>) => 
 const updateFilterParams = (data: Pick<QueryParams, 'priority' | 'group' | 'tags'>) => {
   Object.assign(queryParams, data)
 }
+
+const { showGenerateModal, modalRef, handleGenerateSubmit } = useApiCaseGeneration()
+const groupManagerVisible = ref(false)
 
 const handleCreate = () => {
   router.push({
@@ -875,6 +881,13 @@ onMounted(() => {
             <a-button class="custom-reset-button" @click="handleReset">
               {{ tl('重置') }}
             </a-button>
+            <a-button class="custom-reset-button" @click="groupManagerVisible = true">
+              <template #icon><icon-folder /></template>
+              {{ tl('分组管理') }}
+            </a-button>
+            <a-button type="primary" class="custom-add-button" @click="showGenerateModal = true">
+              {{ tl('生成接口用例') }}
+            </a-button>
             <a-button type="primary" class="custom-add-button" @click="handleCreate">
               {{ tl('新增接口用例') }}
             </a-button>
@@ -905,7 +918,6 @@ onMounted(() => {
           v-model:page-size="pagination.page_size"
           :total="pagination.total"
           show-total
-          show-jumper
           show-page-size
           class="flex justify-end"
           @change="handlePageChange"
@@ -923,6 +935,24 @@ onMounted(() => {
       :parent-id="formParentId"
       @submit="handleModuleFormSubmit"
     />
+
+    <GenerateApiCasesModal
+      ref="modalRef"
+      :visible="showGenerateModal"
+      preset-case-type="interface_case"
+      @update:visible="showGenerateModal = $event"
+      @submit="handleGenerateSubmit"
+    />
+
+    <!-- 分组管理（列表页外部入口） -->
+    <a-drawer
+      v-model:visible="groupManagerVisible"
+      :title="tl('分组管理')"
+      :width="380"
+      unmount-on-close
+    >
+      <GroupManager :model-value="null" :project-id="projectStore.currentProjectId || 0" />
+    </a-drawer>
   </div>
 </template>
 

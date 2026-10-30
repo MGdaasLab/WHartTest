@@ -27,8 +27,9 @@ def get_db_connection_string() -> str:
     if database_type == 'postgres':
         user = os.environ.get('POSTGRES_USER', 'postgres')
         password = os.environ.get('POSTGRES_PASSWORD', 'postgres')
-        host = os.environ.get('POSTGRES_HOST', 'localhost')
-        port = os.environ.get('POSTGRES_PORT', '5432')
+        host = os.environ.get('POSTGRES_HOST', '127.0.0.1')
+        # 与 settings.DATABASES 的默认端口保持一致（该处默认 8919，此处此前默认 5432 导致独立进程/干净环境下连不上）
+        port = os.environ.get('POSTGRES_PORT', '8919')
         db = get_postgres_db_name(settings.BASE_DIR)
         return f"postgresql://{user}:{password}@{host}:{port}/{db}"
     else:

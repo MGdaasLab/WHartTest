@@ -233,3 +233,66 @@ class APIKeyAPITest(TestCase):
         )
         # Staff can't see other users' keys via queryset filter
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class ExchangeTokenAPITest(TestCase):
+    """API Key 兑换 JWT 端点测试（skill WS 连接凭据来源）"""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(username='exchangeuser', password='testpass')
+        self.api_key = APIKey.objects.create(name='Exchange Key', user=self.user)
+        self.url = '/api/api-keys/exchange-token/'
+
+    def _auth_headers(self, key_value=None):
+        api_key_value = key_value if key_value is not None else self.api_key.key
+        return {'HTTP_X_API_KEY': api_key_value}
+
+    def test_exchange_with_valid_api_key(self):
+        response = self.client.post(self.url, **self._auth_headers())
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # 视图返回裸结构；经 DRF Test Client 渲染后仍在 data 键
+        # （生产链路由 UnifiedResponseRenderer 包装为 {status, code, data} 信封）
+        access = response.data['access']
+        self.assertTrue(access)
+        self.assertEqual(response.data['expires_in'], 12 * 3600)
+        # 签出的 token 必须能通过 SimpleJWT 校验且指向 Key 所属用户
+        from rest_framework_simplejwt.tokens import AccessToken
+
+        token = AccessToken(access)
+        self.assertEqual(token.payload.get('user_id'), self.user.pk)
+
+    def test_exchange_with_bearer_header(self):
+        response = self.client.post(
+            self.url,
+            **{'HTTP_AUTHORIZATION': f'Bearer {self.api_key.key}'},
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_exchange_with_invalid_key(self):
+        response = self.client.post(self.url, **self._auth_headers(key_value='bad-key'))
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_exchange_without_credentials(self):
+        response = self.client.post(self.url)
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_exchange_with_inactive_key(self):
+        self.api_key.is_active = False
+        self.api_key.save()
+        response = self.client.post(self.url, **self._auth_headers())
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_exchange_with_expired_key(self):
+        self.api_key.expires_at = timezone.now() - timedelta(hours=1)
+        self.api_key.save()
+        response = self.client.post(self.url, **self._auth_headers())
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_exchange_rejects_jwt_credentials(self):
+        """JWT 不能用来换 JWT：JWT 放 Bearer 头会被当作 API Key 查库，查不到 401。"""
+        from rest_framework_simplejwt.tokens import RefreshToken
+
+        token = str(RefreshToken.for_user(self.user).access_token)
+        response = self.client.post(self.url, **{'HTTP_AUTHORIZATION': f'Bearer {token}'})
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))

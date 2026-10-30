@@ -361,6 +361,7 @@ export interface RecorderSaveLoginStateResult {
   env_config_id: number
   cookies: number
   local_storage_keys: number
+  session_storage_keys: number
 }
 
 export const recorderApi = {
@@ -374,7 +375,7 @@ export const recorderApi = {
   finish: (sessionId: string) =>
     request.post<RecorderFinishResult>(`${BASE_URL}/recorder-sessions/${sessionId}/finish/`),
 
-  saveLoginState: (sessionId: string, body?: { name?: string }) =>
+  saveLoginState: (sessionId: string, body?: { name?: string; auth_state_id?: number }) =>
     request.post<RecorderSaveLoginStateResult>(`${BASE_URL}/recorder-sessions/${sessionId}/save-login-state/`, body ?? {}),
 
   cancel: (sessionId: string) =>

@@ -144,6 +144,9 @@ class Config:
         # API Key 认证（可选，优先级高于账号密码）：不发 /api/token/ 登录请求，
         # 不会触发后端单设备 session_version 递增，避免挤掉浏览器登录会话
         self.api_key = ""
+        # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 一致（硬性要求，
+        # 未配置或配置错误时连接会被拒绝 close 4401；run_compose.sh 会自动同步）
+        self.ws_token = ""
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None
         self.actuator_description: str | None = None
@@ -203,6 +206,7 @@ class Config:
             self.api_username = data['server'].get('api_username', self.api_username)
             self.api_password = data['server'].get('api_password', self.api_password)
             self.api_key = data['server'].get('api_key', self.api_key)
+            self.ws_token = data['server'].get('ws_token', self.ws_token)
         
         # 执行器配置
         if 'actuator' in data:
@@ -262,6 +266,8 @@ class Config:
             self.api_password = api_password.strip()
         if api_key := os.environ.get('WHARTTEST_ACTUATOR_API_KEY'):
             self.api_key = api_key.strip()
+        if ws_token := os.environ.pop('WHARTTEST_ACTUATOR_WS_TOKEN', None):
+            self.ws_token = ws_token.strip()
         if browser_type := os.environ.get('WHARTTEST_ACTUATOR_BROWSER_TYPE'):
             self.browser_type = browser_type.strip()
         if stealth_user_agent := os.environ.get('WHARTTEST_ACTUATOR_STEALTH_USER_AGENT'):

@@ -1335,13 +1335,93 @@ async function ensureInjection() {
   }
 }
 
-/** 构建浏览器上下文参数：视口 + 可选登录态快照（storageState） */
+/** 按页面 origin 采集 sessionStorage（Playwright storageState 不含 sessionStorage，
+ * 而部分系统（如 RuoYi 系）登录凭据存于 sessionStorage，快照缺失会导致复用失败）。
+ * 返回 [{ origin, sessionStorage: [{ name, value }] }]，context 无页面时返回 []。 */
+async function captureSessionStorage(context) {
+  const pages = (context && context.pages()) || [];
+  const byOrigin = new Map();
+  for (const page of pages) {
+    for (const frame of page.frames()) {
+      let origin;
+      let items;
+      try {
+        const r = await frame.evaluate(() => {
+          const o = {};
+          for (let i = 0; i < sessionStorage.length; i++) {
+            const k = sessionStorage.key(i);
+            o[k] = sessionStorage.getItem(k);
+          }
+          return o;
+        });
+        origin = new URL(frame.url()).origin;
+        items = r;
+      } catch (_) {
+        continue; // about:blank / 已跳转销毁的 frame，跳过
+      }
+      if (!items || !Object.keys(items).length) continue;
+      const bucket = byOrigin.get(origin) || new Map();
+      for (const [name, value] of Object.entries(items)) {
+        if (value !== null && value !== undefined) bucket.set(name, String(value));
+      }
+      byOrigin.set(origin, bucket);
+    }
+  }
+  return Array.from(byOrigin.entries())
+    .filter(([, bucket]) => bucket.size > 0)
+    .map(([origin, bucket]) => ({
+      origin,
+      sessionStorage: Array.from(bucket.entries()).map(([name, value]) => ({ name, value })),
+    }));
+}
+
+/** 构建浏览器上下文参数：视口 + 可选登录态快照（storageState）。
+ * 快照中的自定义扩展字段 session_storage 不是 Playwright 合法参数，
+ * 传入 newContext 前剥离，另以 init script 在页面加载前回放。 */
 function buildContextOptions(viewport, storageState) {
   const opts = { viewport };
   if (storageState) {
-    opts.storageState = storageState;
+    let pure = storageState;
+    if (typeof pure === 'string') {
+      try { pure = JSON.parse(pure); } catch (_) { pure = null; }
+    }
+    if (pure && typeof pure === 'object' && !Array.isArray(pure)) {
+      const { session_storage: sessionStorage, ...rest } = pure;
+      opts.storageState = rest;
+      if (sessionStorage && Array.isArray(sessionStorage) && sessionStorage.length) {
+        opts.__sessionStorageScript = buildSessionStorageInitScript(sessionStorage);
+      }
+    } else {
+      opts.storageState = storageState;
+    }
   }
   return opts;
+}
+
+/** 生成按 origin 匹配的 sessionStorage 回放 init script（与执行器行为一致）。 */
+function buildSessionStorageInitScript(sessionStorageOrigins) {
+  const valid = (sessionStorageOrigins || []).filter((o) => o && typeof o.origin === 'string'
+    && Array.isArray(o.sessionStorage) && o.sessionStorage.length);
+  if (!valid.length) return '';
+  try {
+    const payload = JSON.stringify(valid);
+    return `(() => { try { const list = ${payload};`
+      + `for (const item of list) { if (location.origin === item.origin) {`
+      + `for (const kv of item.sessionStorage) { try { sessionStorage.setItem(kv.name, kv.value); } catch (_) {} }`
+      + `} } } catch (_) {} })();`;
+  } catch (_) {
+    return '';
+  }
+}
+
+/** 给 context 挂 sessionStorage 回放 init script（存在时）。 */
+async function applySessionStorageScript(context, contextOptions) {
+  const script = contextOptions && contextOptions.__sessionStorageScript;
+  if (!script) return;
+  delete contextOptions.__sessionStorageScript;
+  try {
+    await context.addInitScript(script);
+  } catch (_) {}
 }
 
 async function cmdStart(params) {
@@ -1372,12 +1452,17 @@ async function cmdStart(params) {
   };
   try {
     state.browser = await chromium.launch(launchOptions);
-    state.context = await state.browser.newContext(buildContextOptions(viewport, params.storage_state));
+    const contextOptions = buildContextOptions(viewport, params.storage_state);
+    const sessionStorageScript = contextOptions.__sessionStorageScript;
+    state.context = await state.browser.newContext(contextOptions);
     await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
     try {
       await state.context.addInitScript(INIT_SCRIPT);
     } catch (_) {
       // 个别环境下 context 级注入失败，改用页面级 + 兜底补注
+    }
+    if (sessionStorageScript) {
+      try { await state.context.addInitScript(sessionStorageScript); } catch (_) {}
     }
     state.page = await state.context.newPage();
     try {
@@ -1399,7 +1484,12 @@ async function cmdStart(params) {
   state.running = true;
   if (url) {
     try {
-      await state.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      // SSO 系（如 OA 首页加载后立即整页跳 oauth 登录）：domcontentloaded 时
+      // 往往还在第一跳，首帧画面停留在启动页。等 load 后再追一小段
+      // networkidle，让重定向链走稳、首次画面即登录页；短暂网络噪声由
+      // 短超时兜底，跳转链过长时也不至于卡死启动。
+      await state.page.goto(url, { waitUntil: 'load', timeout: 45000 });
+      await state.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
     } catch (e) {
       serverLog('初始导航失败:', e && e.message ? e.message : String(e));
     }
@@ -1691,7 +1781,44 @@ async function gotoWithRetry(page, url, attempts = 2) {
   throw lastErr;
 }
 
-/** 执行一步平台步骤（ope_key 词汇表与执行器对齐），返回错误信息或 null */
+/** 断言轮询（元素状态/内容类断言无 waitFor 语义可用）：每 200ms 复查一次，
+ * 超时（默认 10s，与执行器 expect 超时对齐）后抛出 failMsg。 */
+async function pollAssert(checkFn, failMsg, timeout = 10000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    let ok = false;
+    try { ok = (await checkFn()) === true; } catch (_) { ok = false; }
+    if (ok) return;
+    if (Date.now() >= deadline) throw new Error(failMsg);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+}
+
+// 页面级操作（无需元素定位）：执行记录成功消息按执行器口径区分"页面操作/元素操作"
+const PAGE_LEVEL_OPS = new Set([
+  'goto', 'reload', 'go_back', 'go_forward', 'switch_tab',
+  'wait', 'wait_load', 'wait_network', 'screenshot',
+]);
+
+/** 地址等价比较：去掉 hash 与尾斜杠。SPA 地址（/#/Home）hash 变化不触发整页
+ * 导航，地址相同时重复 goto 会打断进行中的 SSO 重定向链（ERR_ABORTED 后页面
+ * 卡在启动加载页，登录表单永不渲染），必须视为同一地址跳过导航。 */
+function sameUrl(a, b) {
+  const norm = (u) => {
+    try {
+      const p = new URL(u);
+      return p.origin + p.pathname.replace(/\/+$/, '');
+    } catch (_) {
+      return String(u || '').split('#')[0].replace(/\/+$/, '');
+    }
+  };
+  const na = norm(a);
+  const nb = norm(b);
+  return na !== '' && na === nb;
+}
+
+/** 执行一步平台步骤（ope_key 词汇表与执行器对齐）。
+ * 返回：null 成功；string 失败错误信息；{ screenshot } 成功且携带产物（data URL）。 */
 async function runOneStep(page, step) {
   const opeKey = String(step.ope_key || '');
   const opeValue = step.ope_value && typeof step.ope_value === 'object' ? step.ope_value : {};
@@ -1700,40 +1827,123 @@ async function runOneStep(page, step) {
   );
 
   if (opeKey === 'goto') {
-    // 与上一跳同址时跳过：站点自身跳转（如登录页重定向）在途中时重复导航
-    // 会以 net::ERR_ABORTED 中止当前跳转
-    const target = inputValue;
-    const cur = page.url();
-    if (target && cur === target) return null;
-    await gotoWithRetry(page, target);
+    // 同地址去重（含 hash/尾斜杠等价）：启动或上一组已导航到同一地址时不重复
+    // goto，避免打断进行中的 SSO 重定向链（ERR_ABORTED 后页面卡死在启动加载页）
+    if (sameUrl(inputValue, page.url())) {
+      serverLog('goto 目标与当前地址相同，跳过导航:', inputValue);
+      return null;
+    }
+    await gotoWithRetry(page, inputValue);
+    return null;
+  }
+  if (opeKey === 'reload') {
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    return null;
+  }
+  if (opeKey === 'go_back') {
+    await page.goBack({ waitUntil: 'domcontentloaded', timeout: 30000 });
+    return null;
+  }
+  if (opeKey === 'go_forward') {
+    await page.goForward({ waitUntil: 'domcontentloaded', timeout: 30000 });
     return null;
   }
   if (opeKey === 'wait') {
-    const ms = parseInt(inputValue, 10);
-    await page.waitForTimeout(Number.isFinite(ms) ? ms : 1000);
+    // 与执行器 _parse_wait_timeout 同规则：秒为单位，>60 视为历史毫秒数据
+    let sec = parseFloat(inputValue);
+    if (!Number.isFinite(sec) || sec < 0) sec = 1;
+    const ms = sec > 60 ? sec : sec * 1000;
+    await page.waitForTimeout(ms);
+    return null;
+  }
+  if (opeKey === 'wait_load') {
+    await page.waitForLoadState('load', { timeout: 30000 });
+    return null;
+  }
+  if (opeKey === 'wait_network') {
+    await page.waitForLoadState('networkidle', { timeout: 30000 });
+    return null;
+  }
+  if (opeKey === 'screenshot') {
+    try {
+      const shot = await page.screenshot({ type: 'png' });
+      return { screenshot: 'data:image/png;base64,' + shot.toString('base64') };
+    } catch (_) {
+      return null; // 截图失败不阻断用例（与执行器"页面操作成功"口径一致）
+    }
+  }
+  if (opeKey === 'switch_tab') {
+    const pages = page.context().pages();
+    let target = null;
+    const idx = parseInt(inputValue, 10);
+    if (Number.isInteger(idx) && String(idx) === inputValue.trim()) {
+      if (idx < 0 || idx >= pages.length) {
+        return `切换页签失败，索引 ${idx} 越界（当前共有 ${pages.length} 个页签）`;
+      }
+      target = pages[idx];
+    } else {
+      const query = inputValue.trim();
+      if (!query) return '切换页签参数为空，请输入索引、URL或页签标题';
+      for (const p of pages) {
+        try {
+          const title = await p.title();
+          if (p.url().includes(query) || title.includes(query)) { target = p; break; }
+        } catch (_) { /* 页面可能已关闭 */ }
+      }
+      if (!target) return `未找到匹配 '${query}' 的页签`;
+    }
+    if (target !== page) {
+      // 切换推流/录制目标页（cdpSession 绑定旧页面，需重建；输入回放绑定 state.page）
+      stopFrameStream();
+      state.page = target;
+      await startFrameStream(target);
+      await ensureInjection();
+    }
     return null;
   }
 
-  // 定位器降级链（与执行器一致）：主定位严格冲突/失效自动切备用
+  // 定位器降级链（与执行器一致）：主定位严格冲突/失效自动切备用。
+  // 断言与页面级操作也统一走回退链（CE 无 PE 的 resolveLocator 单链封装）。
   const sel = step.element || step.selector;
   const resolved = await resolveLocatorWithFallback(page, sel, (m) => {
     console.log('[run_steps] ' + m);
   });
   const locator = resolved ? resolved.locator : null;
+  const isAssert = opeKey.startsWith('assert_');
+  const isPageLevel = PAGE_LEVEL_OPS.has(opeKey);
 
-  if (opeKey.startsWith('assert_')) {
+  if (isAssert) {
     const assertType = opeKey.replace('assert_', '');
     const options = { timeout: 10000 };
-    if (assertType === 'visible') await locator.waitFor({ state: 'visible', ...options });
-    else if (assertType === 'hidden') await locator.waitFor({ state: 'hidden', ...options });
-    else if (assertType === 'enabled') await locator.waitFor({ state: 'attached', ...options });
-    else if (assertType === 'text' || assertType === 'contain_text') {
-      await locator.waitFor({ state: 'visible', ...options });
-      if (inputValue) {
-        await locator.filter({ hasText: inputValue }).waitFor({ state: 'visible', ...options });
-      }
+    if (!locator && assertType !== 'url' && assertType !== 'title') {
+      return '步骤缺少元素定位（' + opeKey + '）';
     }
-    else await locator.waitFor({ state: 'visible', ...options });
+    if (assertType === 'visible') {
+      await pollAssert(async () => (await locator.isVisible()) === true, '断言失败: 元素不可见');
+    } else if (assertType === 'hidden') {
+      await pollAssert(async () => (await locator.isHidden()) === true, '断言失败: 元素未隐藏');
+    } else if (assertType === 'enabled') {
+      await pollAssert(async () => (await locator.isEnabled()) === true, '断言失败: 元素不可用');
+    } else if (assertType === 'disabled') {
+      await pollAssert(async () => (await locator.isDisabled()) === true, '断言失败: 元素未禁用');
+    } else if (assertType === 'checked') {
+      await pollAssert(async () => (await locator.isChecked()) === true, '断言失败: 元素未选中');
+    } else if (assertType === 'text') {
+      await pollAssert(async () => (await locator.innerText()).trim() === inputValue.trim(), `断言失败: 文本不等于 '${inputValue}'`);
+    } else if (assertType === 'contain_text') {
+      await pollAssert(async () => (await locator.innerText()).includes(inputValue), `断言失败: 文本不包含 '${inputValue}'`);
+    } else if (assertType === 'value') {
+      await pollAssert(async () => (await locator.inputValue()) === inputValue, `断言失败: 值不等于 '${inputValue}'`);
+    } else if (assertType === 'count') {
+      const expected = Number.isFinite(Number(inputValue)) && inputValue !== '' ? Math.trunc(Number(inputValue)) : 0;
+      await pollAssert(async () => (await locator.count()) === expected, `断言失败: 元素数量不等于 ${expected}`);
+    } else if (assertType === 'url') {
+      await pollAssert(async () => page.url().includes(inputValue), `断言失败: URL 不包含 '${inputValue}'`);
+    } else if (assertType === 'title') {
+      await pollAssert(async () => (await page.title()).includes(inputValue), `断言失败: 标题不包含 '${inputValue}'`);
+    } else {
+      await pollAssert(async () => (await locator.isVisible()) === true, '断言失败: 元素不可见');
+    }
     return null;
   }
   if (!locator) {
@@ -1743,11 +1953,30 @@ async function runOneStep(page, step) {
     case 'click':
       await locator.click({ timeout: 15000 });
       return null;
+    case 'dblclick':
+    case 'double_click':
+      await locator.dblclick({ timeout: 15000 });
+      return null;
+    case 'right_click':
+      await locator.click({ button: 'right', timeout: 15000 });
+      return null;
     case 'fill':
       await locator.fill(inputValue);
       return null;
+    case 'type':
+      // 逐键输入（触发 keydown/keypress/keyup）：与执行器 locator.type 同语义；
+      // 新版 Playwright 推荐 pressSequentially，type 已废弃但仍可用
+      if (typeof locator.pressSequentially === 'function') {
+        await locator.pressSequentially(inputValue, { timeout: 15000 });
+      } else {
+        await locator.type(inputValue, { timeout: 15000 });
+      }
+      return null;
     case 'clear':
       await locator.fill('');
+      return null;
+    case 'focus':
+      await locator.focus();
       return null;
     case 'check':
       await locator.check();
@@ -1757,7 +1986,8 @@ async function runOneStep(page, step) {
       return null;
     case 'select':
     case 'select_option':
-      await locator.select_option(inputValue);
+      // JS API 为 selectOption（原 select_option 是 Python API，运行会抛 TypeError）
+      await locator.selectOption(inputValue);
       return null;
     case 'hover':
       await locator.hover();
@@ -1911,19 +2141,29 @@ async function cmdRunSteps(params) {
       };
       const stepStart = Date.now();
       try {
-        const err = await runOneStep(state.page, steps[i]);
+        const outcome = await runOneStep(state.page, steps[i]);
         resultEntry.duration = (Date.now() - stepStart) / 1000;
-        if (err) {
+        if (typeof outcome === 'string') {
           failedStep = i;
-          errorMsg = err;
+          errorMsg = outcome;
           resultEntry.status = 'failed';
-          resultEntry.message = String(err).slice(0, 300);
+          resultEntry.message = String(outcome).slice(0, 300);
           stepResults.push(resultEntry);
           break;
         }
         executed += 1;
-        // 成功消息与执行器同款："元素操作 click 执行成功"
-        resultEntry.message = `元素操作 ${resultEntry.ope_key} 执行成功`;
+        // 成功消息与执行器同款口径："元素操作 click 执行成功"/"页面操作 goto 执行成功"
+        if (resultEntry.ope_key.startsWith('assert_')) {
+          resultEntry.message = `断言 ${resultEntry.ope_key.replace('assert_', '')} 通过`;
+        } else if (PAGE_LEVEL_OPS.has(resultEntry.ope_key)) {
+          resultEntry.message = `页面操作 ${resultEntry.ope_key} 执行成功`;
+        } else {
+          resultEntry.message = `元素操作 ${resultEntry.ope_key} 执行成功`;
+        }
+        // screenshot 等操作返回 { screenshot: dataURL } 产物，随步骤结果带回展示
+        if (outcome && typeof outcome === 'object' && outcome.screenshot) {
+          resultEntry.screenshot = outcome.screenshot;
+        }
         stepResults.push(resultEntry);
         await state.page.waitForTimeout(200);
       } catch (e) {
@@ -2005,9 +2245,14 @@ async function cmdSwitchContext(params) {
     if (state.context) {
       try { await state.context.close(); } catch (_) {}
     }
-    state.context = await state.browser.newContext(buildContextOptions(state.viewport, storageState));
+    const switchOptions = buildContextOptions(state.viewport, storageState);
+    const switchSessionScript = switchOptions.__sessionStorageScript;
+    state.context = await state.browser.newContext(switchOptions);
     await state.context.exposeBinding('__whartReport', (source, payload) => handleReport(payload, source.frame));
     try { await state.context.addInitScript(INIT_SCRIPT); } catch (_) {}
+    if (switchSessionScript) {
+      try { await state.context.addInitScript(switchSessionScript); } catch (_) {}
+    }
     state.page = await state.context.newPage();
     try { await state.page.addInitScript(INIT_SCRIPT); } catch (_) {}
     await attachFreezeAnimation(state.context, state.page);
@@ -2291,14 +2536,19 @@ async function cmdFinish() {
 }
 
 async function cmdSaveLoginState(params) {
-  // 保存当前浏览器上下文登录态（storageState：cookies + localStorage）。
-  // 一套快照同时覆盖 Cookie/Session 会话系统与 JWT(localStorage) 现代系统，
+  // 保存当前浏览器上下文登录态（storageState：cookies + localStorage + sessionStorage）。
+  // 一套快照同时覆盖 Cookie/Session 会话系统与 JWT(localStorage/sessionStorage) 现代系统，
   // 由平台绑定到当前录制会话所属的环境配置，执行时自动注入复用。
+  // sessionStorage 不在 Playwright storageState 里，需按页面 origin 单独采集。
   if (!state.context) {
     return { ok: false, error: '录制会话未启动或已结束' };
   }
   try {
     const snap = await state.context.storageState();
+    const sessionOrigins = await captureSessionStorage(state.context);
+    if (sessionOrigins.length) {
+      snap.session_storage = sessionOrigins;
+    }
     return { ok: true, state: { storage_state: snap } };
   } catch (e) {
     return { ok: false, error: '保存登录态失败: ' + (e && e.message ? e.message : String(e)) };

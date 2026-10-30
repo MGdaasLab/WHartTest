@@ -796,10 +796,11 @@ class RecorderBrowserExecTests(TestCase):
         # 执行已改为独立任务：等待其完成（结果回传后再断言）
         if consumer._recorder_exec_task is not None:
             self._run(lambda: consumer._recorder_exec_task)()
-        # run_steps 被调用且首条为 goto
+        # run_steps 被调用且不再插入拼接 goto（首组地址与 start 导航相同，
+        # 重复 goto 会打断 SSO 重定向链）→ 首条直接是库里的 click 明细
         run_calls = [p for m, p in session.requests if m == 'run_steps']
         self.assertEqual(len(run_calls), 1)
-        self.assertEqual(run_calls[0]['steps'][0]['ope_key'], 'goto')
+        self.assertEqual(run_calls[0]['steps'][0]['ope_key'], 'click')
         # 回执生效运行时（headless=false）→ 前端据此打开执行画布
         eff = [m for m in received if m.data.func_name == 'effective_runtime']
         self.assertEqual(len(eff), 1)
@@ -881,9 +882,11 @@ class RecorderBrowserExecTests(TestCase):
         # 仅第 3 步触发一次切换，且注入的是登录态 B
         self.assertEqual(len(switches), 1)
         self.assertEqual(switches[0], [{'name': 'B'}])
-        # 4 组全部执行成功
+        # 4 组全部执行成功；首组不拼 goto（start 已导航），后续组保持每组 goto
         run_calls = [p for m, p in session.requests if m == 'run_steps']
         self.assertEqual(len(run_calls), 4)
+        goto_flags = [p['steps'][0]['ope_key'] == 'goto' for p in run_calls]
+        self.assertEqual(goto_flags, [False, True, True, True])
         broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
         self.assertEqual(broadcasts[0]['data']['args']['status'], 'success')
 
@@ -902,6 +905,51 @@ class RecorderBrowserExecTests(TestCase):
 
         self._run(scenario)()
         self.assertEqual([m for m, _p in session.requests if m == 'switch_context'], [])
+        broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
+        self.assertEqual(broadcasts[0]['data']['args']['status'], 'success')
+
+    def test_case_first_group_bound_auth_still_skips_goto(self):
+        """首组绑定登录态：start 直接按首组登录态注入（不发生切换），
+        同样不重复拼接 goto——重复导航会打断 SSO 重定向链。"""
+        from ui_automation.models import UiCaseStepsDetailed, UiAuthState, UiTestCase
+        auth_a = UiAuthState.objects.create(
+            env_config=self.env, name='登录态A', state_json={'cookies': [{'name': 'A'}]}, creator=self.user,
+        )
+        case = UiTestCase.objects.create(
+            project=self.project, module=self.module, name='首组绑定登录态用例', creator=self.user,
+        )
+        ps = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module,
+            name='首组绑定步骤', creator=self.user, auth_state=auth_a,
+        )
+        UiPageStepsDetailed.objects.create(page_step=ps, step_type=0, ope_key='click', step_sort=0)
+        UiCaseStepsDetailed.objects.create(test_case=case, page_step=ps, case_sort=0)
+
+        consumer, session, received, layer = self._consumer_env()
+
+        async def scenario():
+            await consumer.handle_execute_test_case(
+                {'case_id': case.id, 'env_config_id': self.env.id, 'actuator_id': 'recorder-browser'},
+                'alice',
+            )
+            if consumer._recorder_exec_task is not None:
+                await asyncio.wait_for(consumer._recorder_exec_task, timeout=15)
+
+        self._run(scenario)()
+        # 首组登录态由 start 直接注入，无切换；不重复拼接 goto
+        self.assertEqual([m for m, _p in session.requests if m == 'switch_context'], [])
+        # start 请求携带了首组绑定的登录态
+        start_params = [p for m, p in session.requests if m == 'start']
+        self.assertEqual(len(start_params), 1)
+        self.assertEqual(
+            (start_params[0].get('storage_state') or {}).get('cookies'),
+            [{'name': 'A'}],
+        )
+        # start 负责导航到首组地址（与执行器先 goto 再执行步骤同语义）
+        self.assertEqual(start_params[0].get('url'), 'http://env.local')
+        run_calls = [p for m, p in session.requests if m == 'run_steps']
+        self.assertEqual(len(run_calls), 1)
+        self.assertEqual(run_calls[0]['steps'][0]['ope_key'], 'click')
         broadcasts = [d for d in layer.sent if d.get('data', {}).get('func_name') == 'u_case_result']
         self.assertEqual(broadcasts[0]['data']['args']['status'], 'success')
 

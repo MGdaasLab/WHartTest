@@ -1332,6 +1332,36 @@ def upload_trace(request):
 from asgiref.sync import async_to_sync
 
 
+def _resolve_task_execution_for_batch(*, task_execution_id=None, scheduled_task_id=None):
+    """定位批次应回填的任务中心执行记录。
+
+    优先按触发方显式传入的执行记录 ID 精确匹配（同任务并发/重试时启发式
+    可能关联到错误的记录）；无 execution_id 时退化为启发式（同任务最早一条
+    running 且未关联批次的记录）。仅匹配 running 未关联记录，防重复回填。
+    """
+    from task_center.models import TaskExecution
+
+    if task_execution_id:
+        return TaskExecution.objects.filter(
+            id=task_execution_id,
+            status=TaskExecution.ExecutionStatus.RUNNING,
+            batch_record__isnull=True,
+        ).first()
+    if scheduled_task_id:
+        # 最早优先（先触发先关联）：后触发的执行记录等自己触发的批次
+        return (
+            TaskExecution.objects
+            .filter(
+                task_id=scheduled_task_id,
+                status=TaskExecution.ExecutionStatus.RUNNING,
+                batch_record__isnull=True,
+            )
+            .order_by('started_at')
+            .first()
+        )
+    return None
+
+
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def trigger_batch_execution(request):
@@ -1350,6 +1380,8 @@ def trigger_batch_execution(request):
     actuator_id = request.data.get('actuator_id', '')
     batch_name = request.data.get('batch_name', '')
     trigger_type = request.data.get('trigger_type', 'scheduled')
+    scheduled_task_id = request.data.get('scheduled_task_id')
+    task_execution_id = request.data.get('task_execution_id')
 
     if not case_ids:
         return Response({'error': '未提供用例 ID'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1414,10 +1446,30 @@ def trigger_batch_execution(request):
             total_cases=len(case_ids),
             status=1,
             trigger_type=trigger_type,
+            scheduled_task_id=scheduled_task_id,
             executor=request.user,
             start_time=tz.now(),
         )
 
+        # 服务端同步回填任务中心执行记录的批次关联（必须在下发执行器之前完成）：
+        # 执行器可能秒级跑完并回传结果，consumers 回写按 batch_record_id 过滤，
+        # 若关联此时未落库会导致执行记录永久停在 running
+        if task_execution_id or scheduled_task_id:
+            try:
+                task_execution = _resolve_task_execution_for_batch(
+                    task_execution_id=task_execution_id,
+                    scheduled_task_id=scheduled_task_id,
+                )
+                if task_execution:
+                    task_execution.batch_record = batch
+                    task_execution.save(update_fields=['batch_record'])
+            except Exception:
+                logger.warning(
+                    "[trigger-batch] 回填任务中心执行记录批次关联失败 scheduled_task_id=%s execution_id=%s",
+                    scheduled_task_id,
+                    task_execution_id,
+                    exc_info=True,
+                )
         # 批量执行不展示执行画面：强制无头（执行器优先采用下发的 effective_runtime）
         if isinstance(effective, dict) and effective.get("browser"):
             effective["headless"] = True
@@ -1434,6 +1486,10 @@ def trigger_batch_execution(request):
             'effective_runtime': effective,
             'trigger_type': trigger_type,
         }
+
+        # 登记 HTTP 触发的批量任务来源（user='system'），执行器回传结果时
+        # consumers.verify_result_source 才能命中；漏登记会在严格模式被拒
+        actuator.register_actuator_task(actuator, args, 'system')
 
         # 通过 WebSocket 发送给执行器
         async_to_sync(actuator.send_json)(SocketDataModel(
@@ -1915,29 +1971,56 @@ class UiRecorderSessionViewSet(viewsets.ViewSet):
         cookies = storage_state.get('cookies') or []
         origins = storage_state.get('origins') or []
         ls_total = sum(len(o.get('localStorage') or []) for o in origins)
-        if not cookies and ls_total == 0:
+        # sessionStorage 扩展字段（Playwright storageState 不含 sessionStorage，录制器单独采集）
+        ss_origins = storage_state.get('session_storage') or []
+        ss_total = sum(len(o.get('sessionStorage') or []) for o in ss_origins if isinstance(o, dict))
+        if not cookies and ls_total == 0 and ss_total == 0:
             return Response(
-                {'detail': '当前浏览器没有捕获到任何登录凭据（cookies/localStorage），'
+                {'detail': '当前浏览器没有捕获到任何登录凭据（cookies/localStorage/sessionStorage），'
                            '请先在录制画布中完成目标系统登录后再保存登录态'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
         name = str(request.data.get('name') or '').strip() or f"录制登录态-{env_config.name}"
         description = str(request.data.get('description') or '').strip()
-        auth_state = UiAuthState.objects.create(
-            name=name,
-            env_config=env_config,
-            state_json=storage_state,
-            description=description,
-            creator=request.user,
-        )
+
+        # 覆盖模式：指定 auth_state_id 时仅刷新原记录的快照（id 不变，
+        # 已绑定该登录态的平台步骤/用例自动生效，无需逐个重新绑定）
+        auth_state = None
+        target_id = request.data.get('auth_state_id')
+        if target_id not in (None, ''):
+            try:
+                target_id = int(target_id)
+            except (TypeError, ValueError):
+                return Response({'detail': 'auth_state_id 参数无效'}, status=status.HTTP_400_BAD_REQUEST)
+            auth_state = UiAuthState.objects.filter(id=target_id, env_config=env_config).first()
+            if auth_state is None:
+                return Response(
+                    {'detail': '要更新的登录态不存在或不属于当前环境配置'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            auth_state.state_json = storage_state
+            auth_state.save()
+        else:
+            auth_state = UiAuthState.objects.create(
+                name=name,
+                env_config=env_config,
+                state_json=storage_state,
+                description=description,
+                creator=request.user,
+            )
         # 录制过程中重新保存的登录态：作为会话当前生效绑定，本步骤及以下步骤继承
         meta.auth_state_id = auth_state.id
+        if target_id:
+            message = '登录态「%s」已更新，绑定该登录态的步骤将自动生效' % auth_state.name
+        else:
+            message = '登录态已保存到环境「%s」' % env_config.name
         return Response({
-            'message': '登录态已保存到环境「%s」' % env_config.name,
+            'message': message,
             'auth_state_id': auth_state.id,
             'name': auth_state.name,
             'env_config_id': env_config.id,
             'cookies': len(cookies),
             'local_storage_keys': ls_total,
-        }, status=status.HTTP_201_CREATED)
+            'session_storage_keys': ss_total,
+        }, status=status.HTTP_200_OK if target_id else status.HTTP_201_CREATED)

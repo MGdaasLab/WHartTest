@@ -15,6 +15,8 @@ api_username = "admin"
 # API认证密码（仅 use_gui=false 时有效）
 # 安全：不内置默认口令，请改为实际密码（或改用 api_key 认证）
 api_password = ""
+# WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 保持一致（后端严格模式必填）
+ws_token = ""
 # API Key（可选，优先级高于账号密码）。配置后执行器用 X-API-Key 头认证，
 # 不再调用 /api/token/ 登录，不会触发后端「单设备登录」挤占浏览器会话。
 # 容器部署推荐用环境变量 WHARTTEST_ACTUATOR_API_KEY 注入。

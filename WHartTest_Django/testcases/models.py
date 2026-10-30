@@ -392,6 +392,14 @@ class TestExecution(models.Model):
     # Celery任务ID,用于追踪和取消任务
     celery_task_id = models.CharField(_('任务ID'), max_length=255, blank=True, null=True)
 
+    # 定时任务关联：任务中心触发的套件执行记录来源任务；手动执行时为空
+    scheduled_task = models.ForeignKey(
+        'task_center.ScheduledTask', on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='suite_executions',
+        verbose_name=_('关联定时任务'),
+        help_text=_('任务中心定时/手动触发时关联的定时任务；普通执行为空')
+    )
+
     # 是否为功能测试用例生成Playwright脚本
     generate_playwright_script = models.BooleanField(
         _('生成脚本'),
