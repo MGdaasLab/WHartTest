@@ -105,8 +105,8 @@ class RequirementDocument(models.Model):
     has_images = models.BooleanField(_('包含图片'), default=False)
     image_count = models.IntegerField(_('图片数量'), default=0)
 
-    # 拆分层级
-    last_split_level = models.IntegerField(_('最近拆分层级'), default=0)
+    # 拆分层级（与 PE 线一致：字符串层级 auto/h1..h6；0010 迁移已将历史 int 值转换为字符串）
+    last_split_level = models.CharField(_('上次拆分级别'), max_length=10, default='h2', blank=True)
 
     class Meta:
         verbose_name = _('需求文档')
