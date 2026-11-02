@@ -11,63 +11,71 @@ https://wharttest.mgdaas.com/
 
 ## Core Features
 
-### 1. AI-Powered Test Case Generation
-- Automatically generate test cases from requirement documents, business descriptions, and knowledge base context.
-- Use LangChain/LangGraph to orchestrate multi-step reasoning workflows, including context completion, test case optimization, and result tracking.
-- Support Prompt templates, test case templates, and generation strategy configuration to help teams standardize testing practices.
+### AI-Powered Test Case Generation
+Based on large language model (LLM) technology, WHartTest intelligently transforms requirements into test cases:
+- **Multi-source input**: supports requirement documents, conversational interaction, API documentation, and other input methods
+- **Structured output**: automatically generates complete test cases including test steps, preconditions, input data, expected results, and priority levels (P0-P3)
+- **Multi-model support**: integrates OpenAI, Azure OpenAI, Ollama, Xinference, and other embedding services
+- **Failure Self-Healing**: Automatically triggers an AI self-healing task when a test case fails, with the entire process displayed in real time within the chat.
 
-### 2. Requirement Management and Intelligent Review
-- Support requirement document upload, parsing, viewing, and online editing, covering the full workflow from requirement import to review reports.
-- Support requirement splitting, specialized analysis, context checks, and versioned report viewing.
-- Combine requirement content with knowledge bases and LLM capabilities to identify missing information, ambiguity, and key testing concerns.
+### Knowledge Base Management and Document Understanding
+Build project-level knowledge bases to provide accurate context for AI generation:
+- **Multi-format support**: PDF, Word, Excel, PPT, Markdown, web links, and more
+- **Intelligent chunking**: automatic document parsing, chunking, and vectorized storage
+- **Semantic retrieval**: precise knowledge retrieval based on vector similarity
+- **Reranker refinement**: supports configurable reranking models to improve retrieval accuracy
 
-### 3. Test Case Management
-- Manage functional test cases by project and module, including case name, priority, type, preconditions, steps, expected results, and notes.
-- Provide both list view and mind map view, supporting quick module/case creation, editing, copy/paste, drag-and-drop organization, import, and export.
-- Support fully automated AI writing of test cases: generate complete case structures and test steps from requirement documents, business context, knowledge bases, and existing cases.
-- Support fully automated AI editing, optimization, and repair of test case content, including completing preconditions, rewriting steps, improving expected results, fixing non-standard cases, and increasing coverage.
-- Support fully automated AI execution of test cases with execution process recording; automatically analyze failure causes from logs, screenshots, and reports, and generate repair suggestions.
-- Support test suite management, case selection, batch organization, and execution history tracking.
+### MCP Tool Integration
+Seamlessly connect AI with testing tools through Model Context Protocol:
+- **Browser automation**: integrates Playwright and supports page operations, element locating, screenshots, and screen recording
+- **Multi-protocol support**: supports transport protocols such as streamable-http and SSE
+- **HITL human approval**: sensitive operations support a human confirmation mechanism
+- **Custom extensions**: supports integration with third-party tools and services
 
-### 4. API Automation Testing
-- Manage API testing assets such as API modules, interface definitions, environment variables, global headers, database configurations, functions, and tags.
-- Support API test case orchestration, test task creation, task execution, result details, and test report viewing.
-- Support fully automated AI writing of API test cases: automatically generate test steps, assertions, variable extraction, and pre/post scripts from API definitions, request parameters, response structures, and business context.
-- Support fully automated AI editing and repair of API testing configurations, including request parameters, headers, environment variables, database checks, function scripts, assertion rules, and dependent variables.
-- Support API debugging, case execution, and batch task execution; AI can automatically analyze failed results, execution logs, and response content to locate issues and generate repair plans.
-- Support API synchronization, environment switching, and multi-project isolation for unified API automation management.
+### Requirement Review and Risk Analysis
+AI-driven requirement quality assessment helps identify potential risks early:
+- **Six-dimension scoring system**: completeness, clarity, consistency, testability, feasibility, and logic
+- **Issue tracking**: automatically identifies ambiguities, conflicts, and omissions in requirements
+- **Improvement suggestions**: provides targeted requirement optimization and testing strategy recommendations
 
-### 5. UI Automation Testing
-- Built-in UI automation executor capabilities, including executor management, environment configuration, page objects, page steps, public data, element locators, and case step management.
-- Support fully automated AI writing of UI automation cases and scripts: automatically generate page operation steps, element locators, assertions, and test data from pages, elements, business flows, and test objectives.
-- Support fully automated AI editing and repair of UI automation steps, analyzing and generating repair suggestions for issues such as invalid locators, unstable waits, abnormal page states, and assertion failures.
-- Support fully automated AI execution of UI cases, debug runs, and batch execution; collect logs, screenshots, videos, and Trace data for playback and troubleshooting.
-- Integrate with test cases and the task center to provide unified scheduling and tracking for UI automation tasks.
+### Test Case Management
+Full-lifecycle test case management capabilities:
+- **Multi-level modules**: supports a test case organization structure with up to 5 levels of submodules
+- **Case review**: supports status transitions such as pending review, approved, optimized, and unavailable
+- **Test suites**: flexibly combine test cases and configure concurrent execution
+- **Batch operations**: supports batch creation, editing, moving, and deletion of test cases
 
-### 6. Agent Chat and MCP Tool Calls
-- Provide a LangGraph-based intelligent chat entry point for test analysis, test case generation, and tool calls within project context.
-- Support remote MCP configuration management, enabling Agents to call external tool services and extend testing, analysis, and automation capabilities.
-- Support tool approval, system prompts, token usage display, and multi-model configuration to improve controllability and security of AI calls.
+### UI Automation Testing
+Low-code UI automation lowers the barrier to automation testing:
+- **Multiple locator strategies**: CSS, XPath, Text, Role, Label, and other element locating methods
+- **Visual orchestration**: drag-and-drop step orchestration with support for conditions, loops, and assertions
+- **Environment management**: multi-browser support (Chromium/Firefox/WebKit) and environment configuration switching
+- **Execution records**: complete screenshots, videos, Trace tracking, and execution logs
+- **Step Recording**: Supports recording user operation steps, eliminating the need to manually write scripts.
+- **Login State Management**: Allows capturing the login state via manual login and automatically injecting it in subsequent tests to skip repeated logins.
 
-### 7. Knowledge Base and Retrieval Augmentation
-- Support knowledge base creation, document upload, document chunking, vectorization, retrieval queries, and statistics.
-- Support embedding models, Reranker, global knowledge base configuration, and connection testing.
-- Turn product documents, API documents, and business rules into project knowledge, providing RAG context for AI generation and review.
+### Mobile App Automation Testing
+Integrated with mobile-mcp to support mobile application automation testing:
+- **Multi-platform support**: automation for Android and iOS mobile devices
+- **Device management**: device connection status checks and device information retrieval
+- **Application operations**: app install, uninstall, launch, and stop
+- **Element interactions**: tap, swipe, input, and gesture operations
+- **Screen operations**: screenshots, screen recording, brightness and volume adjustment
+- **System operations**: notification panel operations, permission management, and network switching
 
-### 8. Skills Library
-- Support Skills installation, management, and skill store source configuration to extend Agent capabilities.
-- Support automation skills such as Playwright, enabling AI to work closer to real testing scenarios.
-- Skills have high system privileges and are strongly recommended to be used only in intranet or trusted environments.
+### Skill-Based Intelligent Skill System
+An extensible Agent skill management framework:
+- **Multiple import sources**: supports ZIP file upload and Git repository import
+- **SKILL.md specification**: standardized skill description file
+- **Security isolation**: skill files are stored independently to prevent path traversal attacks
+- **Exclusive resources**: join the technical community to obtain fine-tuned Skills and MCP toolkits
+- **Skill Sandbox**: The Skill execution chain adopts a three-layer defense-in-depth architecture to fully mitigate execution risks from LLM-generated commands.
 
-### 9. Task Center and Execution Tracking
-- Provide a unified task center for creating, executing, and viewing automation tasks.
-- Support task log viewing, UI test case selection, execution status tracking, and failure troubleshooting.
-- Combine functional cases, API testing, and UI automation into a unified test execution entry point.
-
-### 10. Project, Team, and System Management
-- Support project management, user management, organization management, permission management, and API Key management.
-- Support LLM configuration management, multi-model integration, version update prompts, dark/light themes, and Chinese/English switching.
-- Support operation log recording and cleanup configuration for auditing key platform operations.
+### Execution Reports and Analysis
+Comprehensive analysis of test execution results:
+- **Real-time monitoring**: execution progress and status are updated in real time
+- **Multi-dimensional statistics**: pass rate, execution duration, and failure cause analysis
+- **Historical comparison**: supports historical trend analysis of execution results
 
 ## Quick Start
 
