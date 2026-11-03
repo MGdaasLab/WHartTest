@@ -3,6 +3,7 @@ import logging
 from django.utils import timezone
 from django.db import transaction
 from api_interfaces.logging_utils import summarize_for_log
+from api_environments.services import persist_project_extract_variables
 from .models import (
     ApiTestCase, ApiTestCaseStep, ApiTestReport, ApiTestReportDetail,
     ApiInterfaceCase, ApiInterfaceCaseReport, ApiInterfaceCaseReportDetail,
@@ -342,7 +343,7 @@ class InterfaceCaseExecutionService:
         interface_case.config = config
         interface_case._case_verify_explicit = verify_source == 'testcase'
 
-        runner = TestCaseRunner(interface_case, environment=environment)
+        runner = TestCaseRunner(interface_case)
         runner.run_testcase(environment)
 
         summary = runner.get_summary()

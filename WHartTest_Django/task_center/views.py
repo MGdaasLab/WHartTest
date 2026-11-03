@@ -9,7 +9,9 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 
 from projects.models import Project
+from wharttest_django.permissions import HasModelPermission, permission_required
 from .models import ScheduledTask, TaskExecution
+from .permissions import IsProjectMemberForTaskCenter
 from .serializers import ScheduledTaskSerializer, TaskExecutionSerializer
 from .scheduler import register_periodic_task, unregister_periodic_task
 
@@ -19,10 +21,16 @@ logger = logging.getLogger(__name__)
 class ScheduledTaskViewSet(viewsets.ModelViewSet):
     """定时任务视图集"""
     serializer_class = ScheduledTaskSerializer
-    permission_classes = [permissions.IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter]
     search_fields = ['name']
     filterset_fields = ['status', 'module']
+
+    def get_permissions(self):
+        return [
+            permissions.IsAuthenticated(),
+            HasModelPermission(),
+            IsProjectMemberForTaskCenter(),
+        ]
 
     def get_queryset(self):
         project_pk = self.kwargs.get('project_pk')
@@ -51,6 +59,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
         instance.delete()
 
     @action(detail=True, methods=['post'], url_path='enable')
+    @permission_required('task_center.change_scheduledtask')
     def enable(self, request, **kwargs):
         """启用任务 → 运行中"""
         task = self.get_object()
@@ -63,6 +72,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
         return Response(ScheduledTaskSerializer(task).data)
 
     @action(detail=True, methods=['post'], url_path='disable')
+    @permission_required('task_center.change_scheduledtask')
     def disable(self, request, **kwargs):
         """关闭任务 → 未启用"""
         task = self.get_object()
@@ -75,6 +85,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
         return Response(ScheduledTaskSerializer(task).data)
 
     @action(detail=True, methods=['post'], url_path='run-now')
+    @permission_required('task_center.change_scheduledtask')
     def run_now(self, request, **kwargs):
         """立即执行（手动触发，不影响原调度计划）"""
         task = self.get_object()
@@ -88,6 +99,7 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
         })
 
     @action(detail=True, methods=['get'], url_path='executions')
+    @permission_required('task_center.view_taskexecution')
     def executions(self, request, **kwargs):
         """获取任务的执行记录"""
         task = self.get_object()
@@ -107,7 +119,13 @@ class ScheduledTaskViewSet(viewsets.ModelViewSet):
 class TaskExecutionViewSet(viewsets.ReadOnlyModelViewSet):
     """执行记录视图集（只读）"""
     serializer_class = TaskExecutionSerializer
-    permission_classes = [permissions.IsAuthenticated]
+
+    def get_permissions(self):
+        return [
+            permissions.IsAuthenticated(),
+            HasModelPermission(),
+            IsProjectMemberForTaskCenter(),
+        ]
 
     def get_queryset(self):
         project_pk = self.kwargs.get('project_pk')

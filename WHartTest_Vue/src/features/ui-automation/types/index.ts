@@ -141,6 +141,10 @@ export interface UiTestCase extends TimeStampFields {
   project: number
   module: number
   module_name?: string
+  env_config?: number | null
+  env_config_name?: string
+  /** 编辑期跨环境登录态预警（详情接口返回）：true = 步骤登录态环境与绑定环境不一致 */
+  auth_env_mismatch?: boolean | null
   name: string
   description?: string
   level: CaseLevel
@@ -444,6 +448,9 @@ export type UiModuleForm = Omit<UiModule, 'id' | 'level' | 'children' | 'creator
 export type UiPageForm = Omit<UiPage, 'id' | 'module_name' | 'element_count' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'>
 export type UiElementForm = Omit<UiElement, 'id' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'>
 export type UiPageStepsForm = Omit<UiPageSteps, 'id' | 'page_name' | 'module_name' | 'status' | 'result_data' | 'step_count' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'>
-export type UiTestCaseForm = Omit<UiTestCase, 'id' | 'module_name' | 'status' | 'result_data' | 'error_message' | 'step_count' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'>
+export type UiTestCaseForm = Omit<UiTestCase, 'id' | 'module_name' | 'status' | 'result_data' | 'error_message' | 'step_count' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'> & {
+  /** 提交/编辑表单使用的环境字段名（后端 PrimaryKeyRelatedField 输入名），输出侧见 env_config */
+  env_config_id?: number | null
+}
 export type UiPublicDataForm = Omit<UiPublicData, 'id' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'>
 export type UiEnvironmentConfigForm = Omit<UiEnvironmentConfig, 'id' | 'creator' | 'creator_name' | 'created_at' | 'updated_at'>

@@ -83,14 +83,21 @@ class UiWebSocketService {
   public error = shallowRef<Error | null>(null)
   
   /** 获取 WebSocket URL */
-  private getWsUrl(): string {
+  private getWsUrl(token?: string): string {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
     const host = import.meta.env.VITE_WS_HOST || window.location.host
     const url = new URL(`${protocol}//${host}/ws/ui/web/`)
     url.searchParams.set('lang', getCurrentServerLanguage())
+    // WS 认证（后端 wharttest_django/websocket_auth.py）：JWT 经查询参数传递
+    // （浏览器 WebSocket API 无法自定义请求头）；无 token 时不带参，由服务端
+    // 兼容模式决定放行与否
+    const accessToken = token || localStorage.getItem('auth-accessToken') || ''
+    if (accessToken) {
+      url.searchParams.set('token', accessToken)
+    }
     return url.toString()
   }
-  
+
   /** 连接 WebSocket */
   connect(): Promise<void> {
     return new Promise((resolve, reject) => {
@@ -98,12 +105,12 @@ class UiWebSocketService {
         resolve()
         return
       }
-      
+
       const url = this.getWsUrl()
       console.log('[WebSocket] Connecting to:', url)
-      
+
       this.ws = new WebSocket(url)
-      
+
       this.ws.onopen = () => {
         console.log('[WebSocket] Connected')
         this.connected.value = true
@@ -111,23 +118,71 @@ class UiWebSocketService {
         this.reconnectAttempts = 0
         resolve()
       }
-      
+
       this.ws.onclose = (event) => {
         console.log('[WebSocket] Disconnected:', event.code, event.reason)
         this.connected.value = false
+        if (event.code === 4401) {
+          // 认证失败：access token 可能过期，刷新后重连一次；
+          // 刷新失败（refresh token 也失效）则走登出流程，不再重连
+          this.reconnectWithRefreshedToken().then(ok => {
+            if (!ok) {
+              this.error.value = new Error('WebSocket 认证失败，请重新登录')
+              reject(this.error.value)
+            }
+          })
+          return
+        }
         this.attemptReconnect()
       }
-      
+
       this.ws.onerror = (event) => {
         console.error('[WebSocket] Error:', event)
         this.error.value = new Error('WebSocket connection error')
         reject(this.error.value)
       }
-      
+
       this.ws.onmessage = (event) => {
         this.handleMessage(event.data)
       }
     })
+  }
+
+  /** 用刷新后的 access token 重连（4401 认证失败时调用一次） */
+  private async reconnectWithRefreshedToken(): Promise<boolean> {
+    try {
+      const { refreshToken } = await import('@/utils/request')
+      const newToken = await refreshToken()
+      if (!newToken) {
+        return false
+      }
+      const url = this.getWsUrl(newToken)
+      this.ws = new WebSocket(url)
+      this.ws.onopen = () => {
+        console.log('[WebSocket] Connected (after token refresh)')
+        this.connected.value = true
+        this.error.value = null
+        this.reconnectAttempts = 0
+      }
+      this.ws.onclose = (event) => {
+        console.log('[WebSocket] Disconnected:', event.code, event.reason)
+        this.connected.value = false
+        // 刷新后的 token 仍 4401：彻底失败，不再循环刷新
+        if (event.code !== 4401) {
+          this.attemptReconnect()
+        }
+      }
+      this.ws.onerror = (event) => {
+        console.error('[WebSocket] Error:', event)
+      }
+      this.ws.onmessage = (event) => {
+        this.handleMessage(event.data)
+      }
+      return true
+    } catch (e) {
+      console.error('[WebSocket] Token refresh reconnect failed:', e)
+      return false
+    }
   }
   
   /** 处理收到的消息 */

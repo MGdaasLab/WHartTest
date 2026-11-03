@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 import logging
 
 from .output_sanitizer import strip_terminal_control_sequences
+from .skill_exec_guard import build_skill_env
 
 logger = logging.getLogger("orchestrator_integration")
 
@@ -192,8 +193,9 @@ class _PlaywrightNodeProcess:
 
             cmd = ["node", self._server_script_path(), "--skill-dir", self.skill_dir]
 
-            merged_env = os.environ.copy()
-            merged_env.update(env)
+            # 不再把 backend 全量环境变量下发给 node 子进程：该子进程会执行模型生成的
+            # JS，必须只拿到白名单变量 + 调用方显式注入的运行时变量。
+            merged_env = build_skill_env(source_env=os.environ, runtime_env=env)
 
             self._proc = subprocess.Popen(
                 cmd,

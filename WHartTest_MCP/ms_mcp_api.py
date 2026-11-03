@@ -17,7 +17,19 @@ from Crypto.Cipher import AES
 from fastmcp import FastMCP
 from pydantic import Field
 
-mcp = FastMCP(name="ms_tools")
+from mcp_auth import build_mcp_auth
+
+# 鉴权模块缺失时 fail-closed：宁可起不来，也不要以无鉴权形态对外提供服务
+# （镜像不再 COPY 该文件，由 compose 以只读方式挂载；见 docker-compose.local.yml）
+try:
+    from mcp_auth import build_mcp_auth
+except ImportError as exc:
+    raise SystemExit(
+        "缺少 mcp_auth.py：MCP 服务拒绝在无法启用鉴权的情况下启动。"
+        "请确认 docker-compose 已把 WHartTest_MCP/mcp_auth.py 挂载到 /app/。"
+    ) from exc
+
+mcp = FastMCP(name="ms_tools", auth=build_mcp_auth())
 
 
 def aes_encrypt(text: str, secret_key: str, iv: str) -> str:
@@ -396,4 +408,9 @@ def add_functional_case(
 
 
 if __name__ == "__main__":
+    # 鉴权（必须）：与 WHartTest_tools 同一套共享密钥（MCP_SHARED_TOKEN），
+    # 未配置且未显式 MCP_ALLOW_UNAUTHENTICATED=true 时拒绝启动。
+    from mcp_auth import enforce_auth_or_exit
+
+    enforce_auth_or_exit("ms_mcp_api")
     mcp.run(transport="streamable-http", host="0.0.0.0", port=8007)

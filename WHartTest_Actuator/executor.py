@@ -9,6 +9,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import time
 import traceback
 from pathlib import Path
@@ -22,6 +23,13 @@ from models import StepResultModel, CaseResultModel
 from runtime_env import is_running_in_container
 
 logger = logging.getLogger('actuator')
+
+
+def _step_db_connection_allowed() -> bool:
+    """是否允许 SQL 步骤自带连接配置（默认禁止，运维显式开启才生效）。"""
+    return (os.environ.get('WHARTTEST_ACTUATOR_ALLOW_STEP_DB_CONNECTION', '') or '').strip().lower() in {
+        '1', 'true', 'yes', 'on',
+    }
 
 DEFAULT_STEALTH_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -53,6 +61,8 @@ class LoginStateError(RuntimeError):
 #   storage_state: 登录态快照。Playwright storageState 格式：文件路径(str) 或
 #                  {"cookies": [...], "origins": [...]} JSON。同时覆盖两类系统：
 #                  JWT 系（token 在 localStorage）与 Cookie/Session 系（会话 cookie）。
+#                  允许携带平台扩展字段 session_storage（采集的 sessionStorage 快照，
+#                  Playwright storageState 不含该维度），执行时按 origin 以 init script 回放。
 #   headers:       可选。注入到上下文所有请求的请求头，如 {"Authorization": "Bearer xxx"}。
 #   local_storage: 可选。页面加载前写入 localStorage 的键值（用于 SPA 前端路由守卫校验）。
 #   login_check:   可选。登录失效检测：{"url_pattern": "login|signin", "selector": "#login-form"}。
@@ -170,6 +180,7 @@ class PlaywrightExecutor:
         self._context: Optional[BrowserContext] = None
         self._page: Optional[Page] = None
         self._stop_requested = False
+        self._stopped_cases: set[str] = set()  # 精确停止单用例（并发批次内互不影响）
         self._current_trace_path: Optional[str] = None
         self._page_errors = []
         # 任务级认证配置（auth），通过 apply_runtime_options 注入，执行后随 restore 还原
@@ -290,7 +301,9 @@ class PlaywrightExecutor:
         if auth.get("storage_state"):
             # 登录态快照：文件路径(str) 或 storageState JSON(dict)。
             # Playwright new_context 原生支持，Cookie/Session 与 JWT(localStorage) 一并恢复。
-            context_options["storage_state"] = auth["storage_state"]
+            # 扩展字段 session_storage（本平台采集的 sessionStorage 快照）不是
+            # Playwright 合法入参，需剥离后改由 init script 在页面加载前回放。
+            context_options["storage_state"] = self._strip_session_storage(auth["storage_state"])
         if auth.get("headers"):
             # 注入到上下文全部请求（含页面导航）的请求头，JWT Bearer 双保险
             context_options["extra_http_headers"] = auth["headers"]
@@ -359,11 +372,66 @@ class PlaywrightExecutor:
             "})();"
         )
 
+    @staticmethod
+    def _build_session_storage_init_script(session_origins: list) -> str:
+        """生成按 origin 匹配的 sessionStorage 初始化脚本。
+
+        Playwright storageState 不含 sessionStorage，而部分系统（如 RuoYi 系）
+        登录凭据存于 sessionStorage；sessionStorage 属标签页维度，无法像 cookie
+        一样在 context 层预置，改在每个页面文档创建前写入，导航后即时可用。
+        """
+        entries = []
+        for origin in session_origins or []:
+            if not isinstance(origin, dict):
+                continue
+            items = origin.get("sessionStorage") or []
+            kv = {
+                str(item.get("name")): str(item.get("value"))
+                for item in items
+                if item.get("name") is not None
+            }
+            if kv:
+                entries.append((origin.get("origin", ""), kv))
+        if not entries:
+            return ""
+        try:
+            payload = json.dumps([{"origin": o, "kv": kv} for o, kv in entries], ensure_ascii=False)
+        except (TypeError, ValueError):
+            return ""
+        return (
+            "(() => {"
+            "try { const list = " + payload + ";"
+            "for (const item of list) { if (location.origin === item.origin) {"
+            "for (const k in item.kv) { try { sessionStorage.setItem(k, item.kv[k]); } catch (_) {} }"
+            "} } } catch (_) {}"
+            "})();"
+        )
+
+    @staticmethod
+    def _session_storage_from_state(state: Any) -> list:
+        """读取快照中的 sessionStorage 扩展字段（旧快照无此字段返回 []）。"""
+        if not isinstance(state, dict):
+            return []
+        ss = state.get("session_storage")
+        return ss if isinstance(ss, list) else []
+
+    @staticmethod
+    def _strip_session_storage(state: Any) -> Any:
+        """剥离快照中的 session_storage 扩展字段（new_context storage_state 仅接受原生格式）。
+
+        文件路径原样返回（加载文件后由 _apply_storage_state 统一处理）；
+        dict 快照返回剥离后的浅拷贝，不影响原对象。
+        """
+        if isinstance(state, dict) and "session_storage" in state:
+            return {k: v for k, v in state.items() if k != "session_storage"}
+        return state
+
     async def _apply_storage_state(self, context: BrowserContext, state: Any) -> None:
-        """手动应用登录态快照（持久化上下文不支持 storage_state 参数，需手动注入）。
+        """手动应用登录态快照的原生字段（持久化上下文不支持 storage_state 参数）。
 
         cookies 用 add_cookies 注入；localStorage 用按 origin 匹配的初始化脚本写入，
-        与浏览器原生 storage_state 复用的行为一致，覆盖 Cookie/Session 与 JWT 两类系统。
+        与浏览器原生 storage_state 复用的行为一致。快照扩展字段 session_storage
+        的回放由 _apply_context_init_scripts 统一处理（两条 context 路径共用）。
         """
         if isinstance(state, (str, os.PathLike)):
             try:
@@ -395,6 +463,24 @@ class PlaywrightExecutor:
             await context.add_init_script(STEALTH_INIT_SCRIPT)
 
         auth = getattr(self, "_auth_config", None) or {}
+        # sessionStorage 快照回放：storageState 不含 sessionStorage，本平台采集的
+        # 扩展字段 session_storage 在每个页面文档创建前按 origin 写入。
+        # 从 _auth_config 读原始快照（context_options 里的 storage_state 已被剥离），
+        # 文件路径需加载后判断。两条 context 创建路径（原生/持久化）都经过这里。
+        storage_state = auth.get("storage_state")
+        if isinstance(storage_state, (str, os.PathLike)):
+            try:
+                with open(os.fspath(storage_state), 'r', encoding='utf-8') as f:
+                    storage_state = json.load(f)
+            except Exception:
+                storage_state = None
+        if isinstance(storage_state, dict):
+            session_script = self._build_session_storage_init_script(
+                self._session_storage_from_state(storage_state)
+            )
+            if session_script:
+                await context.add_init_script(session_script)
+
         local_storage = auth.get("local_storage")
         if isinstance(local_storage, dict) and local_storage:
             # 手动配置的 localStorage 键值：在任意页面加载前写入（通常为同源应用）
@@ -537,7 +623,12 @@ class PlaywrightExecutor:
                 len(o.get("localStorage") or [])
                 for o in (ss.get("origins") or [])
             )
-            logger.info(f"已注入登录态: cookies={cookies}, localStorage_keys={ls_keys}, login_check={'on' if auth.get('login_check') else 'off'}")
+            ss_keys = sum(
+                len(o.get("sessionStorage") or [])
+                for o in (ss.get("session_storage") or [])
+            ) if isinstance(ss.get("session_storage"), list) else 0
+            session_part = f", sessionStorage_keys={ss_keys}" if ss_keys else ""
+            logger.info(f"已注入登录态: cookies={cookies}, localStorage_keys={ls_keys}{session_part}, login_check={'on' if auth.get('login_check') else 'off'}")
         elif ss:
             logger.info(f"已注入登录态: storage_state 文件={ss}, login_check={'on' if auth.get('login_check') else 'off'}")
         if auth.get("headers"):
@@ -629,6 +720,30 @@ class PlaywrightExecutor:
         except Exception as e:
             logger.warning(f'{label} failed: {e}')
             return False
+
+    def _swap_to_ephemeral_profile(self, case_id) -> tuple[str, str]:
+        """persistent 模式下把 user_data_dir 切到一次性子目录，返回 (原目录, 临时目录)。
+
+        共享 profile 会把上一次登录的 cookie/localStorage 带进下一次执行，
+        登录类用例"开局即已登录"导致元素找不到。临时目录放在原目录下（同一
+        文件系统保证原子性），用例结束后由 _restore_profile 删除。
+        """
+        original = self.user_data_dir
+        ephemeral = str(
+            Path(original) / f".ephemeral_case_{case_id}_{int(time.time() * 1000)}_{os.getpid()}"
+        )
+        shutil.rmtree(ephemeral, ignore_errors=True)
+        Path(ephemeral).mkdir(parents=True, exist_ok=True)
+        self.user_data_dir = ephemeral
+        logger.info(f"使用一次性浏览器 profile: {ephemeral}")
+        return original, ephemeral
+
+    def _restore_profile(self, token: tuple[str, str]) -> None:
+        """恢复原 profile 目录并删除临时目录（浏览器已随会话关闭）。"""
+        original, ephemeral = token
+        self.user_data_dir = original
+        shutil.rmtree(ephemeral, ignore_errors=True)
+        logger.debug(f"已清理一次性浏览器 profile: {ephemeral}")
 
     async def close(self) -> None:
         """Close browser + Playwright driver with timeouts to avoid orphan Chromium."""
@@ -722,6 +837,16 @@ class PlaywrightExecutor:
     def get_current_trace_path(self) -> Optional[str]:
         """获取当前执行的 trace 文件路径"""
         return self._current_trace_path
+
+    def stop_case(self, case_id: str) -> None:
+        """精确停止单个用例：仅该用例的执行循环检测到停止，批次内其他用例不受影响。"""
+        self._stopped_cases.add(str(case_id))
+
+    def is_case_stopped(self, case_id) -> bool:
+        """用例是否被停止：精确停止命中，或全局停止标志已置。"""
+        if str(case_id) in self._stopped_cases:
+            return True
+        return self._stop_requested
 
     def stop(self):
         """请求停止执行（置标志；由调用方决定是否 force 硬中断）"""
@@ -862,6 +987,16 @@ class PlaywrightExecutor:
         direct_config = sql_config.get('connection') or sql_config.get('db_config')
         if direct_config is not None and not isinstance(direct_config, dict):
             raise ValueError("SQL连接配置必须是对象")
+
+        # 任务步骤里的 connection/db_config 属于不可信输入：放行它等于允许用例作者
+        # 让执行器连接任意内网主机并执行任意 SQL。默认只信任执行环境里配置的连接；
+        # 如确需步骤级覆盖，由运维显式设置 WHARTTEST_ACTUATOR_ALLOW_STEP_DB_CONNECTION=true。
+        if direct_config is not None and not _step_db_connection_allowed():
+            logger.warning(
+                "SQL 步骤自带连接配置已被忽略（仅允许执行环境中的数据库配置）；"
+                "如需启用步骤级覆盖，请设置 WHARTTEST_ACTUATOR_ALLOW_STEP_DB_CONNECTION=true"
+            )
+            direct_config = None
 
         db_config = direct_config or env_config.get(f'{db_type}_config') or {}
         if not isinstance(db_config, dict) or not db_config:
@@ -1404,7 +1539,7 @@ class PlaywrightExecutor:
         last_result: tuple[bool, str, str | None] = (False, "步骤执行失败", None)
 
         for attempt in range(attempts):
-            if self._stop_requested:
+            if self.is_case_stopped(getattr(self, '_current_case_id', None)):
                 return False, "用例被手动停止", None
             try:
                 success, message, screenshot = await self._execute_step(page, step, env_config)
@@ -1470,8 +1605,20 @@ class PlaywrightExecutor:
         total_steps = sum(len(ps.steps) for ps in config.page_steps)
         
         self._stop_requested = False
+        # 同步丢弃该用例的陈旧精确停止标记（stop_case 只增不清，上一次
+        # 停止请求会永久毒死该用例的所有后续执行，第一步直接误报"手动停止"）
+        self._stopped_cases.discard(str(config.case_id))
+        self._current_case_id = config.case_id
         trace_name = f"case_{config.case_id}"
-        
+
+        # persistent 模式下用一次性临时 profile 目录：默认 user_data_dir 是
+        # 所有用例共享的磁盘 profile，上一次登录留下的 cookie/localStorage 会让
+        # 下一个用例"开局即已登录"，登录类步骤找不到元素。每次执行用全新目录、
+        # 结束后删除（browser_session_with_trace finally），用例间彻底隔离。
+        profile_token = None
+        if self.persistent:
+            profile_token = self._swap_to_ephemeral_profile(config.case_id)
+
         try:
             # 使用带 trace 的浏览器会话
             async with self.browser_session_with_trace(trace_name) as page:
@@ -1490,7 +1637,7 @@ class PlaywrightExecutor:
 
                 pending_auth = None
                 for page_step in config.page_steps:
-                    if self._stop_requested:
+                    if self.is_case_stopped(config.case_id):
                         raise Exception("用例被手动停止")
 
                     # 组间登录态切换：未绑定步骤"向上匹配"最近绑定的登录态
@@ -1530,7 +1677,7 @@ class PlaywrightExecutor:
                     
                     # 执行页面内的步骤
                     for step in page_step.steps:
-                        if self._stop_requested:
+                        if self.is_case_stopped(config.case_id):
                             raise Exception("用例被手动停止")
                         
                         # 确保总是使用最新的活跃页签进行操作
@@ -1639,10 +1786,10 @@ class PlaywrightExecutor:
             duration = time.time() - start_time
             error_msg = str(e)
             logger.error(f"用例执行异常: {error_msg}\n{traceback.format_exc()}")
-            
+
             # 尝试获取 trace 路径（可能已保存）
             trace_path = self.get_current_trace_path()
-            
+
             return CaseResultModel(
                 case_id=config.case_id,
                 status='failed',
@@ -1654,6 +1801,10 @@ class PlaywrightExecutor:
                 steps=step_results,
                 trace_path=trace_path
             )
+        finally:
+            # 恢复节点默认 profile 目录并删除本次临时目录（成功/失败/中断都走这里）
+            if profile_token is not None:
+                self._restore_profile(profile_token)
 
     async def execute_page_step(self, config: PageStepConfig) -> list[StepResultModel]:
         """执行单个页面步骤（包含多个操作）- 使用同一个浏览器会话"""

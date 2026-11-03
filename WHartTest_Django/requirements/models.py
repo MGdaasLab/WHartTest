@@ -67,6 +67,12 @@ class RequirementDocument(models.Model):
         choices=STATUS_CHOICES,
         default='uploaded'
     )
+    error_message = models.TextField(
+        _('失败原因'),
+        blank=True,
+        default='',
+        help_text='最近一次处理失败的具体原因，供前端展示'
+    )
 
     # 版本管理
     version = models.CharField(_('版本号'), max_length=20, default='1.0')
@@ -99,8 +105,8 @@ class RequirementDocument(models.Model):
     has_images = models.BooleanField(_('包含图片'), default=False)
     image_count = models.IntegerField(_('图片数量'), default=0)
 
-    # 拆分层级
-    last_split_level = models.IntegerField(_('最近拆分层级'), default=0)
+    # 拆分层级（与 PE 线一致：字符串层级 auto/h1..h6；0010 迁移已将历史 int 值转换为字符串）
+    last_split_level = models.CharField(_('上次拆分级别'), max_length=10, default='h2', blank=True)
 
     class Meta:
         verbose_name = _('需求文档')
@@ -277,7 +283,14 @@ class ReviewReport(models.Model):
     current_step = models.CharField(_('当前步骤'), max_length=50, blank=True, default='')
     completed_steps = models.JSONField(_('已完成步骤'), default=list, blank=True)
 
-    # 评审结果
+    # 失败原因（评审失败时记录，供前端展示；不再用默认分数掩盖失败）
+    error_message = models.TextField(
+        _('失败原因'),
+        blank=True,
+        default=''
+    )
+
+    # 评审结果（null 表示该项分析未产出有效评分，例如专项分析失败）
     overall_rating = models.CharField(
         _('总体评价'),
         max_length=20,
@@ -285,13 +298,13 @@ class ReviewReport(models.Model):
         null=True,
         blank=True
     )
-    completion_score = models.IntegerField(_('完整度评分'), default=0, help_text='0-100分')
-    clarity_score = models.IntegerField(_('清晰度评分'), default=0, help_text='0-100分')
-    consistency_score = models.IntegerField(_('一致性评分'), default=0, help_text='0-100分')
-    completeness_score = models.IntegerField(_('完整性评分'), default=0, help_text='0-100分')
-    testability_score = models.IntegerField(_('可测性评分'), default=0, help_text='0-100分')
-    feasibility_score = models.IntegerField(_('可行性评分'), default=0, help_text='0-100分')
-    logic_score = models.IntegerField(_('逻辑分析评分'), default=0, help_text='0-100分')
+    completion_score = models.IntegerField(_('完整度评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
+    clarity_score = models.IntegerField(_('清晰度评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
+    consistency_score = models.IntegerField(_('一致性评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
+    completeness_score = models.IntegerField(_('完整性评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
+    testability_score = models.IntegerField(_('可测性评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
+    feasibility_score = models.IntegerField(_('可行性评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
+    logic_score = models.IntegerField(_('逻辑分析评分'), null=True, blank=True, default=0, help_text='0-100分，null表示未产出')
 
     # 问题统计
     total_issues = models.IntegerField(_('问题总数'), default=0)

@@ -89,7 +89,8 @@ ws_url = "ws://127.0.0.1:8000/ws/ui/actuator/"
 api_url = "http://127.0.0.1:8000"
 use_gui = true
 api_username = "admin"
-api_password = "admin123"
+# 安全：不内置默认口令，请首次配置时填写（或改用 api_key 认证）
+api_password = ""
 
 [actuator]
 
@@ -138,7 +139,14 @@ class Config:
         # 打包成 exe 时默认启用 GUI 登录，开发模式默认关闭
         self.use_gui = getattr(sys, 'frozen', False) and not container_mode
         self.api_username = "admin"
-        self.api_password = "admin123"
+        # 安全：不内置默认口令（原 admin123 已随源码公开）
+        self.api_password = ""
+        # API Key 认证（可选，优先级高于账号密码）：不发 /api/token/ 登录请求，
+        # 不会触发后端单设备 session_version 递增，避免挤掉浏览器登录会话
+        self.api_key = ""
+        # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 一致（硬性要求，
+        # 未配置或配置错误时连接会被拒绝 close 4401；run_compose.sh 会自动同步）
+        self.ws_token = ""
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None
         self.actuator_description: str | None = None
@@ -197,6 +205,8 @@ class Config:
             self.use_gui = data['server'].get('use_gui', self.use_gui)
             self.api_username = data['server'].get('api_username', self.api_username)
             self.api_password = data['server'].get('api_password', self.api_password)
+            self.api_key = data['server'].get('api_key', self.api_key)
+            self.ws_token = data['server'].get('ws_token', self.ws_token)
         
         # 执行器配置
         if 'actuator' in data:
@@ -254,6 +264,10 @@ class Config:
             self.api_username = api_username.strip()
         if api_password := os.environ.pop('WHARTTEST_ACTUATOR_API_PASSWORD', None):
             self.api_password = api_password.strip()
+        if api_key := os.environ.get('WHARTTEST_ACTUATOR_API_KEY'):
+            self.api_key = api_key.strip()
+        if ws_token := os.environ.pop('WHARTTEST_ACTUATOR_WS_TOKEN', None):
+            self.ws_token = ws_token.strip()
         if browser_type := os.environ.get('WHARTTEST_ACTUATOR_BROWSER_TYPE'):
             self.browser_type = browser_type.strip()
         if stealth_user_agent := os.environ.get('WHARTTEST_ACTUATOR_STEALTH_USER_AGENT'):
@@ -429,8 +443,9 @@ async def main():
             ws_url = api_url.replace('http://', 'ws://', 1)
         config.ws_url = f"{ws_url}/ws/ui/actuator/"
         
-        config.api_username = login_result['username']
-        config.api_password = login_result['password']
+        config.api_username = login_result.get('username', config.api_username)
+        config.api_password = login_result.get('password', config.api_password)
+        config.api_key = login_result.get('api_key', config.api_key)
         # 更新执行器名称
         if login_result.get('actuator_name'):
             config.actuator_name = login_result['actuator_name']
@@ -464,6 +479,10 @@ async def main():
         logger.info(f"执行器名称: {config.actuator_name}")
     logger.info(f"WebSocket服务器: {config.ws_url}")
     logger.info(f"API服务器: {config.api_url}")
+    if config.api_key:
+        logger.info("认证方式: API Key（X-API-Key，不触发单设备登录挤占）")
+    else:
+        logger.info(f"认证方式: 账号密码（{config.api_username}）")
     logger.info(f"浏览器类型: {config.browser_type}")
     logger.info(f"无头模式: {config.headless}")
     logger.info("=" * 50)
@@ -478,6 +497,7 @@ async def main():
         config,
         api_username=config.api_username,
         api_password=config.api_password,
+        api_key=config.api_key,
         config_path=str(config_path)
     )
     

@@ -95,14 +95,9 @@ export type OpenApiImportResult = {
   created_environments?: Array<{ id: number; name: string; base_url: string }>;
 };
 
-export type ApiDocumentImportMode = 'create_module' | 'existing_module';
-
 export type ApiDocumentImportOptions = {
   strip_base_url?: boolean;
   create_environments?: boolean;
-  import_mode?: ApiDocumentImportMode;
-  module_name?: string;
-  module_id?: number;
 };
 
 export type OpenApiExportResult = {
@@ -210,36 +205,17 @@ export async function importApiDocument(
   if (options?.create_environments !== undefined) {
     formData.append('create_environments', String(options.create_environments));
   }
-  if (options?.import_mode) {
-    formData.append('import_mode', options.import_mode);
-  }
-  if (options?.module_name) {
-    formData.append('module_name', options.module_name);
-  }
-  if (options?.module_id != null) {
-    formData.append('module_id', String(options.module_id));
-  }
   return _wrapOne(await interfaceService.importOpenApi(pid, formData));
 }
 
 export async function importApiDocumentText(
   sourceType: 'curl' | 'swagger',
   value: string,
-  options?: ApiDocumentImportOptions,
 ) {
   const pid = useProjectStore().currentProjectId ?? 0;
   const data: Record<string, any> = sourceType === 'swagger'
     ? { source_type: sourceType, source_url: value }
     : { source_type: sourceType, content: value };
-  if (options?.import_mode) {
-    data.import_mode = options.import_mode;
-  }
-  if (options?.module_name) {
-    data.module_name = options.module_name;
-  }
-  if (options?.module_id != null) {
-    data.module_id = options.module_id;
-  }
   return _wrapOne(await interfaceService.importOpenApi(pid, data as any));
 }
 

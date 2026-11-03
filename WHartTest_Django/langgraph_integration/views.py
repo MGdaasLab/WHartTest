@@ -35,6 +35,7 @@ from orchestrator_integration.middleware_config import (
     get_middleware_from_config,
     get_user_friendly_llm_error,
 )
+from orchestrator_integration.ui_credential import strip_ui_credential_marker
 
 
 # ============== 公共工具函数 ==============
@@ -284,7 +285,7 @@ logger = logging.getLogger(__name__)  # Initialize logger
 
 
 # --- 辅助函数 ---
-def create_llm_instance(active_config, temperature=0.7):
+def create_llm_instance(active_config, temperature=0.7, streaming=False):
     """
     根据配置创建LLM实例
     支持多供应商：
@@ -295,6 +296,10 @@ def create_llm_instance(active_config, temperature=0.7):
     关键参数说明：
     - timeout: 请求超时时间（秒），防止无限期等待
     - max_retries: 最大重试次数，处理临时网络问题
+    - streaming: openai_compatible 供应商启用底层流式传输。
+      invoke() 仍返回聚合后的完整结果，但 HTTP 层以流式接收，
+      避免网关（nginx proxy_read_timeout）在长生成期间返回 504。
+      由调用方按需开启（如需求评审的大文档分析）。
     """
     model_identifier = active_config.name or "gpt-3.5-turbo"
     provider = (getattr(active_config, "provider", None) or "openai_compatible").strip()
@@ -362,16 +367,18 @@ def create_llm_instance(active_config, temperature=0.7):
                 "base_url": base_url,
                 "timeout": request_timeout,  # 单次请求超时
                 "max_retries": max_retries,  # 自动重试次数
+                "streaming": streaming,  # 底层流式接收，invoke 仍聚合完整结果
             }
             llm = ChatOpenAI(**llm_kwargs)
 
         logger.info(
-            "Initialized LLM: provider=%s, model=%s, base_url=%s, timeout=%ss, max_retries=%s",
+            "Initialized LLM: provider=%s, model=%s, base_url=%s, timeout=%ss, max_retries=%s, streaming=%s",
             provider,
             model_identifier,
             base_url,
             request_timeout,
             max_retries,
+            streaming if provider != "deepseek" else "n/a",
         )
     except Exception as e:
         logger.error(
@@ -1910,6 +1917,9 @@ def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
                                 image = image_urls[0]
                     else:
                         content = raw_content
+                    # UI 账密会话：剥掉凭据标记再落库（标记只允许存在于发给
+                    # LLM 的消息里，历史存储与前端展示不含凭据）
+                    content = strip_ui_credential_marker(content)
                 elif isinstance(msg, AIMessage):
                     role = "ai"
                     raw_content = msg.content if hasattr(msg, "content") else str(msg)
@@ -1922,6 +1932,8 @@ def sync_chat_messages_from_checkpointer(chat_session, user, thread_id):
                         content = " ".join(text_parts) if text_parts else ""
                     else:
                         content = raw_content
+                    # AI 回复若原样复述了凭据标记（概率低），落库前同样剥掉
+                    content = strip_ui_credential_marker(content)
 
 
 

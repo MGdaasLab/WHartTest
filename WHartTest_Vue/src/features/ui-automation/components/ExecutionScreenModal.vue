@@ -177,9 +177,10 @@ watch(
       }, 15000)
       nextTick(fitCanvas)
     } else if (startedExec.value) {
-      // 关闭画布即中断执行（执行器 u_stop_execution；录制器浏览器路径同样处理）
+      // 关闭画布即中断该用例执行（u_stop_execution 携带 case_id 精确停止；
+      // 不带目标会广播到全部执行器，误杀同执行器上正在运行的其他任务）
       if (!finished.value) {
-        uiWebSocket.stopExecution()
+        uiWebSocket.stopExecution(props.taskId != null ? String(props.taskId) : undefined)
       }
       startedExec.value = false
     }

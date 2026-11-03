@@ -323,6 +323,16 @@ const processDiffData = () => {
 }
 
 // 格式化值的显示
+// HTML 转义：值内容（接口配置字段，用户可控）必须先转义再包高亮 span，
+// 否则 <img src=x onerror=...> 之类的载荷会经 v-html 直接执行（XSS）。
+const escapeHtml = (value: string): string =>
+  value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+
 const formatValue = (value: any): string => {
   if (value === undefined) return text.value.notSet
   if (value === null) return 'null'
@@ -331,6 +341,9 @@ const formatValue = (value: any): string => {
       const formatted = JSON.stringify(value, null, 1)
         .split('\n')
         .map((line, index) => {
+          // 注意：必须先用「原始文本」做分类判断，再对插入 HTML 的内容片段转义。
+          // 若提前整行转义，key 去引号与行首引号判断会失效（键会渲染出可见的
+          // &quot;，数组字符串分支变成死代码），且会与下面的片段转义叠加成双重转义。
           const indentMatch = line.match(/^(\s*)/)
           const indent = indentMatch ? indentMatch[1].length : 0
           
@@ -338,34 +351,34 @@ const formatValue = (value: any): string => {
           if (line.includes(':')) {
             const [key, ...rest] = line.split(':')
             const value = rest.join(':')
-            return `${' '.repeat(indent)}<span class="text-blue-400">${key.replace(/[",]/g, '')}</span>:${value}`
+            return `${' '.repeat(indent)}<span class="text-blue-400">${escapeHtml(key.replace(/[",]/g, ''))}</span>:${escapeHtml(value)}`
           }
           
           // 处理数组项
           if (line.trim().startsWith('"')) {
-            return `${' '.repeat(indent)}<span class="text-green-400">${line}</span>`
+            return `${' '.repeat(indent)}<span class="text-green-400">${escapeHtml(line)}</span>`
           }
           
           // 处理数字
           if (/^(\s*)-?\d+/.test(line)) {
-            return `${' '.repeat(indent)}<span class="text-yellow-400">${line}</span>`
+            return `${' '.repeat(indent)}<span class="text-yellow-400">${escapeHtml(line)}</span>`
           }
           
           // 处理布尔值和 null
           if (/true|false|null/.test(line)) {
-            return `${' '.repeat(indent)}<span class="text-purple-400">${line}</span>`
+            return `${' '.repeat(indent)}<span class="text-purple-400">${escapeHtml(line)}</span>`
           }
           
           // 处理括号和逗号
-          return line.replace(/[{}\[\],]/g, match => `<span class="text-gray-500">${match}</span>`)
+          return escapeHtml(line).replace(/[{}\[\],]/g, match => `<span class="text-gray-500">${match}</span>`)
         })
         .join('\n')
       return formatted
     } catch (e) {
-      return String(value)
+      return escapeHtml(String(value))
     }
   }
-  return String(value)
+  return escapeHtml(String(value))
 }
 
 // 获取字段说明

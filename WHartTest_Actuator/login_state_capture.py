@@ -2,12 +2,14 @@
 """UI自动化登录态采集工具。
 
 在浏览器中打开目标系统登录页，人工完成登录（可包含验证码），
-登录成功后保存 Playwright storageState 快照（cookies + localStorage），
+登录成功后保存登录态快照（cookies + localStorage + sessionStorage），
 供执行任务时通过 auth.storage_state 复用。
 
-一套快照同时兼容两类认证系统，无需关心目标系统类型：
+一套快照同时兼容三类认证系统，无需关心目标系统类型：
 - Cookie/Session 会话系统：快照中的 cookies 恢复会话
 - JWT / token 现代系统：快照中的 localStorage 恢复前端 token（路由守卫/请求拦截器）
+- sessionStorage 系（如 RuoYi 系脚手架）：快照中的 session_storage 扩展字段
+  （Playwright storageState 不含 sessionStorage，需按页面 origin 单独采集）
 
 用法：
     python login_state_capture.py --url https://your-system.com/login --output data/auth.json
@@ -30,6 +32,34 @@ from playwright.async_api import async_playwright
 logger = logging.getLogger("login_state_capture")
 
 DEFAULT_LOGIN_PATTERN = r"login|signin|sign_in|auth|sso|passport"
+
+
+async def _capture_session_storage(context) -> list:
+    """按页面 origin 采集 sessionStorage（storageState 不含 sessionStorage）。"""
+    by_origin = {}
+    for page in context.pages:
+        for frame in page.frames:
+            try:
+                items = await frame.evaluate(
+                    "(() => { const o = {};"
+                    "for (let i = 0; i < sessionStorage.length; i++) {"
+                    "const k = sessionStorage.key(i); o[k] = sessionStorage.getItem(k);"
+                    "} return o; })()"
+                )
+                origin = re.match(r"^\w+://[^/]+", frame.url)
+                origin = origin.group(0) if origin else ""
+            except Exception:
+                continue  # about:blank / 已销毁的 frame，跳过
+            if not items or not origin:
+                continue
+            by_origin.setdefault(origin, {}).update(
+                {str(k): str(v) for k, v in items.items() if v is not None}
+            )
+    return [
+        {"origin": origin, "sessionStorage": [{"name": k, "value": v} for k, v in kv.items()]}
+        for origin, kv in by_origin.items()
+        if kv
+    ]
 
 
 async def _run(
@@ -91,15 +121,20 @@ async def _run(
                     await asyncio.sleep(1)
 
             state = await context.storage_state()
+            session_origins = await _capture_session_storage(context)
+            if session_origins:
+                state["session_storage"] = session_origins
             with open(out_path, "w", encoding="utf-8") as f:
                 json.dump(state, f, ensure_ascii=False, indent=2)
 
             cookies = len(state.get("cookies") or [])
             origins = state.get("origins") or []
             ls_total = sum(len(o.get("localStorage") or []) for o in origins)
+            ss_total = sum(len(o.get("sessionStorage") or []) for o in session_origins)
             print(
                 f"登录态已保存: {out_path} "
-                f"(cookies={cookies}, localStorage origins={len(origins)}, keys={ls_total})"
+                f"(cookies={cookies}, localStorage origins={len(origins)}, keys={ls_total}, "
+                f"sessionStorage keys={ss_total})"
             )
         finally:
             await browser.close()

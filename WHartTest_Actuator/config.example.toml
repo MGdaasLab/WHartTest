@@ -13,7 +13,14 @@ use_gui = true
 # API认证用户名（仅 use_gui=false 时有效）
 api_username = "admin"
 # API认证密码（仅 use_gui=false 时有效）
-api_password = "admin123"
+# 安全：不内置默认口令，请改为实际密码（或改用 api_key 认证）
+api_password = ""
+# WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 保持一致（后端严格模式必填）
+ws_token = ""
+# API Key（可选，优先级高于账号密码）。配置后执行器用 X-API-Key 头认证，
+# 不再调用 /api/token/ 登录，不会触发后端「单设备登录」挤占浏览器会话。
+# 容器部署推荐用环境变量 WHARTTEST_ACTUATOR_API_KEY 注入。
+# api_key = "xxxxxxxx"
 
 [actuator]
 # 执行器名称（可选，默认自动生成）
@@ -34,6 +41,10 @@ user_data_dir = "./data/browser"
 launch_timeout = 30
 # 操作超时（秒）
 action_timeout = 30
+# 是否隐藏自动化特征（仅 Chromium 注入启动参数；所有浏览器注入 context 初始化脚本）
+stealth_enabled = true
+# 自定义 User-Agent（留空使用执行器默认值）
+# stealth_user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 [execution]
 # 失败重试次数

@@ -26,6 +26,7 @@ from .openapi import (
     build_openapi_document,
     import_openapi_interfaces,
 )
+from .constraint_extractor import extract_constraints_from_document
 from .exchange import dump_api_document, fetch_api_document, parse_api_document
 from .runner import InterfaceRunner
 from api_environments.services import persist_project_extract_variables
@@ -69,8 +70,8 @@ class ApiInterfaceViewSet(BaseModelViewSet):
     def get_queryset(self):
         project_pk = self.kwargs.get('project_pk')
         queryset = ApiInterface.objects.filter(project_id=project_pk).select_related(
-            'module', 'created_by'
-        )
+            'module', 'created_by', 'constraint',
+        ).prefetch_related('constraint')
 
         no_module = self.request.query_params.get('no_module')
         if no_module and no_module.lower() in ('true', '1', 'yes'):
@@ -130,18 +131,6 @@ class ApiInterfaceViewSet(BaseModelViewSet):
         strip_base_url = _parse_bool(request.data.get('strip_base_url'), default=True)
         create_environments = _parse_bool(request.data.get('create_environments'), default=False)
 
-        # 导入位置模式：create_module（创建新模块）/ existing_module（使用已有模块）
-        import_mode = str(request.data.get('import_mode') or '').strip()
-        if import_mode in ('', 'auto', 'legacy'):
-            import_mode = ''
-        import_mode = import_mode or None
-        module_name = str(request.data.get('module_name') or '')
-        try:
-            target_module_id = request.data.get('module_id', request.data.get('target_module_id'))
-            target_module_id = int(target_module_id) if target_module_id not in (None, '') else None
-        except (TypeError, ValueError):
-            target_module_id = None
-
         try:
             if source_url:
                 content, filename = fetch_api_document(str(source_url))
@@ -171,9 +160,7 @@ class ApiInterfaceViewSet(BaseModelViewSet):
                 view=self,
                 strip_base_url=strip_base_url,
                 create_environments=create_environments,
-                import_mode=import_mode,
-                module_name=module_name,
-                target_module_id=target_module_id,
+                document_name=filename or '',
             )
             result['format'] = parsed.source_format
             result['version'] = parsed.source_version
@@ -182,6 +169,185 @@ class ApiInterfaceViewSet(BaseModelViewSet):
 
         response_status = status.HTTP_201_CREATED if result['created_count'] else status.HTTP_200_OK
         return Response(result, status=response_status)
+
+    @action(
+        detail=False,
+        methods=['post'],
+        url_path='extract-constraints',
+        parser_classes=[MultiPartParser, FormParser, JSONParser],
+    )
+    def extract_constraints(self, request, *args, **kwargs):
+        """从接口文档中提取选中接口的参数约束，供 AI 生成接口测试用例使用。"""
+        from projects.models import Project
+
+        project = get_object_or_404(Project, pk=self.kwargs.get('project_pk'))
+        upload = request.FILES.get('file')
+        filename = getattr(upload, 'name', '') if upload else ''
+        source_type = str(request.data.get('source_type') or '')
+        source_url = request.data.get('source_url')
+        strip_base_url = _parse_bool(request.data.get('strip_base_url'), default=True)
+
+        raw_targets = request.data.get('interface_ids')
+        if isinstance(raw_targets, str):
+            try:
+                raw_targets = json.loads(raw_targets)
+            except (TypeError, json.JSONDecodeError):
+                raw_targets = None
+        if not isinstance(raw_targets, list) or not raw_targets:
+            return Response(
+                {'detail': '请提供要提取约束的接口 ID 列表 interface_ids。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            target_ids = [int(item) for item in raw_targets]
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'interface_ids 必须是接口 ID 数组。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        interfaces = (
+            ApiInterface.objects.filter(project=project, id__in=target_ids, type=ApiInterface.TYPE_HTTP)
+            .select_related('module')
+        )
+        interface_map = {item.id: item for item in interfaces}
+        missing_ids = [item_id for item_id in target_ids if item_id not in interface_map]
+        if missing_ids:
+            return Response(
+                {'detail': f'以下接口不存在或不属于当前项目/非 HTTP 类型：{missing_ids}。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        targets = [
+            {
+                'interface_id': item.id,
+                'name': item.name,
+                'method': (item.method or '').upper(),
+                'url': item.url or '',
+            }
+            for item in interfaces
+        ]
+
+        try:
+            if source_url:
+                content, filename = fetch_api_document(str(source_url))
+                source_type = 'swagger'
+            elif upload:
+                content = upload.read()
+            else:
+                content = request.data.get('document', request.data.get('content'))
+
+            if content in (None, ''):
+                return Response(
+                    {'detail': '请提供接口文档（文件 / Swagger URL / 文本）。'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            result = extract_constraints_from_document(
+                content,
+                targets,
+                filename=filename,
+                source_type=source_type,
+                strip_base_url=strip_base_url,
+            )
+        except OpenAPIError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        # 持久化：提取成功的接口固化约束快照，后续生成用例无需再传文档
+        from .constraint_store import store_interface_constraints
+        from .models import ApiInterfaceConstraint
+
+        matched_ids = [
+            item.get('interface_id') for item in result.get('interfaces', [])
+            if item.get('matched') and item.get('interface_id') in interface_map
+        ]
+        if matched_ids:
+            try:
+                parsed_doc = parse_api_document(
+                    content,
+                    filename=filename,
+                    source_type=source_type,
+                    strip_base_url=strip_base_url,
+                )
+                store_interface_constraints(
+                    project=project,
+                    document=parsed_doc.document,
+                    document_format=result.get('format', ''),
+                    document_version=result.get('version', ''),
+                    document_name=filename or '',
+                    interface_ids=matched_ids,
+                )
+            except OpenAPIError as exc:
+                logger.warning('persist constraints after extract failed: %s', exc)
+
+        return Response({
+            **result,
+            'persisted': ApiInterfaceConstraint.objects.filter(
+                interface_id__in=[item.id for item in interfaces],
+            ).values_list('interface_id', flat=True),
+        })
+
+    @action(detail=False, methods=['get'], url_path='constraints')
+    def constraints(self, request, *args, **kwargs):
+        """查询已固化的接口参数约束（按接口 ID 批量）。
+
+        GET /api-interfaces/constraints/?interface_ids=1,2,3
+        返回 {constraints: [{interface_id, name, method, url, format, version,
+        document_name, constraints, updated_at}], missing: [无约束的接口 ID]}
+        """
+        from .models import ApiInterfaceConstraint
+
+        raw_ids = request.query_params.get('interface_ids', '')
+        try:
+            target_ids = [int(item) for item in raw_ids.split(',') if item.strip()]
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'interface_ids 必须是逗号分隔的接口 ID。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not target_ids:
+            return Response(
+                {'detail': '请提供要查询约束的接口 ID 列表 interface_ids。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        interfaces = ApiInterface.objects.filter(
+            project_id=self.kwargs.get('project_pk'),
+            id__in=target_ids,
+        )
+        interface_map = {item.id: item for item in interfaces}
+        missing_ids = [item_id for item_id in target_ids if item_id not in interface_map]
+        if missing_ids:
+            return Response(
+                {'detail': f'以下接口不存在或不属于当前项目：{missing_ids}。'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        records = (
+            ApiInterfaceConstraint.objects
+            .filter(interface_id__in=target_ids)
+            .select_related('interface')
+        )
+        items = [
+            {
+                'interface_id': record.interface_id,
+                'name': record.interface.name,
+                'method': record.interface.method,
+                'url': record.interface.url,
+                'matched': record.matched,
+                'format': record.document_format,
+                'version': record.document_version,
+                'document_name': record.document_name,
+                'constraints': record.constraints,
+                'updated_at': record.updated_at,
+            }
+            for record in records
+        ]
+        constraint_ids = {item['interface_id'] for item in items}
+        return Response({
+            'constraints': items,
+            'missing': [item_id for item_id in target_ids if item_id not in constraint_ids],
+        })
 
     @action(detail=False, methods=['get'], url_path='export-openapi')
     def export_openapi(self, request, *args, **kwargs):
@@ -311,6 +477,21 @@ class ApiInterfaceViewSet(BaseModelViewSet):
         serializer = self.get_serializer(data=duplicate_data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+
+        # 复制接口时同步复制约束快照，副本与源接口共用同一份文档解析结果
+        from .models import ApiInterfaceConstraint
+
+        source_constraint = getattr(source, 'constraint', None)
+        if source_constraint is not None:
+            ApiInterfaceConstraint.objects.create(
+                interface=serializer.instance,
+                document_format=source_constraint.document_format,
+                document_version=source_constraint.document_version,
+                document_name=source_constraint.document_name,
+                matched=source_constraint.matched,
+                constraints=deepcopy(source_constraint.constraints),
+            )
+
         headers = self.get_success_headers(serializer.data)
         return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 

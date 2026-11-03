@@ -88,3 +88,59 @@ def resolve_runtime_file_path(file_path: str) -> str:
         return str(target_root / PurePosixPath(*suffix_parts))
 
     return file_path
+
+
+def trusted_upload_roots() -> list[Path]:
+    """允许平台下发路径落点的可信根目录列表。
+
+    默认信任两类目录：
+    1. 上传缓存目录（平台按 file_id 拉取后的落地处）
+    2. 平台数据目录（容器挂载的 media，对应后端 FileField 路径映射目标）
+    运维可用 ``WHARTTEST_ACTUATOR_TRUSTED_UPLOAD_ROOTS`` 追加（逗号分隔绝对路径）。
+    """
+    roots: list[Path] = []
+
+    upload_cache = os.environ.get(
+        'WHARTTEST_ACTUATOR_UPLOAD_CACHE_DIR', './data/runtime_uploads'
+    )
+    roots.append(Path(upload_cache).resolve())
+
+    container_data = os.environ.get(
+        'WHARTTEST_ACTUATOR_CONTAINER_DATA_DIR', '/app/data'
+    )
+    roots.append(Path(container_data).resolve())
+
+    # 非容器部署（后端与执行器同机）时，后端下发的是本机 MEDIA_ROOT 绝对路径
+    # （默认 <BASE_DIR>/media，配置 MEDIA_ROOT=../data/media 时为 <repo>/data/media），
+    # 因此把本机 media 目录也纳入可信根，否则平台文件会被误拒。
+    media_root = os.environ.get('WHARTTEST_ACTUATOR_MEDIA_ROOT', '')
+    if media_root:
+        roots.append(Path(media_root).resolve())
+
+    extra = os.environ.get('WHARTTEST_ACTUATOR_TRUSTED_UPLOAD_ROOTS', '')
+    for item in extra.split(','):
+        item = item.strip()
+        if item:
+            roots.append(Path(item).resolve())
+
+    return roots
+
+
+def is_path_within(file_path: str | os.PathLike, root: str | os.PathLike) -> bool:
+    """判断真实路径是否位于 root 之内（两侧都过 realpath，防符号链接逃逸）。"""
+    try:
+        resolved = Path(file_path).resolve()
+        root_resolved = Path(root).resolve()
+        resolved.relative_to(root_resolved)
+        return True
+    except (ValueError, OSError):
+        return False
+
+
+def is_trusted_upload_path(file_path: str | os.PathLike) -> bool:
+    """路径是否落在任一可信根内。
+
+    平台任务数据（用例步骤）属于不可信输入：不限定落点的话，
+    ``upload`` 步骤可让执行器读取其所在机器上的任意文件并上传到被测页面。
+    """
+    return any(is_path_within(file_path, root) for root in trusted_upload_roots())

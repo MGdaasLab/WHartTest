@@ -26,7 +26,7 @@ except ImportError:
 
 # 配置（运行时读取环境变量，避免 import 时固化）
 _DEFAULT_BASE_URL = "http://127.0.0.1:8000"
-_DEFAULT_API_KEY = "wharttest-default-mcp-key-2025"
+_DEFAULT_API_KEY = ""  # 安全：不再内置默认密钥，必须由 WHARTTEST_API_KEY 注入
 
 
 def _base_url() -> str:
@@ -43,6 +43,80 @@ def _headers() -> dict:
         "Content-Type": "application/json",
         "X-API-Key": _api_key(),
     }
+
+
+# ==================== WS 连接凭据（API Key → JWT 兑换） ====================
+# /ws/ui/web/ 认证中间件只认 SimpleJWT access token（query 参数 token），
+# 未携带或无效时连接被立即关闭（close code 4401）。skill 持有的是长效
+# API Key，需先经 POST /api/api-keys/exchange-token/ 兑换短时效 JWT 再连 WS。
+
+_ws_token_cache = {"token": "", "expires_at": 0.0}
+
+
+def _get_ws_token(force_refresh: bool = False) -> str:
+    """用 API Key 兑换 WS 连接用 JWT（进程内缓存，过期前 60 秒主动刷新）。"""
+    import time as _time
+
+    now = _time.time()
+    if (
+        not force_refresh
+        and _ws_token_cache["token"]
+        and now < _ws_token_cache["expires_at"] - 60
+    ):
+        return _ws_token_cache["token"]
+
+    api_key_value = _api_key()
+    if not api_key_value:
+        raise RuntimeError(
+            "未配置 WHARTTEST_API_KEY，无法兑换 WebSocket 连接凭据；"
+            "请在技能环境变量中设置后再执行"
+        )
+    resp = requests.post(
+        f"{_base_url()}/api/api-keys/exchange-token/",
+        headers={"X-API-Key": api_key_value},
+        timeout=15,
+    )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"兑换 WebSocket 连接凭据失败 HTTP {resp.status_code}: {resp.text[:200]}；"
+            "请检查 WHARTTEST_API_KEY 是否有效（未禁用/未过期）"
+        )
+    body = resp.json() or {}
+    # 兼容两层结构：平台 UnifiedResponseRenderer 包装后 token 在 body.data；
+    # 若后端未启用统一渲染器则退化为 body 本身
+    data = body.get("data") if isinstance(body.get("data"), dict) else body
+    token = data.get("access") or ""
+    if not token:
+        raise RuntimeError(
+            f"兑换 WebSocket 连接凭据失败：响应中无 access token（响应体: {str(body)[:200]}）"
+        )
+    _ws_token_cache["token"] = token
+    _ws_token_cache["expires_at"] = now + int(data.get("expires_in") or 300)
+    return token
+
+
+def _ws_url_with_token() -> str:
+    """构造带认证 token 的 /ws/ui/web/ 连接地址。"""
+    return (
+        _base_url().replace('http://', 'ws://').replace('https://', 'wss://')
+        + '/ws/ui/web/?token='
+        + _get_ws_token()
+    )
+
+
+def _ws_auth_failure_message(close_code) -> str:
+    """把 WS 关闭码翻译成可行动的错误说明（4401=认证失败）。"""
+    if close_code == 4401:
+        return (
+            "WebSocket 连接被拒绝（close 4401：认证失败）。token 已兑换仍被拒，"
+            "通常是后端 SIMPLE_JWT 密钥轮换或 token 过期，请重试；多次失败请检查 "
+            "WHARTTEST_API_KEY 与后端部署是否匹配"
+        )
+    if close_code == 4403:
+        return "WebSocket 连接被拒绝（close 4403：凭据类型与端点不匹配）"
+    if close_code == 4409:
+        return "WebSocket 连接被拒绝（close 4409：执行器 ID 冲突）"
+    return f"WebSocket 连接异常关闭（close code {close_code}）"
 
 
 # 兼容旧引用
@@ -363,13 +437,21 @@ def create_page_step(project_id: int, page_id: int, module_id: int, name: str, d
     return result
 
 
-def update_page_step(step_id: int, name: str = None, description: str = None):
-    """更新页面步骤"""
+def update_page_step(step_id: int, name: str = None, description: str = None,
+                     auth_state_id: int = None, clear_auth_state: bool = False):
+    """更新页面步骤
+
+    auth_state_id: 绑定登录态（执行时优先注入）；clear_auth_state 传 True 清空绑定
+    """
     data = {}
     if name:
         data["name"] = name
     if description:
         data["description"] = description
+    if auth_state_id is not None:
+        data["auth_state_id"] = auth_state_id
+    elif clear_auth_state:
+        data["auth_state_id"] = None
     result = _request("PATCH", f"page-steps/{step_id}/", data=data)
     if result.get("status") == "success" or result.get("data"):
         return {"status": "success", "message": "页面步骤更新成功", "data": result.get("data", result)}
@@ -551,10 +633,45 @@ def get_execution_record(record_id: int):
 
 
 def get_execution_trace(record_id: int, refresh: bool = False):
-    """获取执行记录的 Trace 数据"""
+    """获取执行记录的 Trace 数据（过滤截图/base64 并截断，防止超长输出）"""
     params = {"refresh": "1"} if refresh else {}
     result = _request("GET", f"execution-records/{record_id}/trace/", params=params)
-    return result
+    data = result.get("data", result)
+    filtered = _filter_images(data)
+    text = json.dumps(filtered, ensure_ascii=False)
+    # Trace 原始数据可达数十 MB（含截图与 DOM 快照），超限截断只保留结构摘要
+    if len(text) > 100_000:
+        summary = _summarize_trace(filtered)
+        head = text[:20_000]
+        return {
+            "status": "truncated",
+            "message": f"Trace 原始数据 {len(text)} 字符，已截断。以下为结构摘要 + 前 20000 字符；"
+                       f"分析步骤失败原因请改用 get_execution_record（已过滤截图）。",
+            "summary": summary,
+            "head": head,
+        }
+    return filtered
+
+
+def _summarize_trace(data, depth: int = 0) -> dict:
+    """提取 trace 的结构摘要：步骤名/状态/错误消息，跳过截图与快照内容。"""
+    if depth > 4 or not isinstance(data, dict):
+        return {}
+    summary = {}
+    for k, v in data.items():
+        if k in ('screenshots', 'screenshot', 'image', 'images', 'base64', 'snapshots',
+                 'network_logs', 'console_logs', 'har_data', 'network_requests', 'source'):
+            continue
+        if k in ('error_message', 'message', 'status', 'name', 'title', 'step_name', 'url'):
+            summary[k] = str(v)[:300]
+        elif isinstance(v, list):
+            summary[k] = [
+                _summarize_trace(item, depth + 1) if isinstance(item, dict) else str(item)[:200]
+                for item in v[:30]
+            ]
+        elif isinstance(v, dict):
+            summary[k] = _summarize_trace(v, depth + 1)
+    return summary
 
 
 def delete_execution_record(record_id: int):
@@ -635,6 +752,140 @@ def delete_env_config(config_id: int):
     return {"status": "success", "message": "环境配置删除成功"}
 
 
+# ==================== 环境登录态管理 ====================
+
+def _resolve_auth_state_file(state_file: str):
+    """把 create_auth_state 传入的 state_file 解析为可读文件路径，找不到返回 None。
+
+    skill 沙箱（skill-runner）引入后，state-save 的工作目录与本工具的 cwd 可能
+    不一致：文件实际落在共享的 SCREENSHOT_DIR / SKILL_OUTPUT_DIR，或模型直接把
+    附件里的 skill_runtime/... 相对路径、/media/... URL 传进来。这里按候选顺序
+    兜底解析，避免模型在多种路径形态上反复试错。为防越权读取，解析结果必须
+    落在既有的可信根（文件原路径、已注入的环境目录、MEDIA_ROOT 等价物）内。
+    """
+    raw = (state_file or "").strip().strip('"').strip("'")
+    if not raw:
+        return None
+
+    candidates = []
+
+    def _push(path):
+        if path and path not in candidates:
+            candidates.append(path)
+
+    _push(raw)
+    # ./ 前缀与 cwd 相对形式
+    _push(os.path.abspath(raw))
+
+    # 模型常见形态 1：附件 path 是相对 MEDIA_ROOT 的 skill_runtime/...，
+    # 在 backend 侧需拼接 MEDIA_ROOT 才能命中（media 根可由 WHARTTEST_MEDIA_ROOT
+    # 指定，缺省按 backend/runner 容器约定 /app/data/media 兜底）
+    normalized = raw.replace("\\", "/").lstrip("./")
+    for root in (
+        os.environ.get("WHARTTEST_MEDIA_ROOT", ""),
+        # backend 与 runner 共享挂载在容器内多为 /app/data/media
+        "/app/data/media",
+    ):
+        if root:
+            _push(os.path.join(root, normalized))
+    # /media/... URL 前缀形态 → 取 media/ 之后的部分
+    idx = normalized.find("media/")
+    if idx >= 0:
+        tail = normalized[idx + len("media/"):]
+        for root in (
+            os.environ.get("WHARTTEST_MEDIA_ROOT", ""),
+            "/app/data/media",
+        ):
+            if root:
+                _push(os.path.join(root, tail))
+
+    # 模型常见形态 2：裸文件名或相对名，实际落在平台注入的产物/截图目录
+    for env_name in ("WHARTTEST_UI_AUTH_STATE_DIR", "SKILL_OUTPUT_DIR",
+                     "ARTIFACT_DIR", "SCREENSHOT_DIR"):
+        env_dir = os.environ.get(env_name, "").strip()
+        if env_dir:
+            _push(os.path.join(env_dir, os.path.basename(raw)))
+            _push(os.path.join(env_dir, normalized))
+
+    # 模型常见形态 3：state-save 与本命令的 case_dir_key 不一致（模型调
+    # create_auth_state 时没传 session_id，两次的 SCREENSHOT_DIR 指向
+    # screenshots/<project>/ 下不同的子目录）。向上在兄弟目录中找同名文件——
+    # 只搜 SCREENSHOT_DIR/SKILL_OUTPUT_DIR 的同级目录，不越出项目产物根。
+    for env_name in ("SCREENSHOT_DIR", "SKILL_OUTPUT_DIR", "ARTIFACT_DIR"):
+        env_dir = os.environ.get(env_name, "").strip()
+        if not env_dir:
+            continue
+        parent = os.path.dirname(os.path.abspath(env_dir))
+        base = os.path.basename(raw)
+        try:
+            if not os.path.isdir(parent):
+                continue
+            for entry in os.scandir(parent):
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+                candidate = os.path.join(entry.path, base)
+                _push(candidate)
+                nested = os.path.join(candidate, normalized)
+                if normalized != base:
+                    _push(nested)
+        except OSError:
+            continue
+
+    # 已注入的登录态快照目录（UI 生成会话）
+    injected = os.environ.get("WHARTTEST_UI_AUTH_STATE_FILE", "").strip()
+    if injected:
+        _push(os.path.join(os.path.dirname(injected), os.path.basename(raw)))
+
+    for candidate in candidates:
+        try:
+            if os.path.isfile(candidate):
+                return os.path.abspath(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def create_auth_state(env_config_id: int, name: str, state_file: str, description: str = ""):
+    """从 storageState 文件创建环境登录态
+
+    state_file: Playwright storageState JSON 文件路径。
+                支持绝对路径、相对路径、附件里的 skill_runtime/... 相对路径、
+                /media/... URL 前缀路径，以及裸文件名（自动到平台产物目录匹配）。
+    """
+    resolved_file = _resolve_auth_state_file(state_file)
+    if not resolved_file:
+        return {
+            "status": "error",
+            "message": (
+                f"登录态文件不存在: {state_file}。"
+                "请先执行 playwright-cli state-save 保存登录态，"
+                "并把 state-save 输出中 [Storage state](...) 指向的文件路径"
+                "（或本次会话 SCREENSHOT_DIR 下的文件名）作为 state_file 传入。"
+            ),
+        }
+    state_file = resolved_file
+    try:
+        with open(state_file, "r", encoding="utf-8") as fh:
+            state_json = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return {"status": "error", "message": f"登录态文件读取失败: {exc}"}
+    data = {
+        "env_config": env_config_id,
+        "name": name,
+        "state_json": state_json,
+        "is_active": True,
+    }
+    if description:
+        data["description"] = description
+    result = _request("POST", "auth-states/", data=data)
+    if result.get("status") == "success" or result.get("data"):
+        created = result.get("data", result) or {}
+        if isinstance(created, dict):
+            created.pop("state_json", None)
+        return {"status": "success", "message": "登录态创建成功", "data": created}
+    return result
+
+
 # ==================== 执行器管理 ====================
 
 def get_actuators():
@@ -675,29 +926,33 @@ except ImportError:
     WEBSOCKET_AVAILABLE = False
 
 
-def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: str = None, wait_result: bool = True, timeout: int = 120):
+def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: str = None, wait_result: bool = True, timeout: int = 120, _ws_retry: bool = True):
     """
     执行测试用例
-    
+
     Args:
         testcase_id: 测试用例 ID
         env_config_id: 环境配置 ID（可选，不传使用默认配置）
         actuator_id: 执行器 ID（可选，不传自动选择可用执行器）
         wait_result: 是否等待执行结果（默认 True）
         timeout: 等待超时时间（秒，默认 120）
-    
+        _ws_retry: 内部参数——4401 重兑 token 后自动重试一次，防凭据轮换误伤
+
     Returns:
         执行结果或任务状态
     """
     if not WEBSOCKET_AVAILABLE:
         return {"status": "error", "message": "执行功能需要 websocket-client 模块，请运行: pip install websocket-client"}
-    
+
     import threading
     import time
-    
-    # WebSocket 地址
-    ws_url = _base_url().replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
-    
+
+    try:
+        # WebSocket 地址（带 API Key 兑换的 JWT；4401 时强制重兑一次再连）
+        ws_url = _ws_url_with_token()
+    except RuntimeError as exc:
+        return {"status": "error", "message": str(exc)}
+
     result = {"status": "pending", "message": "任务已发送"}
     execution_done = threading.Event()
     
@@ -731,7 +986,21 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
         nonlocal result
         result = {"status": "error", "message": str(error)}
         execution_done.set()
-    
+
+    def on_close(ws, close_status_code, close_msg):
+        nonlocal result
+        # 认证被拒：强制重兑 token，供调用方重试；其余关闭码不在此处理
+        if close_status_code == 4401:
+            try:
+                _get_ws_token(force_refresh=True)
+                result = {"status": "error", "message": _ws_auth_failure_message(close_status_code)}
+            except RuntimeError as exc:
+                result = {"status": "error", "message": str(exc)}
+            execution_done.set()
+        elif close_status_code in (4403, 4409) and result.get("status") == "pending":
+            result = {"status": "error", "message": _ws_auth_failure_message(close_status_code)}
+            execution_done.set()
+
     def on_open(ws):
         # 发送执行命令，包含执行人信息
         cmd = {
@@ -770,17 +1039,29 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
         on_message=on_message,
         on_error=on_error,
         on_open=on_open,
+        on_close=on_close,
     )
-    
+
     # 在后台线程运行 WebSocket
     ws_thread = threading.Thread(target=ws.run_forever)
     ws_thread.daemon = True
     ws_thread.start()
-    
+
     if wait_result:
         # 等待执行结果
         if execution_done.wait(timeout=timeout):
             ws.close()
+            # token 被拒已强制重兑：自动重连一次，避免整次执行因凭据轮换报废；
+            # _ws_retry=False 表示已在重试中，不再递归（后端持续 4401 时如实报错）
+            if _ws_retry and result.get("status") == "error" and "4401" in str(result.get("message", "")):
+                return execute_testcase(
+                    testcase_id=testcase_id,
+                    env_config_id=env_config_id,
+                    actuator_id=actuator_id,
+                    wait_result=wait_result,
+                    timeout=timeout,
+                    _ws_retry=False,
+                )
             return result
         else:
             ws.close()
@@ -795,7 +1076,20 @@ def execute_testcase(testcase_id: int, env_config_id: int = None, actuator_id: s
                 })
             return {"status": "timeout", "message": f"等待执行结果超时 ({timeout}s)"}
     else:
-        # 不等待，直接返回
+        # 不等待，直接返回：确认连接真正建立（未被 4401 等拒绝）后才报"已发送"，
+        # 避免命令实际未送达却返回成功
+        if execution_done.wait(timeout=10) and result.get("status") == "error":
+            ws.close()
+            if _ws_retry and "4401" in str(result.get("message", "")):
+                return execute_testcase(
+                    testcase_id=testcase_id,
+                    env_config_id=env_config_id,
+                    actuator_id=actuator_id,
+                    wait_result=False,
+                    timeout=timeout,
+                    _ws_retry=False,
+                )
+            return result
         time.sleep(1)  # 等待命令发送
         ws.close()
         return {"status": "sent", "message": "执行命令已发送，请稍后查询执行记录"}
@@ -812,12 +1106,21 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
     """
     if not WEBSOCKET_AVAILABLE:
         return {"status": "error", "message": "执行功能需要 websocket-client 模块，请运行: pip install websocket-client"}
-    
+
     import time
-    
-    ws_url = _base_url().replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/ui/web/'
+
+    try:
+        ws_url = _ws_url_with_token()
+    except RuntimeError as exc:
+        return {"status": "error", "message": str(exc)}
     result = {"status": "sent", "message": "执行命令已发送"}
-    
+
+    def on_close(ws, close_status_code, close_msg):
+        # 连接级认证失败时如实上报，避免"已发送"假象
+        if close_status_code in (4401, 4403, 4409):
+            result["status"] = "error"
+            result["message"] = _ws_auth_failure_message(close_status_code)
+
     def on_open(ws):
         cmd = {
             "data": {
@@ -835,7 +1138,7 @@ def execute_page_steps(step_id: int, env_config_id: int = None, actuator_id: str
         time.sleep(1)
         ws.close()
     
-    ws = websocket.WebSocketApp(ws_url, on_open=on_open)
+    ws = websocket.WebSocketApp(ws_url, on_open=on_open, on_close=on_close)
     ws.run_forever()
     return result
 
@@ -892,6 +1195,10 @@ def main():
     parser.add_argument("--record_id", type=int, help="执行记录 ID")
     parser.add_argument("--batch_id", type=int, help="批量执行记录 ID")
     parser.add_argument("--config_id", type=int, help="环境配置 ID")
+    parser.add_argument("--env_config_id", type=int, help="环境配置 ID（登录态归属的环境）")
+    parser.add_argument("--state_file", help="storageState JSON 文件路径（创建登录态用）")
+    parser.add_argument("--auth_state_id", type=int, help="登录态 ID（页面步骤绑定登录态用）")
+    parser.add_argument("--clear_auth_state", action="store_true", help="清空页面步骤的登录态绑定")
     parser.add_argument("--status", type=int, help="状态")
     parser.add_argument("--limit", type=int, default=20, help="限制返回数量")
     parser.add_argument("--refresh", action="store_true", help="强制刷新")
@@ -938,6 +1245,7 @@ def main():
             args.element_id,
             name=args.name, locator_type=args.locator_type, locator_value=args.locator_value,
             locator_type_2=args.locator_type_2, locator_value_2=args.locator_value_2,
+            locator_type_3=args.locator_type_3, locator_value_3=args.locator_value_3,
             wait_time=args.wait_time, is_iframe=args.is_iframe, iframe_locator=args.iframe_locator,
             description=args.description
         ),
@@ -947,7 +1255,11 @@ def main():
         "get_page_steps": lambda: get_page_steps(args.project_id, args.page_id, args.module_id),
         "get_page_step": lambda: get_page_step(args.step_id),
         "create_page_step": lambda: create_page_step(args.project_id, args.page_id, args.module_id, args.name, args.description),
-        "update_page_step": lambda: update_page_step(args.step_id, args.name, args.description),
+        "update_page_step": lambda: update_page_step(
+            args.step_id, args.name, args.description,
+            auth_state_id=args.auth_state_id,
+            clear_auth_state=bool(args.clear_auth_state),
+        ),
         "delete_page_step": lambda: delete_page_step(args.step_id),
         "set_step_details": lambda: set_step_details(args.step_id, json.loads(args.steps)),
         # 测试用例
@@ -983,6 +1295,11 @@ def main():
             timeout=args.timeout, is_default=args.is_default
         ),
         "delete_env_config": lambda: delete_env_config(args.config_id),
+        # 环境登录态
+        "get_auth_states": lambda: get_auth_states(args.env_config_id),
+        "create_auth_state": lambda: create_auth_state(
+            args.env_config_id, args.name, args.state_file, args.description or ""
+        ),
         # 执行器
         "get_actuators": lambda: get_actuators(),
         "get_actuator_status": lambda: get_actuator_status(),

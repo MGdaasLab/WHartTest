@@ -42,8 +42,13 @@ const pageText = computed(() => (
 </script>
 
 <style scoped>
+/* MainLayout 的 .content 是固定高度 + overflow: hidden（子页面自行控制滚动），
+   根节点吃满高度并自身滚动即可，内部保持原有文档式布局与卡片高度不变。 */
 .skills-management-view {
+  height: 100%;
+  box-sizing: border-box;
   padding: 24px;
+  overflow-y: auto;
 }
 
 .page-header {

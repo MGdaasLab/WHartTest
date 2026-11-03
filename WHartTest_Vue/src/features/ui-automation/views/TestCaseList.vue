@@ -86,6 +86,10 @@
             {{ batchDeleteLabel }}
           </a-button>
         </a-popconfirm>
+        <a-button type="primary" @click="emit('generate-case')">
+          <template #icon><icon-robot /></template>
+          {{ pageText.generateCase }}
+        </a-button>
         <a-button type="primary" @click="showAddModal">
           <template #icon><icon-plus /></template>
           {{ pageText.addCase }}
@@ -135,6 +139,18 @@
           >
             <template #icon><icon-play-arrow /></template>
             {{ isExecuting(record.id) ? pageText.running : pageText.run }}
+          </a-button>
+          <a-button
+            v-if="record.status === 3"
+            type="text"
+            size="mini"
+            status="warning"
+            :loading="isHealing(record.id)"
+            :disabled="isHealing(record.id)"
+            @click="healTestCase(record)"
+          >
+            <template #icon><icon-robot /></template>
+            {{ isHealing(record.id) ? pageText.healing : pageText.heal }}
           </a-button>
           <a-button type="text" size="mini" @click="editTestCase(record)">
             <template #icon><icon-edit /></template>
@@ -190,6 +206,18 @@
         <a-form-item field="description" :label="pageText.caseDescription">
           <a-textarea v-model="formData.description" :placeholder="pageText.enterCaseDescription" :auto-size="{ minRows: 2, maxRows: 4 }" />
         </a-form-item>
+
+        <a-form-item field="env_config_id" :label="pageText.execEnvLabel">
+          <a-select
+            v-model="formData.env_config_id"
+            :placeholder="pageText.execEnvPlaceholder"
+            allow-clear
+          >
+            <a-option v-for="env in envConfigs" :key="env.id" :value="env.id">
+              {{ env.name }}{{ env.is_default ? pageText.defaultSuffix : '' }}
+            </a-option>
+          </a-select>
+        </a-form-item>
       
           <a-form-item label="附件">
             <FileAttachmentPicker
@@ -223,9 +251,10 @@
 <script setup lang="ts">
 import FileAttachmentPicker from '@/features/file-management/components/FileAttachmentPicker.vue'
 import ExecutionScreenModal from '../components/ExecutionScreenModal.vue'
-import { ref, reactive, computed, onMounted, watch, onUnmounted } from 'vue'
-import { Message } from '@arco-design/web-vue'
-import { IconPlus, IconEdit, IconDelete, IconOrderedList, IconPlayArrow, IconThunderbolt, IconCopy } from '@arco-design/web-vue/es/icon'
+import { ref, reactive, computed, h, onMounted, watch, onUnmounted } from 'vue'
+import { Message, Notification } from '@arco-design/web-vue'
+import { IconPlus, IconEdit, IconDelete, IconOrderedList, IconPlayArrow, IconThunderbolt, IconCopy, IconRobot } from '@arco-design/web-vue/es/icon'
+import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/store/projectStore'
 import { useAppI18n } from '@/composables/useAppI18n'
 import { testCaseApi, moduleApi, actuatorApi, envConfigApi, type ActuatorInfo } from '../api'
@@ -233,13 +262,20 @@ import type { UiTestCase, UiTestCaseForm, UiModule, CaseLevel, ExecutionStatus, 
 import { STATUS_LABELS, extractListData, extractPaginationData, extractResponseData } from '../types'
 import { uiWebSocket, UiSocketEnum, type CaseResultModel } from '../services/websocket'
 import CaseStepList from './CaseStepList.vue'
+import { fetchLatestFailureRecord, buildSelfHealMessage, startSelfHealTask } from '../services/uiSelfHeal'
+import type { ChatRequest } from '@/features/langgraph/types/chat'
 
 const props = defineProps<{
   selectedModuleId?: number
 }>()
 
+const emit = defineEmits<{
+  (e: 'generate-case'): void
+}>()
+
 const projectStore = useProjectStore()
 const projectId = computed(() => projectStore.currentProject?.id)
+const router = useRouter()
 const { locale, isEnglish, tl } = useAppI18n()
 
 const pageText = computed(() => (
@@ -259,9 +295,17 @@ const pageText = computed(() => (
         batchDelete: 'Batch delete',
         batchDeleteConfirm: 'Delete the selected cases? This action cannot be undone.',
         addCase: 'Create case',
+        generateCase: 'Generate UI cases',
         steps: 'Steps',
         run: 'Run',
         running: 'Running',
+        heal: 'Heal',
+        healing: 'Healing',
+        healStarted: 'AI self-healing task started',
+        healStartedContent: 'The AI agent will diagnose the failure, repair the case and re-run it for verification. Check the progress in the AI chat page.',
+        healNoFailureRecord: 'No failed execution record found for this case. Run it first.',
+        healStartFailed: 'Failed to start the self-healing task',
+        viewHealProgress: 'View healing progress',
         edit: 'Edit',
         delete: 'Delete',
         copy: 'Copy',
@@ -271,6 +315,10 @@ const pageText = computed(() => (
         caseName: 'Case name',
         enterCaseName: 'Enter case name',
         caseDescription: 'Case description',
+        execEnvLabel: 'Execution Environment',
+        authEnvMismatchTitle: 'Login state environment mismatch',
+        authEnvMismatchContent: 'Some steps are bound to login states from a different environment than the case execution environment. Execution will be rejected by strict validation. Please fix the case environment binding or the step login state binding.',
+        execEnvPlaceholder: 'Follow project default environment',
         enterCaseDescription: 'Enter case description',
         caseSteps: 'Case steps',
         selectModuleRequired: 'Select module',
@@ -329,9 +377,17 @@ const pageText = computed(() => (
         batchDelete: '批量删除',
         batchDeleteConfirm: '确定要删除选中的用例吗？此操作不可恢复。',
         addCase: '新增用例',
+        generateCase: '生成UI用例',
         steps: '步骤',
         run: '执行',
         running: '执行中',
+        heal: '自愈',
+        healing: '自愈中',
+        healStarted: 'AI 自愈任务已启动',
+        healStartedContent: 'AI Agent 将诊断失败根因、修复用例并自动复测验证，可在 AI 对话页查看进度',
+        healNoFailureRecord: '未找到该用例的失败执行记录，请先执行用例',
+        healStartFailed: '自愈任务启动失败',
+        viewHealProgress: '查看自愈进度',
         edit: '编辑',
         delete: '删除',
         copy: '复制',
@@ -341,6 +397,10 @@ const pageText = computed(() => (
         caseName: '用例名称',
         enterCaseName: '请输入用例名称',
         caseDescription: '用例描述',
+        execEnvLabel: '执行环境',
+        authEnvMismatchTitle: '登录态环境不一致',
+        authEnvMismatchContent: '部分步骤绑定的登录态与用例执行环境不一致，执行时将被严格校验拒绝。请修正用例的环境绑定或步骤的登录态绑定。',
+        execEnvPlaceholder: '跟随项目默认环境',
         enterCaseDescription: '请输入用例描述',
         caseSteps: '用例步骤',
         selectModuleRequired: '请选择模块',
@@ -389,9 +449,76 @@ const pageText = computed(() => (
 const loading = ref(false)
 const submitting = ref(false)
 const executingIds = ref<number[]>([]) // 正在执行的用例ID列表
+const healingIds = ref<number[]>([]) // 正在 AI 自愈的用例ID列表
 
 /** 检查用例是否正在执行 */
 const isExecuting = (caseId: number) => executingIds.value.includes(caseId)
+/** 检查用例是否正在 AI 自愈 */
+const isHealing = (caseId: number) => healingIds.value.includes(caseId)
+
+/**
+ * 发起 AI 智能自愈：拉取最近一次失败执行记录 → 组装失败现场上下文 →
+ * 发送给 Agent（self_heal 守护会话）诊断修复并自动复测，进度在 AI 对话页查看。
+ */
+const healTestCase = async (record: UiTestCase) => {
+  if (!projectId.value) {
+    Message.warning(pageText.value.selectModule)
+    return
+  }
+  if (isHealing(record.id)) return
+
+  healingIds.value.push(record.id)
+  try {
+    const failureRecord = await fetchLatestFailureRecord(record.id)
+    if (!failureRecord) {
+      Message.warning(pageText.value.healNoFailureRecord)
+      return
+    }
+
+    const message = buildSelfHealMessage({
+      testCase: record,
+      failureRecord,
+      projectId: projectId.value,
+    })
+    const requestData: ChatRequest = {
+      message,
+      project_id: String(projectId.value),
+      module_key: 'testcase_execution',
+      use_knowledge_base: false,
+    }
+
+    startSelfHealTask(requestData, () => {
+      const notificationReturn = Notification.info({
+        title: pageText.value.healStarted,
+        content: pageText.value.healStartedContent,
+        footer: () =>
+          h(
+            'div',
+            { style: 'text-align: right; margin-top: 12px;' },
+            [
+              h(
+                'a',
+                {
+                  href: 'javascript:;',
+                  onClick: () => {
+                    router.push({ name: 'LangGraphChat' })
+                    if (notificationReturn) notificationReturn.close()
+                  },
+                },
+                pageText.value.viewHealProgress,
+              ),
+            ],
+          ),
+        duration: 10000,
+      })
+    })
+  } catch (error: unknown) {
+    console.error('启动 AI 自愈任务失败:', error)
+    Message.error(pageText.value.healStartFailed)
+  } finally {
+    healingIds.value = healingIds.value.filter(id => id !== record.id)
+  }
+}
 const testcaseData = ref<UiTestCase[]>([])
 const moduleOptions = ref<UiModule[]>([])
 const envConfigs = ref<UiEnvironmentConfig[]>([]) // 环境配置列表
@@ -429,6 +556,7 @@ const formData = reactive<UiTestCaseForm>({
   file_ids: [],
   project: 0,
   module: undefined as unknown as number,
+  env_config_id: null,
   name: '',
   description: '',
   level: 'P2',
@@ -457,7 +585,7 @@ const columns = computed(() => [
   { title: pageText.value.tableStepCount, slotName: 'step_count', width: 110, align: 'center' as const },
   { title: pageText.value.tableCreatedBy, dataIndex: 'creator_name', width: 110, align: 'center' as const },
   { title: pageText.value.tableCreatedAt, slotName: 'created_at', width: 180, align: 'center' as const },
-  { title: pageText.value.tableActions, slotName: 'operations', width: isEnglish.value ? 440 : 360, fixed: 'right' as const, align: 'center' as const },
+  { title: pageText.value.tableActions, slotName: 'operations', width: isEnglish.value ? 520 : 440, fixed: 'right' as const, align: 'center' as const },
 ])
 
 const levelOptions = computed(() => (
@@ -563,6 +691,7 @@ const resetForm = () => {
   Object.assign(formData, {
     project: projectId.value || 0,
     module: undefined,
+    env_config_id: null,
     name: '',
     description: '',
     level: 'P2',
@@ -582,6 +711,7 @@ const showAddModal = async () => {
     formData.module = props.selectedModuleId
   }
   if (!moduleOptions.value.length) await fetchModules()
+  if (!envConfigs.value.length) await fetchEnvConfigs()
   modalVisible.value = true
 }
 
@@ -596,6 +726,7 @@ const editTestCase = async (record: UiTestCase) => {
       Object.assign(formData, {
         project: detail.project,
         module: detail.module,
+        env_config_id: detail.env_config ?? null,
         name: detail.name,
         description: detail.description || '',
         level: detail.level,
@@ -605,12 +736,23 @@ const editTestCase = async (record: UiTestCase) => {
         parametrize: detail.parametrize,
         case_flow: detail.case_flow || '',
       })
+
+      // 跨环境登录态编辑期预警：步骤登录态环境与用例绑定环境不一致，
+      // 执行时会被严格校验拒绝，提示用户提前修正
+      if (detail.env_config && detail.auth_env_mismatch === true) {
+        Notification.warning({
+          title: pageText.value.authEnvMismatchTitle,
+          content: pageText.value.authEnvMismatchContent,
+          duration: 8000,
+        });
+      }
     }
   } catch {
     // 降级使用列表数据
     Object.assign(formData, {
       project: record.project,
       module: record.module,
+      env_config_id: record.env_config ?? null,
       name: record.name,
       description: record.description || '',
       level: record.level,
@@ -622,6 +764,7 @@ const editTestCase = async (record: UiTestCase) => {
     })
   }
   if (!moduleOptions.value.length) await fetchModules()
+  if (!envConfigs.value.length) await fetchEnvConfigs()
   modalVisible.value = true
 }
 

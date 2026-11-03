@@ -13,12 +13,17 @@
         </a-tag>
         <!-- 评审进度展示 -->
         <div v-if="document?.status === 'reviewing' && reviewProgress" class="review-progress">
+          <!-- Arco 的 percent 接受 0-1 小数（内部 *100 展示），直接传后端原始值 -->
           <a-progress
-            :percent="reviewProgress.progress"
+            :percent="reviewProgress.progress ?? 0"
             :stroke-width="8"
             :style="{ width: '180px' }"
           />
           <span class="progress-step">{{ reviewProgress.current_step }}</span>
+          <span class="progress-elapsed">{{ pageText.elapsedTotal(reviewElapsedSeconds) }}</span>
+          <span v-if="stepElapsedSeconds > 60" class="progress-elapsed progress-elapsed-dim">
+            {{ pageText.elapsedStep(stepElapsedSeconds) }}
+          </span>
         </div>
       </div>
       <div class="header-actions">
@@ -97,6 +102,15 @@
 
       </div>
     </div>
+
+    <!-- 评审失败原因（后端返回的真实错误信息） -->
+    <a-alert
+      v-if="document?.status === 'failed' && document?.error_message"
+      type="error"
+      class="failed-alert"
+    >
+      {{ pageText.reviewFailedReason(document.error_message) }}
+    </a-alert>
 
     <!-- 文档信息卡片 -->
     <div class="info-section">
@@ -504,6 +518,14 @@ const localizeBackendText = (value?: string, fallback = '') => {
   return translateLegacyText(value, currentLocale.value);
 };
 
+// 纯时长格式化：不依赖 pageText，供其内部与其他位置共用
+const formatDurationWith = (seconds: number, minUnit: string, secUnit: string): string => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (m <= 0) return `${s}${secUnit}`;
+  return `${m}${minUnit}${s}${secUnit}`;
+};
+
 const pageText = computed(() => (
   isEnglish.value
     ? {
@@ -580,7 +602,10 @@ const pageText = computed(() => (
         processingText: 'Processing...',
         reviewCompletedMessage: 'Requirement review completed',
         reviewFailedMessage: 'Requirement review failed. Please try again.',
-        reviewTimeout: 'The review is taking longer than expected. Refresh the page later to check the result.',
+        elapsedTotal: (seconds: number) => `Elapsed ${formatDurationWith(seconds, 'm ', 's')}`,
+        elapsedStep: (seconds: number) => `last update ${formatDurationWith(seconds, 'm ', 's')} ago`,
+        reviewFailedReason: (reason: string) => `Requirement review failed: ${reason}`,
+        reviewStillRunning: 'The review is still running but this page has stopped auto-refreshing. Refresh manually later to check the result.',
         fetchReviewStatusFailed: 'Failed to fetch review status',
         enterModuleTitleWarning: 'Enter a module title',
         moduleUpdated: 'Module updated',
@@ -687,7 +712,10 @@ const pageText = computed(() => (
         processingText: '处理中...',
         reviewCompletedMessage: '需求评审已完成！',
         reviewFailedMessage: '需求评审失败，请重试',
-        reviewTimeout: '评审时间较长，请稍后刷新页面查看结果',
+        elapsedTotal: (seconds: number) => `已进行 ${formatDurationWith(seconds, '分', '秒')}`,
+        elapsedStep: (seconds: number) => `距上次进度 ${formatDurationWith(seconds, '分', '秒')}`,
+        reviewFailedReason: (reason: string) => `需求评审失败：${reason}`,
+        reviewStillRunning: '评审仍在进行中，耗时较长，本页已停止自动刷新。请稍后手动刷新页面查看结果。',
         fetchReviewStatusFailed: '获取评审状态失败',
         enterModuleTitleWarning: '请输入模块标题',
         moduleUpdated: '模块更新成功',
@@ -825,6 +853,43 @@ const reviewProgress = ref<{
   current_step: string;
   completed_steps: string[];
 } | null>(null);
+
+// 评审耗时展示：总耗时 + 距上次进度更新的间隔，缓解长评审期间的"干等"焦虑
+const reviewStartedAt = ref<number | null>(null);
+const lastProgressAt = ref<number | null>(null);
+const nowTick = ref(Date.now());
+let elapsedTimer: ReturnType<typeof setInterval> | null = null;
+
+const reviewElapsedSeconds = computed(() =>
+  reviewStartedAt.value ? Math.max(0, Math.floor((nowTick.value - reviewStartedAt.value) / 1000)) : 0
+);
+const stepElapsedSeconds = computed(() =>
+  lastProgressAt.value ? Math.max(0, Math.floor((nowTick.value - lastProgressAt.value) / 1000)) : 0
+);
+
+const startElapsedTicker = () => {
+  if (elapsedTimer !== null) return;
+  elapsedTimer = setInterval(() => {
+    nowTick.value = Date.now();
+  }, 1000);
+};
+
+const stopElapsedTicker = () => {
+  if (elapsedTimer !== null) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+};
+
+watch(reviewProgress, (val) => {
+  if (val) {
+    startElapsedTicker();
+  } else {
+    stopElapsedTicker();
+    reviewStartedAt.value = null;
+    lastProgressAt.value = null;
+  }
+});
 
 // 轮询控制标志
 let isPollingActive = false;
@@ -1146,7 +1211,9 @@ const confirmReview = async () => {
 
 // 轮询文档状态
 const pollDocumentStatus = async () => {
-  const maxAttempts = 60; // 最多轮询60次（5分钟）
+  // 轮询安全上限：3秒一次 x 600次 = 30分钟。真实评审可能耗时10分钟以上，
+  // 期间状态一直由服务端给出；超上限时不报失败，只提示仍在进行（见下方分支）
+  const maxAttempts = 600;
   let attempts = 0;
   isPollingActive = true;
 
@@ -1169,6 +1236,15 @@ const pollDocumentStatus = async () => {
           current_step: localizeBackendText(latestReview.current_step, pageText.value.processingText),
           completed_steps: latestReview.completed_steps || []
         };
+        // 耗时锚点：总耗时自报告创建起算；"距上次进度"自报告最近更新起算
+        const startedAtMs = new Date(latestReview.review_date).getTime();
+        if (!reviewStartedAt.value && !Number.isNaN(startedAtMs)) {
+          reviewStartedAt.value = startedAtMs;
+        }
+        const progressAtMs = new Date(latestReview.updated_at).getTime();
+        if (!Number.isNaN(progressAtMs)) {
+          lastProgressAt.value = progressAtMs;
+        }
       }
 
       if (document.value?.status === 'review_completed') {
@@ -1179,18 +1255,19 @@ const pollDocumentStatus = async () => {
         Message.success(pageText.value.reviewCompletedMessage);
         return;
       } else if (document.value?.status === 'failed') {
-        // 评审失败
+        // 评审失败：展示后端记录的真实失败原因
         isPollingActive = false;
         reviewLoading.value = false;
         reviewProgress.value = null;
-        Message.error(pageText.value.reviewFailedMessage);
+        const reason = document.value?.error_message;
+        Message.error(reason ? pageText.value.reviewFailedReason(reason) : pageText.value.reviewFailedMessage);
         return;
       } else if (attempts >= maxAttempts) {
-        // 超时
+        // 达到轮询安全上限：评审仍在后台进行，不再假装失败，
+        // 保留进度展示并提示用户可稍后查看
         isPollingActive = false;
         reviewLoading.value = false;
-        reviewProgress.value = null;
-        Message.warning(pageText.value.reviewTimeout);
+        Message.warning(pageText.value.reviewStillRunning);
         return;
       }
 
@@ -1200,7 +1277,6 @@ const pollDocumentStatus = async () => {
       }
     } catch (error) {
       console.error('轮询文档状态失败:', error);
-      attempts++;
       if (attempts < maxAttempts && isPollingActive) {
         setTimeout(poll, 3000);
       } else {
@@ -1605,9 +1681,10 @@ watch(
   }
 );
 
-// 组件卸载时停止轮询
+// 组件卸载时停止轮询与耗时计时器
 onBeforeUnmount(() => {
   isPollingActive = false;
+  stopElapsedTicker();
 });
 </script>
 
@@ -1678,6 +1755,20 @@ onBeforeUnmount(() => {
   color: #1890ff;
   white-space: nowrap;
   font-weight: 500;
+}
+
+.progress-elapsed {
+  font-size: 12px;
+  color: #4e5969;
+  white-space: nowrap;
+}
+
+.progress-elapsed-dim {
+  color: #86909c;
+}
+
+.failed-alert {
+  margin-bottom: 16px;
 }
 
 .header-actions {

@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch
 
 from asgiref.sync import async_to_sync
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 from langchain_core.messages import AIMessage, HumanMessage
 from rest_framework.test import APIClient
@@ -516,6 +516,50 @@ class LLMConfigBundleRuntimeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["config_name"], "runtime-bundle")
         self.assertEqual(response.data["resolved_source"], "personal_slot")
+
+
+class CreateLLMInstanceStreamingTests(SimpleTestCase):
+    """openai_compatible 工厂 streaming 参数回归（同步自 master-pe ee10c495）。
+
+    PE 线该能力在 wharttest_core 加密工厂并随 LLMConfigBundleRuntimeTests 验证；
+    CE 线无加密核心与 bundle runtime，工厂在 langgraph_integration.views，
+    测试独立成类、不做 BUNDLE_RUNTIME_AVAILABLE 守卫，保证 CE 上真实执行。
+    """
+
+    def test_create_llm_instance_streaming_defaults_off_for_openai_compatible(self):
+        """不传 streaming 时保持原有非流式行为，不影响既有调用方"""
+        from .views import create_llm_instance
+
+        active_config = Mock()
+        active_config.name = "glm-5.3-flash"
+        active_config.provider = "openai_compatible"
+        active_config.api_url = "http://gw.example.com/v1"
+        active_config.api_key = "test-key"
+        active_config.request_timeout = 120
+        active_config.max_retries = 3
+
+        llm = create_llm_instance(active_config, temperature=0.1)
+
+        self.assertFalse(llm.streaming)
+
+    def test_create_llm_instance_streaming_opt_in_for_openai_compatible(self):
+        """streaming=True 时底层走流式接收；invoke 仍由 langchain 聚合完整结果"""
+        from .views import create_llm_instance
+
+        active_config = Mock()
+        active_config.name = "glm-5.3-flash"
+        active_config.provider = "openai_compatible"
+        active_config.api_url = "http://gw.example.com/v1"
+        active_config.api_key = "test-key"
+        active_config.request_timeout = 120
+        active_config.max_retries = 3
+
+        llm = create_llm_instance(active_config, temperature=0.1, streaming=True)
+
+        self.assertTrue(llm.streaming)
+        self.assertEqual(llm.openai_api_base, "http://gw.example.com/v1")
+        self.assertEqual(llm.request_timeout, 120)
+        self.assertEqual(llm.max_retries, 3)
 
 
 class ChatSessionAPIViewTests(TestCase):

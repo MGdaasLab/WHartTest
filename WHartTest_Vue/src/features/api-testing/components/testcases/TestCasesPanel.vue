@@ -13,6 +13,10 @@ import TestCaseTable from './TestCaseTable.vue'
 import ReferencedInterfacesDialog from './ReferencedInterfacesDialog.vue'
 import { showExtractPersistenceNotice } from '../../utils/extractPersistence'
 import { useAppI18n } from '@/composables/useAppI18n'
+import GenerateApiCasesModal from '../generate/GenerateApiCasesModal.vue'
+import GroupManager from './GroupManager.vue'
+import { IconFolder } from '@arco-design/web-vue/es/icon'
+import { useApiCaseGeneration } from '../../composables/useApiCaseGeneration'
 
 const projectStore = useProjectStore()
 const environmentStore = useEnvironmentStore()
@@ -128,6 +132,9 @@ const updateSearchParams = (data: Pick<QueryParams, 'name' | 'description'>) => 
 const updateFilterParams = (data: Pick<QueryParams, 'priority' | 'group' | 'tags'>) => {
   Object.assign(queryParams, data)
 }
+
+const { showGenerateModal, modalRef, handleGenerateSubmit } = useApiCaseGeneration()
+const groupManagerVisible = ref(false)
 
 const handleCreate = () => {
   router.push({ name: 'ApiTestCaseCreate', query: TEST_CASES_TAB_QUERY })
@@ -337,6 +344,13 @@ fetchTestCases()
           <a-button class="custom-reset-button" @click="handleReset">
             {{ tl('重置') }}
           </a-button>
+          <a-button class="custom-reset-button" @click="groupManagerVisible = true">
+            <template #icon><icon-folder /></template>
+            {{ tl('分组管理') }}
+          </a-button>
+          <a-button type="primary" class="custom-add-button" @click="showGenerateModal = true">
+            {{ tl('生成场景用例') }}
+          </a-button>
           <a-button type="primary" class="custom-add-button" @click="handleCreate">
             {{ tl('新增用例') }}
           </a-button>
@@ -385,6 +399,22 @@ fetchTestCases()
       :testcase-name="currentTestcase?.name || ''"
       @close="handleReferencedInterfacesClose"
     />
+    <GenerateApiCasesModal
+      ref="modalRef"
+      :visible="showGenerateModal"
+      preset-case-type="scenario"
+      @update:visible="showGenerateModal = $event"
+      @submit="handleGenerateSubmit"
+    />
+    <!-- 分组管理（列表页外部入口） -->
+    <a-drawer
+      v-model:visible="groupManagerVisible"
+      :title="tl('分组管理')"
+      :width="380"
+      unmount-on-close
+    >
+      <GroupManager :model-value="null" :project-id="projectStore.currentProjectId || 0" />
+    </a-drawer>
   </div>
 </template>
 
@@ -523,24 +553,25 @@ fetchTestCases()
 }
 
 .custom-add-button {
-  background: linear-gradient(to right, #3b82f6, #1d4ed8) !important;
+  background: var(--theme-accent) !important;
   border: none !important;
   padding: 0 24px !important;
   height: 36px !important;
   border-radius: 8px !important;
   font-weight: 500 !important;
   transition: all 0.3s ease !important;
-  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.3) !important;
+  box-shadow: 0 2px 6px rgba(var(--theme-accent-rgb), 0.3) !important;
 
   &:hover {
     transform: translateY(-1px) !important;
-    box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4) !important;
-    background: linear-gradient(to right, #2563eb, #60a5fa) !important;
+    box-shadow: 0 4px 12px rgba(var(--theme-accent-rgb), 0.4) !important;
+    background: var(--theme-accent-hover) !important;
   }
 
   &:active {
     transform: translateY(1px) !important;
-    box-shadow: 0 1px 3px rgba(59, 130, 246, 0.3) !important;
+    box-shadow: 0 1px 3px rgba(var(--theme-accent-rgb), 0.3) !important;
+    background: var(--theme-accent-active) !important;
   }
 }
 

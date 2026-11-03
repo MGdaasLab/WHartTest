@@ -42,6 +42,7 @@ def _server_script_path() -> Path:
 # 事件类型
 EV_FRAME = 'frame'
 EV_ACTIONS = 'actions'
+EV_STATUS = 'status'
 
 
 class RecorderSessionError(RuntimeError):

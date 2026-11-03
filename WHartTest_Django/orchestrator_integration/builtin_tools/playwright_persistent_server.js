@@ -302,28 +302,83 @@ async function main() {
     if (a.length > 0) {
       const first = a[0];
       if (typeof first === 'string' && fs.existsSync(first)) {
-        const filePath = path.resolve(first);
-        return fs.readFileSync(filePath, 'utf8');
+        // 只允许把 skill 目录内的脚本文件当作代码来源，避免任意本地文件被读取执行。
+        // 必须用 realpathSync：path.relative 不解析符号链接，skill 目录内一个
+        // `evil.js -> /app/settings.py` 之类的软链接即可绕过包含判断。
+        let realPath;
+        let realSkillDir;
+        try {
+          realPath = fs.realpathSync(path.resolve(first));
+          realSkillDir = fs.realpathSync(skillDir);
+        } catch (e) {
+          throw new Error('run.js 无法解析脚本路径: ' + (e?.message || String(e)));
+        }
+        const relative = path.relative(realSkillDir, realPath);
+        if (relative.startsWith('..') || path.isAbsolute(relative)) {
+          throw new Error('run.js 只允许引用 skill 目录内的脚本文件');
+        }
+        return fs.readFileSync(realPath, 'utf8');
       }
       return a.join(' ');
     }
     return '';
   }
 
+  // 代码来源与内容筛查：本通道执行的 JS 由模型生成，属于不可信输入。
+  // 这里只做静态筛查（提高门槛，不是安全边界）：真正的隔离依赖后续的
+  // skill-runner —— 在无平台机密、不可达内网、只读文件系统的沙箱中执行。
+  const CODE_SCREEN_PATTERNS = [
+    /\brequire\s*\(/,
+    /\brequireFromSkill\b/,
+    /\bcreateRequire\b/,
+    /\bModule\b/,
+    /\bimport\s*\(/,
+    /\bprocess\b/,
+    /\bglobalThis\b/,
+    /\bchild_process\b/,
+    /\bexecSync\b/,
+    /\bspawnSync\b/,
+    /\bexecFile\b/,
+    /\bexec\s*\(/,
+    /\bnode:fs\b/,
+    /\bfs\s*\.\s*(readFile|readFileSync|writeFile|writeFileSync|readdir|unlink|rm|rmdir|mkdir|createReadStream|createWriteStream)/,
+    /\bFunction\s*\(/,
+    /\beval\s*\(/,
+    /\bconstructor\b/,
+    /__proto__/,
+    /\bimport\.meta\b/,
+  ];
+  const CODE_MAX_LENGTH = 20000;
+
+  function screenUserCode(code) {
+    if (typeof code !== 'string' || !code.trim()) {
+      throw new Error('run.js 需要非空的 JS 代码字符串');
+    }
+    if (code.length > CODE_MAX_LENGTH) {
+      throw new Error(`run.js 代码长度超限（${code.length} > ${CODE_MAX_LENGTH}）`);
+    }
+    for (const pattern of CODE_SCREEN_PATTERNS) {
+      if (pattern.test(code)) {
+        throw new Error(
+          `run.js 代码包含被禁止的能力（${pattern}）：持久化会话只允许使用 page/context/browser 等浏览器 API`
+        );
+      }
+    }
+    return code;
+  }
+
   async function runUserCode(code) {
     const captured = createCapturedConsole();
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-    const safeProcess = Object.assign({}, process, {
-      exit: (code) => {
-        throw new Error(`process.exit(${code}) blocked in persistent session`);
-      },
-    });
+    screenUserCode(code);
 
     // 调试：记录实际执行的代码
     serverLog('[runUserCode] Code length:', code.length);
     serverLog('[runUserCode] Code preview:', code.slice(0, 200));
 
+    // 刻意不注入 require / process / requireFromSkill：这些是逃逸到宿主进程的主要入口，
+    // 浏览器 API（chromium/firefox/webkit/devices）已作为参数提供。
     const fn = new AsyncFunction(
       'console',
       'state',
@@ -332,8 +387,6 @@ async function main() {
       'firefox',
       'webkit',
       'devices',
-      'require',
-      'process',
       'getContextOptionsWithHeaders',
       `
 let { browser, context, page } = state;
@@ -353,8 +406,6 @@ state.page = page;
         firefox,
         webkit,
         devices,
-        requireFromSkill,
-        safeProcess,
         getContextOptionsWithHeaders
       );
       return { ok: true, stdout: captured.stdout, stderr: captured.stderr };

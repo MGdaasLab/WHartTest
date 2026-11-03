@@ -23,7 +23,7 @@ from executor import (
     PlaywrightExecutor, StepConfig, PageStepConfig, TestCaseConfig
 )
 from data_processor import reset_data_processor, DataProcessor
-from runtime_env import resolve_runtime_file_path
+from runtime_env import is_trusted_upload_path, resolve_runtime_file_path, trusted_upload_roots
 from frame_stream import FrameStreamer, stream_enabled
 
 logger = logging.getLogger('actuator')
@@ -34,15 +34,24 @@ class TaskConsumer:
     
     def __init__(self, ws_client: WebSocketClient, api_base_url: str, 
                  config: Any = None,
-                 api_username: str = 'admin', api_password: str = 'admin123',
+                 api_username: str = 'admin', api_password: str = '',
+                 # 安全：api_password 不再内置默认口令；优先用 api_key 认证
+                 api_key: str = '',
                  config_path: str = 'config.toml'):
         self.ws_client = ws_client
         self.api_base_url = api_base_url.rstrip('/')
         self.api_username = api_username
         self.api_password = api_password
+        # API Key 认证（X-API-Key 头）：不经过 /api/token/，不触发单设备
+        # session_version 递增，不会挤掉浏览器登录会话（优先级高于账号密码）。
+        self.api_key = (api_key or '').strip()
         self._api_token: Optional[str] = None
         self.config = config
         self.config_path = config_path
+        # 任务来源令牌：后端下发任务时放在 func_args.task_token，结果回传时
+        # 原样回显，供后端 verify_result_source 做"任务确实下发给本执行器"的
+        # 一一对应强校验。路由任务时摘取，回传时自动附带并清除。
+        self._task_token: Optional[str] = None
         
         # 从配置创建执行器
         executor_config = {}
@@ -123,7 +132,9 @@ class TaskConsumer:
             logger.info(f"已清理 {cleaned_count} 个超过 {max_age_days} 天的过期文件")
     
     async def _get_api_token(self) -> Optional[str]:
-        """获取API认证token"""
+        """获取API认证token（仅账号密码模式使用；API Key 模式不调用，避免触发单设备登录挤占）"""
+        if self.api_key:
+            return None
         if self._api_token:
             return self._api_token
         
@@ -149,16 +160,32 @@ class TaskConsumer:
             logger.error(f"获取Token请求失败: {e}")
             return None
     
+    def _auth_headers(self, token: Optional[str] = None) -> dict:
+        """构造认证请求头。
+
+        API Key 模式（X-API-Key）：不走 /api/token/、不递增 session_version，
+        不会把浏览器登录会话挤掉。注意 Key 模式只发 X-API-Key、不发 Authorization：
+        后端认证链里 JWT 认证类优先，若 Bearer 头带的是非 JWT 值会被先拦下报
+        「token 无效」，走不到 APIKeyAuthentication 回退。
+        账号密码模式：Authorization: Bearer <JWT>。
+        """
+        if self.api_key:
+            return {'X-API-Key': self.api_key}
+        if token:
+            return {'Authorization': f'Bearer {token}'}
+        return {}
+    
     async def _api_get(self, path: str) -> Optional[dict]:
         """带认证的API GET请求"""
         token = await self._get_api_token()
-        if not token:
+        if not self.api_key and not token:
             return None
+        headers = self._auth_headers(token)
         
         url = f"{self.api_base_url}{path}"
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+                response = await client.get(url, headers=headers)
                 if response.status_code == 200:
                     data = response.json()
                     # 提取data字段
@@ -166,6 +193,10 @@ class TaskConsumer:
                         return data['data']
                     return data
                 elif response.status_code == 401:
+                    if self.api_key:
+                        # API Key 模式：401 表示 Key 无效/被禁用/过期，重试无意义
+                        logger.error(f"API请求失败(API Key 无效或被禁用): 401 - {path}")
+                        return None
                     # Token过期，重新获取
                     self._api_token = None
                     return await self._api_get(path)
@@ -232,9 +263,10 @@ class TaskConsumer:
             return None
 
         token = await self._get_api_token()
-        if not token:
+        if not self.api_key and not token:
             logger.error("无法获取 API Token，跳过 Trace 上传")
             return None
+        headers = self._auth_headers(token)
 
         url = f"{self.api_base_url}/api/ui-automation/traces/upload/"
         try:
@@ -243,7 +275,7 @@ class TaskConsumer:
                     files = {'file': (os.path.basename(trace_path), f, 'application/zip')}
                     response = await client.post(
                         url,
-                        headers={"Authorization": f"Bearer {token}"},
+                        headers=headers,
                         files=files,
                         timeout=60.0  # Trace 文件可能较大
                     )
@@ -337,18 +369,6 @@ class TaskConsumer:
         """添加任务到队列"""
         await self.task_queue.put(task)
         logger.info(f"任务已入队: {task.func_name}")
-        if task.func_name == UiSocketEnum.TEST_CASE:
-            args = task.func_args or {}
-            await self.ws_client.send_result(
-                UiSocketEnum.TEST_CASE_ACK,
-                {
-                    'case_id': args.get('case_id'),
-                    'execution_request_id': args.get('execution_request_id'),
-                    'actuator_id': getattr(self.config, 'actuator_id', None),
-                    'env_config_id': args.get('env_config_id'),
-                },
-                self._current_user,
-            )
     
     async def process_tasks(self):
         """处理任务队列"""
@@ -381,7 +401,15 @@ class TaskConsumer:
         
         handler = handlers.get(task.func_name)
         if handler:
-            await handler(task.func_args)
+            # 摘取后端下发的任务来源令牌（旧版后端无此字段，保持 None）；
+            # 同步到 ws_client，send_result 回传所有结果时自动附带回显
+            self._task_token = task.func_args.get('task_token') if isinstance(task.func_args, dict) else None
+            self.ws_client.set_task_token(self._task_token)
+            try:
+                await handler(task.func_args)
+            finally:
+                self._task_token = None
+                self.ws_client.set_task_token(None)
         else:
             logger.warning(f"未知任务类型: {task.func_name}")
 
@@ -544,6 +572,55 @@ class TaskConsumer:
             source_mode="local_merge",
         )
 
+    async def _resolve_case_env(
+        self,
+        case_data: dict,
+        env_config: Optional[dict],
+        env_config_id,
+    ) -> tuple[Optional[dict], Optional[str]]:
+        """用例级环境覆盖（两级优先级：用例绑定环境 > 项目默认环境）。
+
+        用例数据带 env_config_id 且与批次环境不同时，单独拉取该环境覆盖整批环境。
+        同时做跨环境登录态严格校验：用例步骤绑定的登录态必须属于生效环境，
+        跨环境绑定直接拒绝执行（返回错误信息），避免拿 A 环境账号打 B 环境站点。
+
+        Returns:
+            (生效环境配置, 错误信息)；正常时错误信息为 None。
+        """
+        case_env_id = case_data.get('env_config_id') or case_data.get('env_config')
+        effective_env = env_config
+        if case_env_id and str(case_env_id) != str(env_config_id):
+            case_env = await self._fetch_env_config(case_env_id)
+            if case_env:
+                logger.info(
+                    f"用例 {case_data.get('id')} 绑定环境覆盖批次环境: "
+                    f"{case_env.get('name')}(base_url={case_env.get('base_url')})"
+                )
+                effective_env = case_env
+
+        # 严格校验：步骤绑定的登录态必须属于生效环境
+        if effective_env:
+            effective_env_id = effective_env.get('id')
+            step_auth_ids = []
+            for case_step in case_data.get('case_step_details', []):
+                page_step = case_step.get('page_step') or {}
+                auth_state_id = page_step.get('auth_state')
+                if auth_state_id:
+                    step_auth_ids.append(auth_state_id)
+            for auth_state_id in step_auth_ids:
+                auth_data = await self._api_get(f"/api/ui-automation/auth-states/{auth_state_id}/")
+                if auth_data is None:
+                    continue
+                auth_env_id = auth_data.get('env_config')
+                if auth_env_id and str(auth_env_id) != str(effective_env_id):
+                    return (
+                        effective_env,
+                        f"步骤绑定登录态(id={auth_state_id})属于环境 {auth_env_id}，"
+                        f"与用例执行环境 {effective_env_id}({effective_env.get('name')}) 不一致，"
+                        f"已按严格校验拒绝执行。请修正用例的环境绑定或登录态绑定。"
+                    )
+        return effective_env, None
+
     async def _resolve_auth(self, env_config_id, auth_state_id=None) -> Optional[dict]:
         """解析执行注入的登录态：优先步骤绑定 auth_state_id；未绑定则返回 None
         （不注入，也不回落环境生效登录态）——用例内未绑定步骤执行器按"向上匹配"
@@ -622,13 +699,16 @@ class TaskConsumer:
     async def _push_exec_frame(self, w: int, h: int, data: str) -> None:
         """帧上报：复用执行器上行 WS 连接，直推发起用户（Django 侧按 user 转发）。"""
         try:
+            frame_args = {
+                'case_id': self._exec_frame_case_id,
+                'page_step_id': self._exec_frame_page_step_id,
+                'frame': {'w': w, 'h': h, 'data': data},
+            }
+            if self._task_token:
+                frame_args['task_token'] = self._task_token
             await self.ws_client.send_result(
                 UiSocketEnum.EXEC_FRAME,
-                {
-                    'case_id': self._exec_frame_case_id,
-                    'page_step_id': self._exec_frame_page_step_id,
-                    'frame': {'w': w, 'h': h, 'data': data},
-                },
+                frame_args,
                 self._current_user,
             )
         except Exception as e:
@@ -648,10 +728,6 @@ class TaskConsumer:
         if not page_step_data:
             return
         
-        # 初始化数据处理器，加载项目公共变量
-        project_id = page_step_data.get('project')
-        data_processor = await self._init_data_processor(project_id)
-        
         # 获取环境配置
         env_config = None
         base_url = ''
@@ -661,6 +737,9 @@ class TaskConsumer:
             # 尝试获取项目的默认环境配置
             if project_id:
                 env_config = await self._fetch_default_env_config(project_id)
+
+        # 环境登录凭据占位符（依赖 env_config，需在其就绪后预置）
+        data_processor = await self._init_data_processor(project_id, env_config)
         
         if env_config:
             base_url = env_config.get('base_url', '') or ''
@@ -776,7 +855,6 @@ class TaskConsumer:
         batch_id = args.get('batch_id')
         executor_id = args.get('executor_id')
         executor_name = args.get('executor_name')
-        execution_request_id = args.get('execution_request_id')
         
         if not case_id:
             logger.error("缺少case_id参数")
@@ -803,8 +881,25 @@ class TaskConsumer:
         else:
             logger.warning(f"未获取到环境配置 (env_config_id={env_config_id}, project_id={project_id})")
 
-        # 初始化数据处理器，加载项目公共变量
-        data_processor = await self._init_data_processor(project_id)
+        # 用例级环境覆盖 + 跨环境登录态严格校验（两级优先级：用例绑定 > 项目默认）
+        effective_env, case_env_error = await self._resolve_case_env(case_data, env_config, env_config_id)
+        if case_env_error:
+            logger.error(f"用例 {case_data.get('id')} 环境校验失败: {case_env_error}")
+            await self.ws_client.send_result(
+                UiSocketEnum.CASE_RESULT,
+                {
+                    'case_id': case_data.get('id'),
+                    'status': 'failed',
+                    'message': case_env_error,
+                    'batch_id': args.get('batch_id'),
+                },
+            )
+            return
+        if effective_env is not None:
+            env_config = effective_env
+
+        # 初始化数据处理器，加载项目公共变量与环境登录凭据占位符
+        data_processor = await self._init_data_processor(project_id, env_config)
 
         # 构建配置（传入数据处理器进行变量替换）
         config = self._build_test_case_config(case_data, env_config, data_processor)
@@ -837,7 +932,6 @@ class TaskConsumer:
                     UiSocketEnum.CASE_RESULT,
                     {
                         'case_id': case_id,
-                        'execution_request_id': execution_request_id,
                         'status': 'failed',
                         'message': f'准备上传文件失败: {e}',
                         'batch_id': batch_id,
@@ -862,7 +956,6 @@ class TaskConsumer:
 
             # 发送用例结果（包含 batch_id 和执行人信息）
             result_data = result.model_dump()
-            result_data['execution_request_id'] = execution_request_id
             # attach effective runtime snapshot for backend environment field
             result_data['effective_runtime'] = effective
             result_data['environment'] = effective
@@ -929,8 +1022,25 @@ class TaskConsumer:
             elif project_id:
                 env_config = await self._fetch_default_env_config(project_id)
 
+            # 用例级环境覆盖 + 跨环境登录态严格校验（失败仅跳过该用例，不中断整批）
+            effective_env, case_env_error = await self._resolve_case_env(case_data, env_config, env_config_id)
+            if case_env_error:
+                logger.error(f"批量用例 {case_id} 环境校验失败: {case_env_error}")
+                await self.ws_client.send_result(
+                    UiSocketEnum.CASE_RESULT,
+                    {
+                        'case_id': case_id,
+                        'status': 'failed',
+                        'message': case_env_error,
+                        'batch_id': batch_id,
+                    },
+                )
+                continue
+            if effective_env is not None:
+                env_config = effective_env
+
             # 初始化数据处理器
-            data_processor = await self._init_data_processor(project_id)
+            data_processor = await self._init_data_processor(project_id, env_config)
 
             # 构建配置
             config = self._build_test_case_config(case_data, env_config, data_processor)
@@ -1008,7 +1118,20 @@ class TaskConsumer:
             await self._release_memory_after_task()
     
     async def stop_execution(self, args: dict):
-        """停止执行：置停止标志并立即硬中断（前端关闭执行画布时触发）"""
+        """停止执行。
+
+        - 带 task_id（case_id）：精确停止单个用例（executor 置该用例的停止标记，
+          并发中的其他用例不受影响）。
+        - 不带 task_id：全局硬停（stop_now 置实例级标志并清空任务队列），
+          前端"停止执行"按钮的全局停止语义保持不变。
+        """
+        case_id = None
+        if isinstance(args, dict):
+            case_id = args.get('task_id') or args.get('case_id')
+        if case_id:
+            logger.info(f"收到单用例停止请求: case_id={case_id}")
+            self.executor.stop_case(str(case_id))
+            return
         logger.info("收到停止执行请求，立即中断执行")
         await self.executor.stop_now()
         # 清空任务队列
@@ -1203,11 +1326,11 @@ class TaskConsumer:
             pass
 
         token = await self._get_api_token()
-        if not token:
+        if not self.api_key and not token:
             raise RuntimeError('failed to get API token for managed file download')
 
         tmp_path = local_path.with_name(f'{local_path.name}.{uuid.uuid4().hex}.part')
-        headers = {'Authorization': f'Bearer {token}'}
+        headers = self._auth_headers(token)
         logger.info(f'downloading managed file: {url} -> {local_path}')
         response_sha = None
 
@@ -1224,11 +1347,17 @@ class TaskConsumer:
                     if not response_sha and etag and len(etag) == 64:
                         response_sha = etag
                     if response.status_code == 401:
+                        if self.api_key:
+                            # API Key 模式：401 说明 Key 无效/被禁用/过期，重试无意义
+                            body = (await response.aread())[:300]
+                            raise RuntimeError(
+                                f'下载上传文件失败(API Key 无效或被禁用): HTTP 401, body={body!r}'
+                            )
                         self._api_token = None
                         token = await self._get_api_token()
                         if not token:
                             raise RuntimeError('Token 刷新失败，无法下载上传文件')
-                        headers = {'Authorization': f'Bearer {token}'}
+                        headers = self._auth_headers(token)
                         async with client.stream('GET', url, headers=headers) as retry_response:
                             if retry_response.status_code != 200:
                                 body = (await retry_response.aread())[:300]
@@ -1309,13 +1438,20 @@ class TaskConsumer:
         candidates = []
         if file_path:
             mapped = resolve_runtime_file_path(str(file_path))
-            candidates.append(mapped)
-            if mapped != file_path:
-                candidates.append(str(file_path))
-
-        for candidate in candidates:
-            if candidate and os.path.isfile(candidate):
-                return candidate
+            # 任务数据（用例步骤）属于不可信输入：本地路径必须落在可信根内
+            # （上传缓存 / 平台数据目录），否则拒绝——否则任意本地文件会被读取
+            # 并上传到被测页面（执行器宿主的 /etc/passwd 等）。
+            for candidate in (mapped, str(file_path) if mapped != file_path else None):
+                if not candidate:
+                    continue
+                if os.path.isfile(candidate):
+                    if not is_trusted_upload_path(candidate):
+                        raise FileNotFoundError(
+                            f'上传路径不在可信目录内，已拒绝: {candidate}'
+                            f'（可信根: {[str(p) for p in trusted_upload_roots()]}）'
+                        )
+                    return candidate
+                candidates.append(candidate)
 
         # Backend may still return file_id:N when path resolve failed.
         parsed_id = self._parse_file_id(file_path)
@@ -1421,10 +1557,14 @@ class TaskConsumer:
         logger.warning(f"公共数据格式不正确: type={type(result)}")
         return []
 
-    async def _init_data_processor(self, project_id: int) -> DataProcessor:
-        """初始化数据处理器，加载项目公共变量"""
+    async def _init_data_processor(
+        self,
+        project_id: int,
+        env_config: Optional[dict] = None,
+    ) -> DataProcessor:
+        """初始化数据处理器，加载项目公共变量与环境登录凭据"""
         data_processor = reset_data_processor()
-        
+
         if project_id:
             public_data = await self._fetch_public_data(project_id)
             logger.info(f"已加载 {len(public_data)} 个公共变量")
@@ -1433,7 +1573,22 @@ class TaskConsumer:
                 logger.debug(f"变量缓存: {data_processor.get_all()}")
         else:
             logger.warning("project_id 为空，无法加载公共变量")
-        
+
+        # 环境登录凭据占位符：用例步骤里的 ${{WHARTTEST_UI_USERNAME}} /
+        # ${{WHARTTEST_UI_PASSWORD}} 在执行时替换为环境配置保存的登录账密。
+        # 值不进日志（get_all 的 debug 输出发生在预置之前）。
+        credential = {}
+        if isinstance(env_config, dict):
+            extra = env_config.get('extra_config')
+            if isinstance(extra, dict):
+                candidate = extra.get('ui_login_credential')
+                if isinstance(candidate, dict):
+                    credential = candidate
+        if credential.get('username') and credential.get('password'):
+            data_processor.set_cache('WHARTTEST_UI_USERNAME', str(credential['username']))
+            data_processor.set_cache('WHARTTEST_UI_PASSWORD', str(credential['password']))
+            logger.info("已加载环境登录凭据占位符变量（WHARTTEST_UI_USERNAME/PASSWORD）")
+
         return data_processor
 
     def _build_page_step_config(

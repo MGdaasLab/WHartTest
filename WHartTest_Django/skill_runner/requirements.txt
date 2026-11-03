@@ -1,0 +1,21 @@
+# ============================================================
+# Skill 沙箱（skill-runner / 进程内执行）运行时基础依赖
+# ============================================================
+# 用途：Skill 脚本由模型生成或第三方投递，常用一批基础库；这些库在后端
+# requirements.txt 中大多只是被其它包“间接”带入（例如 requests 来自
+# browser-use / langchain-community），不保证长期存在。因此这里单独固定一份，
+# 构建镜像时显式安装进 /opt/venv（backend 与 skill-runner 共用同一镜像），
+# 保证两种执行模式下 Skill 脚本都有稳定的基础库可用。
+#
+# 新增依赖原则：只放 Skill 运行期真正需要的基础库，业务依赖不要塞进来；
+# 版本尽量与后端 requirements.txt 中已有的固定版本保持一致。
+#
+# 本地临时沙箱（非镜像方式）安装示例：
+#   pip install --target <site-dir> -r skill_runner/requirements.txt
+# 并让 skill 子进程能读到该目录（runner 需设置
+# SKILL_ENV_ALLOWLIST_EXTRA=PYTHONPATH 才能透传 PYTHONPATH）。
+requests==2.34.2
+python-dotenv==1.1.1
+PyYAML==6.0.2
+websocket-client>=1.6.0
+openpyxl==3.1.5

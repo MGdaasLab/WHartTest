@@ -8,7 +8,10 @@
           返回列表
         </a-button>
         <h1 class="page-title">{{ report?.document_title || '评审报告' }}</h1>
-        <a-tag :color="getRatingColor(report?.overall_rating)" class="status-tag">
+        <a-tag v-if="report?.status === 'failed'" color="red" class="status-tag">
+          评审失败
+        </a-tag>
+        <a-tag v-else-if="report?.overall_rating_display" :color="getRatingColor(report?.overall_rating)" class="status-tag">
           {{ report?.overall_rating_display }}
         </a-tag>
         <!-- 版本指示器 -->
@@ -45,15 +48,24 @@
       </div>
     </div>
 
+    <!-- 评审失败提示：如实展示失败原因 -->
+    <a-alert
+      v-if="report?.status === 'failed'"
+      type="error"
+      class="report-failed-alert"
+    >
+      评审失败：{{ report?.error_message || '未知原因' }}
+    </a-alert>
+
     <!-- 评审概览 -->
     <div class="overview-section" :class="{ 'content-loading': loading }">
       <a-row :gutter="24">
         <a-col :span="6">
           <a-card class="metric-card">
             <div class="metric-content">
-              <div class="metric-value">{{ report?.completion_score || 0 }}</div>
+              <div class="metric-value">{{ report?.completion_score ?? '—' }}</div>
               <div class="metric-label">完整度评分</div>
-              <div class="metric-unit">/100</div>
+              <div v-if="report?.completion_score != null" class="metric-unit">/100</div>
             </div>
             <div class="metric-icon score-icon">
               <icon-trophy />
@@ -566,6 +578,10 @@ onMounted(() => {
   display: flex;
   gap: 12px;
   flex-shrink: 0; /* 防止操作按钮被压缩 */
+}
+
+.report-failed-alert {
+  margin-bottom: 16px;
 }
 
 .overview-section {

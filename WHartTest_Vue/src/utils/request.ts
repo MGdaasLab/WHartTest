@@ -2,6 +2,7 @@ import axios from 'axios';
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import { useAuthStore } from '@/store/authStore';
 import { getCurrentServerLanguage } from '@/utils/installLocaleAdapters';
+import { joinFieldErrorMessages } from '@/utils/responseError';
 
 // 定义我们需要的请求配置类型
 type RequestConfig = {
@@ -43,6 +44,20 @@ const service = axios.create({
 });
 
 // 请求拦截器
+
+// 从 cookie 读取 Django 种下的 csrftoken（后端 CsrfViewMiddleware 首个响应会种下）。
+function getCsrfTokenFromCookie(): string {
+  const match = document.cookie.match(/(?:^|;\s*)csrftoken=([^;]*)/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    // cookie 被篡改/损坏时 decodeURIComponent 会抛 URIError；
+    // 该异常发生在请求拦截器里会让所有非幂等请求失败，故退回原始值。
+    return match[1];
+  }
+}
+
 service.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
     // 从authStore获取token
@@ -53,6 +68,17 @@ service.interceptors.request.use(
     // 如果有token就添加到请求头
     if (token) {
       config.headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    // CSRF：从 cookie 动态读取 csrftoken，对非幂等请求自动携带。
+    // 取代此前散落在 authService / testcaseModuleService 里的硬编码静态 token
+    // 字面量——公开在源码里的静态值没有随机性，无法起到 CSRF 防护作用。
+    // cookie 尚未建立时不带该头，由后端按既有策略决定是否校验。
+    if (!['get', 'head', 'options', 'trace'].includes(config.method?.toLowerCase() || '')) {
+      const csrfToken = getCsrfTokenFromCookie();
+      if (csrfToken) {
+        config.headers['X-CSRFTOKEN'] = csrfToken;
+      }
     }
 
     // 如果是 FormData，删除默认的 Content-Type，让浏览器自动设置（包含 boundary）
@@ -83,8 +109,8 @@ function onRefreshed(token: string) {
   refreshSubscribers = [];
 }
 
-// 刷新token
-async function refreshToken() {
+// 刷新token（供 axios 拦截器与 WebSocket 4401 重连共用）
+export async function refreshToken(): Promise<string | null> {
   const authStore = useAuthStore();
   const refreshToken = authStore.getRefreshToken;
 
@@ -278,20 +304,29 @@ service.interceptors.response.use(
         if (response.data) {
           if (typeof response.data === 'string') {
             message = response.data;
-          } else if (response.data.errors && response.data.errors.error) {
-            // 优先检查是否有errors.error字段（用户报告的错误格式）
-            message = response.data.errors.error;
-          } else if (response.data.errors && response.data.errors.message) {
-            // 然后检查是否有errors.message字段
-            message = response.data.errors.message;
-          } else if (response.data.detail) {
-            message = response.data.detail;
-          } else if (response.data.message) {
-            message = response.data.message;
-          } else if (response.data.error) {
-            message = response.data.error;
           } else {
-            message = JSON.stringify(response.data);
+            // 字段级校验错误优先于顶层 message：统一响应渲染器（UnifiedResponseRenderer）
+            // 对序列化器字段校验失败固定返回泛化文案「请求参数有误或处理失败」，
+            // 真实原因（如「密码只包含数字。」）在 errors 里，必须透出给用户。
+            const fieldErrorSeparator = getCurrentServerLanguage() === 'en' ? '; ' : '；';
+            const fieldErrorMessage = joinFieldErrorMessages(response.data.errors, fieldErrorSeparator);
+            if (fieldErrorMessage) {
+              message = fieldErrorMessage;
+            } else if (response.data.errors && response.data.errors.error) {
+              // 优先检查是否有errors.error字段（用户报告的错误格式）
+              message = response.data.errors.error;
+            } else if (response.data.errors && response.data.errors.message) {
+              // 然后检查是否有errors.message字段
+              message = response.data.errors.message;
+            } else if (response.data.detail) {
+              message = response.data.detail;
+            } else if (response.data.message) {
+              message = response.data.message;
+            } else if (response.data.error) {
+              message = response.data.error;
+            } else {
+              message = JSON.stringify(response.data);
+            }
           }
         } else {
           message = response.statusText;

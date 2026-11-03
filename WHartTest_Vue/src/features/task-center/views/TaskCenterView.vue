@@ -154,8 +154,8 @@
           @page-change="onExecutionPageChange"
         >
           <template #status="{ record }">
-            <a-tag :color="execStatusColorMap[record.status]">
-              {{ execStatusTextMap[record.status] }}
+            <a-tag :color="execStatusColorMap[record.status] || 'gray'">
+              {{ execStatusTextMap[record.status] || record.status }}
             </a-tag>
           </template>
           <template #trigger_type="{ record }">
@@ -428,7 +428,7 @@ const columns = computed(() => [
 
 const executionColumns = computed(() => [
   { title: pageText.value.executionId, dataIndex: 'execution_id', width: 220, ellipsis: true },
-  { title: pageText.value.triggerType, slotName: 'trigger_type', width: 120, align: 'center' as const },
+  { title: pageText.value.triggerType, slotName: 'trigger_type', width: 110, align: 'center' as const },
   { title: pageText.value.status, slotName: 'status', width: 100, align: 'center' as const },
   { title: pageText.value.startTime, slotName: 'started_at', width: 180, align: 'center' as const },
   { title: pageText.value.duration, dataIndex: 'duration', width: 100, align: 'center' as const },

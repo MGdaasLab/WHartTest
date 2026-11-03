@@ -8,3 +8,9 @@ class TaskCenterConfig(AppConfig):
 
     def ready(self):
         import task_center.signals  # noqa: F401
+        # 执行记录 running 看门狗：每小时巡检兜底（best-effort，不阻塞启动）
+        try:
+            from .watchdog_schedule import ensure_watchdog_beat_task
+            ensure_watchdog_beat_task()
+        except Exception:
+            pass

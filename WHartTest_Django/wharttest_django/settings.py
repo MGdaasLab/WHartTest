@@ -148,10 +148,18 @@ ASGI_APPLICATION = "wharttest_django.asgi.application"
 
 # Channels Layer 配置（使用内存后端，生产环境建议使用 Redis）
 # 配置 Channels 通道层后端。
+# 通道层：自愈等 Celery worker 侧任务需要向 web 进程的 WS consumer 推送实时事件，
+# 跨进程必须用 Redis 通道层（InMemory 仅单进程内有效）。UI_AUTOMATION_REDIS_URL /
+# CELERY_BROKER_URL 未配置时回退单机 8911。
+_redis_layer_url = (
+    os.environ.get("UI_AUTOMATION_REDIS_URL")
+    or os.environ.get("CELERY_BROKER_URL")
+    or "redis://localhost:8911/0"
+)
 CHANNEL_LAYERS = {
     "default": {
-        # 使用内存通道层（适合开发/单进程场景）。
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
+        "BACKEND": "channels_redis.core.RedisChannelLayer",
+        "CONFIG": {"hosts": [_redis_layer_url]},
     }
 }
 
@@ -445,6 +453,13 @@ SIMPLE_JWT = {
     "USER_ID_CLAIM": "user_id",  # token 中用户 ID claim 名称。
 }
 
+# UI 自动化 WebSocket 认证（wharttest_django/websocket_auth.py）
+# /ws/ui/web/ 校验 SimpleJWT access token；/ws/ui/actuator/ 校验本共享密钥。
+# 部署时必须通过环境变量注入，勿使用代码内默认值（默认空 = 密钥未配置）。
+UI_WS_ACTUATOR_TOKEN = os.environ.get("UI_WS_ACTUATOR_TOKEN", "")
+# WS 认证为硬性安全要求，严格模式恒开（websocket_auth.auth_strict_mode 恒 True），
+# 不提供关闭开关。旧版本遗留的 UI_WS_AUTH_STRICT 环境变量不再被读取。
+
 # 日志输出目录
 LOGS_DIR = BASE_DIR / "data" / "logs"
 # 自动创建日志目录。
@@ -693,6 +708,8 @@ CELERY_ACCEPT_CONTENT = ["json"]  # Worker 允许接收的消息内容类型。
 # Celery任务路由 - task_center 使用独立队列，避免被其他 worker 误消费
 CELERY_TASK_ROUTES = {
     'task_center.tasks.*': {'queue': 'task_center'},
+    'task_center.heal_tasks.*': {'queue': 'task_center'},
+    'task_center.watchdog_stale_executions': {'queue': 'task_center'},
 }
 
 # Celery Beat 调度器配置
@@ -727,8 +744,19 @@ DOCX_EDITOR_PUBLIC_BASE_URL = os.environ.get("DOCX_EDITOR_PUBLIC_BASE_URL", "").
 # 主项目调用 docx-editor 集成接口时使用的服务密钥。
 DOCX_EDITOR_SERVICE_KEY = os.environ.get("DOCX_EDITOR_SERVICE_KEY", "").strip()
 
+# Skill 沙箱访问 backend 的地址：runner 模式下 skill 在独立容器执行，
+# 容器内的 127.0.0.1 是沙箱自身，必须用服务网络内可达的地址。
+# Docker Compose 默认用服务名 backend（http://backend:8000）；本地开发按需覆盖。
+WHARTTEST_RUNNER_BACKEND_URL = os.environ.get(
+    "WHARTTEST_RUNNER_BACKEND_URL", ""
+).rstrip("/")
+
 # Skill 商店配置
-# 默认商店源 base URL，必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包
+# 默认商店源：SkillHub 网站地址，或自建/镜像 base URL
+# base URL 必须以 / 结尾，前端按相对路径拼 manifest.json 和 zip 包
+# 官方源：SkillHub 网站（https://skillhub.mgdaas.com/）
+# 内网/离线现场可改用 Gitee 镜像：
+# https://gitee.com/mgdaas-lab/wharttest/raw/master/WHartTest_Skills/
 SKILL_STORE_DEFAULT_SOURCE = os.environ.get(
     "SKILL_STORE_DEFAULT_SOURCE",
     "https://skillhub.mgdaas.com/",

@@ -302,7 +302,6 @@ const pageText = computed(() => (
         maxConcurrent: '最大并发数',
         failFast: '失败中断执行',
         failFastHint: '元素定位失败（主/备用表达式与操作超时均等待结束仍未成功）时立即中断用例并上报执行记录，不再尝试定位后续步骤',
-        maxConcurrent: '批量并发',
         persistent: '持久化',
         trace: 'Trace',
         traceScreenshots: '截图',

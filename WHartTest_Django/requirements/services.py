@@ -7,17 +7,70 @@ from django.conf import settings
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langgraph_integration.models import LLMConfig
+from .llm_runtime import resolve_llm_config  # CE 适配层：无商业槽位/配额系统
 from .models import RequirementDocument, RequirementModule, DocumentImage
 from prompts.models import UserPrompt
 
 logger = logging.getLogger(__name__)
 
+VALID_SPLIT_LEVELS = {"auto", "h1", "h2", "h3", "h4", "h5", "h6"}
+HEADING_SPLIT_DOCUMENT_TYPES = {"doc", "docx", "md"}
 
-def create_llm_instance(active_config, temperature=0.1):
+# 展示给前端的错误信息脱敏规则：令牌/凭证必须打码，完整原文只进服务端日志。
+_SENSITIVE_PATTERNS = [
+    # OpenAI 风格令牌 sk-xxxx / ak-xxxx
+    (re.compile(r"\b[sS][kK]-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    # Bearer 凭证
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9_\-\./+=]{8,}"), "Bearer ***"),
+    # 形如 api_key=xxx / token: xxx / "secret": xxx 的键值对
+    (re.compile(
+        r"(?i)(api[_\-]?key|access[_\-]?token|refresh[_\-]?token|secret|password|authorization)"
+        r"(['\"\s:=]+)([A-Za-z0-9_\-\./+=]{8,})"
+    ), r"\1\2***"),
+    # URL userinfo 凭证 https://user:pass@host
+    (re.compile(r"://[^\s/:@]+:[^\s/@]+@"), "://***:***@"),
+    # URL 查询参数中的凭证
+    (re.compile(r"(?i)([?&](?:api_?key|access_?token|token|key|sig|signature|secret)=)[^&\s]+"), r"\1***"),
+    # 长 base64 / hex 令牌
+    (re.compile(r"\b[A-Za-z0-9+/]{40,}={0,2}\b"), "***"),
+    (re.compile(r"\b[0-9a-fA-F]{32,}\b"), "***"),
+]
+
+
+def sanitize_error_message(text, max_length: int = 2000) -> str:
+    """脱敏后的错误信息，可安全写入 error_message 展示给前端。
+
+    完整原文只应出现在服务端日志中；此处覆盖 LLM provider 异常里
+    常见的令牌、凭证与长随机串，避免管理员层信息向普通用户泄露。
     """
-    根据配置创建LLM实例
+    if not text:
+        return ""
+    result = str(text)
+    for pattern, repl in _SENSITIVE_PATTERNS:
+        result = pattern.sub(repl, result)
+    return result[:max_length]
+
+
+def normalize_split_level(split_level: Any, document_type: Optional[str] = None) -> str:
+    """规范化拆分级别，兼容历史坏数据和大小写差异。"""
+    normalized = str(split_level or "").strip().lower()
+    if normalized in VALID_SPLIT_LEVELS:
+        return normalized
+
+    if normalized.isdigit() and normalized in {"1", "2", "3", "4", "5", "6"}:
+        return f"h{normalized}"
+
+    if document_type in HEADING_SPLIT_DOCUMENT_TYPES:
+        return "h2"
+    return "auto"
+
+
+def create_llm_instance(active_config, temperature=0.1, streaming=False):
+    """
+    根据配置创建LLM实例（CE 线本地实现，无 wharttest_core 加密核心）
     统一使用OpenAI兼容格式，支持所有兼容的服务商
+    streaming：底层流式接收（invoke 仍聚合完整结果），避免网关在长生成
+    期间返回 504；由调用方按 LLM 配置的 enable_streaming 按需开启
     """
     model_identifier = active_config.name or "gpt-3.5-turbo"
 
@@ -28,13 +81,13 @@ def create_llm_instance(active_config, temperature=0.1):
         "base_url": active_config.api_url,
         "max_retries": 3,
         "timeout": 120,
+        "streaming": streaming,
     }
     llm = ChatOpenAI(**llm_kwargs)
     logger.info(
-        f"Initialized OpenAI-compatible LLM with model: {model_identifier}, base_url: {active_config.api_url}"
+        f"Initialized OpenAI-compatible LLM with model: {model_identifier}, "
+        f"base_url: {active_config.api_url}, streaming: {streaming}"
     )
-
-    return llm
 
     return llm
 
@@ -1167,19 +1220,29 @@ class DocumentProcessor:
 class ModuleSplitter:
     """模块拆分器 - 负责AI智能模块识别和拆分"""
 
-    def __init__(self, user=None):
+    def __init__(self, user=None, resolved_bundle_id=None, module_key="requirement_review"):
         self.user = user
+        self.resolved_bundle_id = resolved_bundle_id
+        self.module_key = module_key
         self.llm = self._get_llm_instance()
 
     def _get_llm_instance(self):
         """获取LLM实例"""
         try:
-            active_config = LLMConfig.objects.filter(is_active=True).first()
-            if not active_config:
-                raise Exception("没有可用的LLM配置")
-
-            # 使用新的LLM工厂函数，支持多供应商
-            return create_llm_instance(active_config, temperature=0.1)
+            resolution = resolve_llm_config(
+                user=self.user,
+                module_key=self.module_key,
+                pinned_bundle_id=self.resolved_bundle_id,
+            )
+            active_config = resolution.runtime_config
+            # 使用新的LLM工厂函数，支持多供应商。
+            # 大文档分析耗时长，默认启用底层流式接收（invoke 仍返回聚合结果），
+            # 避免网关在长生成期间超时返回 504。CE 线经 llm_runtime 适配层解析配置。
+            return create_llm_instance(
+                active_config,
+                temperature=0.1,
+                streaming=bool(getattr(active_config, "enable_streaming", True)),
+            )
         except Exception as e:
             logger.error(f"获取LLM实例失败: {e}")
             raise
@@ -1201,9 +1264,19 @@ class ModuleSplitter:
         try:
             # 解析拆分选项
             split_options = split_options or {}
-            split_level = split_options.get("split_level", "auto")
+            raw_split_level = split_options.get("split_level", "auto")
+            split_level = normalize_split_level(
+                raw_split_level, getattr(document, "document_type", None)
+            )
             include_context = split_options.get("include_context", True)
             chunk_size = split_options.get("chunk_size", 2000)
+
+            if split_level != str(raw_split_level or "").strip().lower():
+                logger.warning(
+                    "检测到无效拆分级别 %r，已规范化为 %s",
+                    raw_split_level,
+                    split_level,
+                )
 
             logger.info(
                 f"开始拆分文档，拆分级别: {split_level}, 包含上下文: {include_context}"
@@ -2085,10 +2158,14 @@ class ModuleSplitter:
 class RequirementModuleService:
     """需求模块服务 - 统一的模块管理服务"""
 
-    def __init__(self, user=None):
+    def __init__(self, user=None, resolved_bundle_id=None, module_key="requirement_review"):
         self.user = user
         self.document_processor = DocumentProcessor()
-        self.module_splitter = ModuleSplitter(user=user)
+        self.module_splitter = ModuleSplitter(
+            user=user,
+            resolved_bundle_id=resolved_bundle_id,
+            module_key=module_key,
+        )
 
 
 
@@ -2473,21 +2550,32 @@ class ModuleOperationService:
 class RequirementReviewEngine:
     """需求评审AI分析引擎 - 专业的需求文档评审分析"""
 
-    def __init__(self, user=None):
+    def __init__(self, user=None, resolved_bundle_id=None, module_key="requirement_review"):
         self.user = user
+        self.resolved_bundle_id = resolved_bundle_id
+        self.module_key = module_key
         self.llm_config = None  # 保存当前使用的LLM配置
         self.llm = self._get_llm_instance()
 
     def _get_llm_instance(self):
         """获取LLM实例"""
         try:
-            active_config = LLMConfig.objects.filter(is_active=True).first()
-            if not active_config:
-                raise Exception("没有可用的LLM配置")
-
+            resolution = resolve_llm_config(
+                user=self.user,
+                module_key=self.module_key,
+                pinned_bundle_id=self.resolved_bundle_id,
+            )
+            active_config = resolution.runtime_config
             self.llm_config = active_config  # 保存配置引用
-            # 使用新的LLM工厂函数，支持多供应商
-            return create_llm_instance(active_config, temperature=0.1)
+            # 使用新的LLM工厂函数，支持多供应商。
+            # 需求评审输入大（数万字）、生成久，默认启用底层流式接收
+            # （invoke 仍返回聚合结果），避免网关在长生成期间超时返回 504。
+            # CE 线经 llm_runtime 适配层解析配置（无商业槽位系统）。
+            return create_llm_instance(
+                active_config,
+                temperature=0.1,
+                streaming=bool(getattr(active_config, "enable_streaming", True)),
+            )
         except Exception as e:
             logger.error(f"获取LLM实例失败: {e}")
             raise
@@ -2597,66 +2685,39 @@ class RequirementReviewEngine:
     def analyze_document_directly(
         self, content: str, analysis_options: dict = None
     ) -> dict:
-        """直接分析整个文档（不拆分模块）"""
+        """直接分析整个文档（不拆分模块）。
+
+        失败时抛出携带原因的异常，由上层把文档标记为失败并展示原因；
+        不再返回伪造评分的"默认结果"。
+        """
+        direct_prompt = self._get_user_prompt("direct_analysis")
+        if not direct_prompt:
+            raise ValueError("用户未配置直接分析提示词，请先在提示词管理中配置")
+
+        formatted_prompt = format_prompt_template(
+            direct_prompt, content=content[:8000]
+        )
+        messages = [
+            SystemMessage(content="你是一位专业的需求分析师，擅长需求文档评审。"),
+            HumanMessage(content=formatted_prompt),
+        ]
+
         try:
-            direct_prompt = self._get_user_prompt("direct_analysis")
-            if not direct_prompt:
-                raise ValueError("用户未配置直接分析提示词，请先在提示词管理中配置")
-
-            formatted_prompt = format_prompt_template(
-                direct_prompt, content=content[:8000]
-            )
-            messages = [
-                SystemMessage(content="你是一位专业的需求分析师，擅长需求文档评审。"),
-                HumanMessage(content=formatted_prompt),
-            ]
-
             response = safe_llm_invoke(self.llm, messages)
-
-            analysis_result = extract_json_from_response(response.content)
-            if analysis_result:
-                # 确保必要字段存在
-                analysis_result.setdefault("overall_rating", "average")
-                analysis_result.setdefault("completion_score", 70)
-                analysis_result.setdefault("clarity_score", 70)
-                analysis_result.setdefault("consistency_score", 70)
-                analysis_result.setdefault("completeness_score", 70)
-                analysis_result.setdefault("summary", "文档评审完成")
-                analysis_result.setdefault("recommendations", "请根据问题列表进行改进")
-                analysis_result.setdefault("issues", [])
-                return analysis_result
-            else:
-                logger.warning("直接分析未返回JSON格式，使用默认结果")
-                return self._get_default_direct_analysis()
-
-        except json.JSONDecodeError as e:
-            logger.error(f"解析直接分析JSON失败: {e}")
-            return self._get_default_direct_analysis()
         except Exception as e:
             logger.error(f"直接文档分析失败: {e}")
-            return self._get_default_direct_analysis()
+            raise RuntimeError(f"直接评审调用 AI 失败: {e}")
 
-    def _get_default_direct_analysis(self) -> dict:
-        """获取默认的直接分析结果"""
-        return {
-            "overall_rating": "average",
-            "completion_score": 70,
-            "clarity_score": 70,
-            "consistency_score": 70,
-            "completeness_score": 70,
-            "summary": "文档评审完成，整体质量中等",
-            "recommendations": "建议进一步完善需求描述的清晰度和完整性",
-            "issues": [
-                {
-                    "title": "评审系统异常",
-                    "description": "自动评审过程中出现异常，建议人工复核",
-                    "priority": "medium",
-                    "category": "system",
-                    "location": "整个文档",
-                    "suggestion": "请联系管理员检查系统状态",
-                }
-            ],
-        }
+        analysis_result = extract_json_from_response(response.content)
+        if not analysis_result:
+            logger.warning(
+                f"直接分析未返回JSON格式，响应前200字符: {response.content[:200]}"
+            )
+            raise ValueError("直接评审未返回有效的 JSON 结果")
+
+        # 如实返回 AI 结果，缺失的字段保持缺失（下游按 null 处理），
+        # 不再用默认分数补齐
+        return analysis_result
 
     def analyze_completeness(
         self, content: str, document: RequirementDocument = None
@@ -2665,8 +2726,8 @@ class RequirementReviewEngine:
         logger.info("开始执行完整性分析...")
         completeness_prompt = self._get_user_prompt("completeness_analysis")
         if not completeness_prompt:
-            logger.warning("用户未配置完整性分析提示词，返回默认结果")
-            return self._get_default_analysis_result("completeness_analysis")
+            logger.warning("用户未配置完整性分析提示词")
+            return self._failed_analysis_result("completeness_analysis", "用户未配置完整性分析提示词")
 
         try:
             # 准备分析内容（可能是纯文本或多模态）
@@ -2715,16 +2776,16 @@ class RequirementReviewEngine:
                     result["image_warning"] = image_warning
                 return result
             else:
-                logger.warning("完整性分析响应中未找到JSON格式，使用默认结果")
+                logger.warning("完整性分析响应中未找到JSON格式")
                 logger.debug(f"AI响应内容前500字符: {response.content[:500]}")
-                return self._get_default_analysis_result("completeness_analysis")
+                return self._failed_analysis_result("completeness_analysis", "AI 响应中未找到有效的 JSON 结果")
 
         except Exception as e:
             logger.error(f"完整性分析失败: {e}")
             import traceback
 
             logger.error(f"详细错误: {traceback.format_exc()}")
-            return self._get_default_analysis_result("completeness_analysis")
+            return self._failed_analysis_result("completeness_analysis", f"完整性分析执行失败: {e}")
 
     def analyze_consistency(
         self, content: str, document: RequirementDocument = None
@@ -2733,8 +2794,8 @@ class RequirementReviewEngine:
         logger.info("开始执行一致性分析...")
         consistency_prompt = self._get_user_prompt("consistency_analysis")
         if not consistency_prompt:
-            logger.warning("用户未配置一致性分析提示词，返回默认结果")
-            return self._get_default_analysis_result("consistency_analysis")
+            logger.warning("用户未配置一致性分析提示词")
+            return self._failed_analysis_result("consistency_analysis", "用户未配置一致性分析提示词")
 
         try:
             # 准备分析内容（可能是纯文本或多模态）
@@ -2780,16 +2841,16 @@ class RequirementReviewEngine:
                     result["image_warning"] = image_warning
                 return result
             else:
-                logger.warning("一致性分析响应中未找到JSON格式，使用默认结果")
+                logger.warning("一致性分析响应中未找到JSON格式")
                 logger.debug(f"AI响应内容前500字符: {response.content[:500]}")
-                return self._get_default_analysis_result("consistency_analysis")
+                return self._failed_analysis_result("consistency_analysis", "AI 响应中未找到有效的 JSON 结果")
 
         except Exception as e:
             logger.error(f"一致性分析失败: {e}")
             import traceback
 
             logger.error(f"详细错误: {traceback.format_exc()}")
-            return self._get_default_analysis_result("consistency_analysis")
+            return self._failed_analysis_result("consistency_analysis", f"一致性分析执行失败: {e}")
 
     def analyze_testability(
         self, content: str, document: RequirementDocument = None
@@ -2798,8 +2859,8 @@ class RequirementReviewEngine:
         logger.info("开始执行可测性分析...")
         testability_prompt = self._get_user_prompt("testability_analysis")
         if not testability_prompt:
-            logger.warning("用户未配置可测性分析提示词，返回默认结果")
-            return self._get_default_analysis_result("testability_analysis")
+            logger.warning("用户未配置可测性分析提示词")
+            return self._failed_analysis_result("testability_analysis", "用户未配置可测性分析提示词")
 
         try:
             # 准备分析内容（可能是纯文本或多模态）
@@ -2842,15 +2903,15 @@ class RequirementReviewEngine:
                     result["image_warning"] = image_warning
                 return result
             else:
-                logger.warning("可测性分析未返回JSON格式，使用默认结果")
-                return self._get_default_analysis_result("testability_analysis")
+                logger.warning("可测性分析未返回JSON格式")
+                return self._failed_analysis_result("testability_analysis", "AI 响应中未找到有效的 JSON 结果")
 
         except Exception as e:
             logger.error(f"可测性分析失败: {e}")
             import traceback
 
             logger.error(f"详细错误: {traceback.format_exc()}")
-            return self._get_default_analysis_result("testability_analysis")
+            return self._failed_analysis_result("testability_analysis", f"可测性分析执行失败: {e}")
 
     def analyze_feasibility(
         self, content: str, document: RequirementDocument = None
@@ -2859,8 +2920,8 @@ class RequirementReviewEngine:
         logger.info("开始执行可行性分析...")
         feasibility_prompt = self._get_user_prompt("feasibility_analysis")
         if not feasibility_prompt:
-            logger.warning("用户未配置可行性分析提示词，返回默认结果")
-            return self._get_default_analysis_result("feasibility_analysis")
+            logger.warning("用户未配置可行性分析提示词")
+            return self._failed_analysis_result("feasibility_analysis", "用户未配置可行性分析提示词")
 
         try:
             # 准备分析内容（可能是纯文本或多模态）
@@ -2900,15 +2961,15 @@ class RequirementReviewEngine:
                     result["image_warning"] = image_warning
                 return result
             else:
-                logger.warning("可行性分析未返回JSON格式，使用默认结果")
-                return self._get_default_analysis_result("feasibility_analysis")
+                logger.warning("可行性分析未返回JSON格式")
+                return self._failed_analysis_result("feasibility_analysis", "AI 响应中未找到有效的 JSON 结果")
 
         except Exception as e:
             logger.error(f"可行性分析失败: {e}")
             import traceback
 
             logger.error(f"详细错误: {traceback.format_exc()}")
-            return self._get_default_analysis_result("feasibility_analysis")
+            return self._failed_analysis_result("feasibility_analysis", f"可行性分析执行失败: {e}")
 
     def analyze_clarity(
         self, content: str, document: RequirementDocument = None
@@ -2917,8 +2978,8 @@ class RequirementReviewEngine:
         logger.info("开始执行清晰度分析...")
         clarity_prompt = self._get_user_prompt("clarity_analysis")
         if not clarity_prompt:
-            logger.warning("用户未配置清晰度分析提示词，返回默认结果")
-            return self._get_default_analysis_result("clarity_analysis")
+            logger.warning("用户未配置清晰度分析提示词")
+            return self._failed_analysis_result("clarity_analysis", "用户未配置清晰度分析提示词")
 
         try:
             # 准备分析内容（可能是纯文本或多模态）
@@ -2958,23 +3019,44 @@ class RequirementReviewEngine:
                     result["image_warning"] = image_warning
                 return result
             else:
-                logger.warning("清晰度分析未返回JSON格式，使用默认结果")
-                return self._get_default_analysis_result("clarity_analysis")
+                logger.warning("清晰度分析未返回JSON格式")
+                return self._failed_analysis_result("clarity_analysis", "AI 响应中未找到有效的 JSON 结果")
 
         except Exception as e:
             logger.error(f"清晰度分析失败: {e}")
             import traceback
 
             logger.error(f"详细错误: {traceback.format_exc()}")
-            return self._get_default_analysis_result("clarity_analysis")
+            return self._failed_analysis_result("clarity_analysis", f"清晰度分析执行失败: {e}")
 
-    def _get_default_analysis_result(self, analysis_type: str) -> dict:
-        """获取默认的分析结果"""
+    @staticmethod
+    def _to_score(value):
+        """把 LLM 返回的评分规整为 int；无法解析或缺失返回 None"""
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return int(round(value))
+        if isinstance(value, str):
+            try:
+                return int(round(float(value.strip())))
+            except ValueError:
+                return None
+        return None
+
+    def _failed_analysis_result(self, analysis_type: str, reason: str) -> dict:
+        """构造显式失败的分析结果。
+
+        失败就是失败：不伪造评分、不伪造"分析完成"的总结，
+        由聚合层决定部分失败如何呈现、全部失败如何终止评审。
+        """
         return {
             "analysis_type": analysis_type,
-            "overall_score": 70,
-            "summary": f"{analysis_type}分析完成，整体质量中等",
+            "status": "failed",
+            "error_message": sanitize_error_message(reason, max_length=1000),
+            "overall_score": None,
+            "summary": "",
             "issues": [],
+            "recommendations": [],
         }
 
     def analyze_logic(self, content: str, document: RequirementDocument = None) -> dict:
@@ -2982,8 +3064,8 @@ class RequirementReviewEngine:
         logger.info("开始执行逻辑分析...")
         logic_prompt = self._get_user_prompt("logic_analysis")
         if not logic_prompt:
-            logger.warning("用户未配置逻辑分析提示词，返回默认结果")
-            return self._get_default_analysis_result("logic_analysis")
+            logger.warning("用户未配置逻辑分析提示词")
+            return self._failed_analysis_result("logic_analysis", "用户未配置逻辑分析提示词")
 
         try:
             # 准备分析内容（可能是纯文本或多模态）
@@ -3031,16 +3113,18 @@ class RequirementReviewEngine:
                     result["image_warning"] = image_warning
                 return result
             else:
-                logger.warning("逻辑分析未返回JSON格式，使用默认结果")
+                logger.warning("逻辑分析未返回JSON格式")
                 logger.debug(f"AI响应内容前500字符: {response.content[:500]}")
-                return self._get_default_analysis_result("logic_analysis")
+                return self._failed_analysis_result(
+                    "logic_analysis", "AI 响应中未找到有效的 JSON 结果"
+                )
 
         except Exception as e:
             logger.error(f"逻辑分析失败: {e}")
             import traceback
 
             logger.error(f"详细错误: {traceback.format_exc()}")
-            return self._get_default_analysis_result("logic_analysis")
+            return self._failed_analysis_result("logic_analysis", f"逻辑分析执行失败: {e}")
 
     def analyze_document_comprehensive(
         self, document: RequirementDocument, analysis_options: dict = None
@@ -3143,9 +3227,10 @@ class RequirementReviewEngine:
 
                     except Exception as e:
                         logger.error(f"{display_name}分析失败: {e}")
-                        # 使用默认结果
-                        results[analysis_name] = self._get_default_analysis_result(
-                            f"{analysis_name}_analysis"
+                        # 记录显式失败结果，不伪造评分
+                        results[analysis_name] = self._failed_analysis_result(
+                            f"{analysis_name}_analysis",
+                            f"{display_name}分析执行异常: {e}",
                         )
 
                         # 即使失败也更新进度
@@ -3211,20 +3296,41 @@ class RequirementReviewEngine:
             document = analyses.get("document")
             image_warning = analyses.get("image_warning")  # 图片警告信息
 
-            # 计算总体评分（6个维度平均）
-            scores = []
-            for analysis in [
-                completeness,
-                consistency,
-                testability,
-                feasibility,
-                clarity,
-                logic,
-            ]:
-                score = analysis.get("overall_score", 70)
-                scores.append(score)
+            # 计算总体评分：只对成功产出评分的维度求平均。
+            # 失败的维度评分为 None，不再用 70 兜底伪装成正常结果。
+            dimension_list = [
+                ("completeness", "完整性", completeness),
+                ("consistency", "一致性", consistency),
+                ("testability", "可测性", testability),
+                ("feasibility", "可行性", feasibility),
+                ("clarity", "清晰度", clarity),
+                ("logic", "逻辑性", logic),
+            ]
 
-            overall_score = int(sum(scores) / len(scores)) if scores else 70
+            scores_by_dim = {
+                key: self._to_score(data.get("overall_score"))
+                for key, _display, data in dimension_list
+            }
+            failed_dims = [
+                (key, display, data.get("error_message", "未产出有效评分"))
+                for key, display, data in dimension_list
+                if scores_by_dim[key] is None
+            ]
+
+            if failed_dims:
+                failed_summary = "; ".join(
+                    f"{display}({reason})" for _key, display, reason in failed_dims
+                )
+                logger.warning(f"专项分析失败维度: {failed_summary}")
+
+            if len(failed_dims) == len(dimension_list):
+                # 全部维度失败：无法生成任何有效结论，显式失败而非伪造报告
+                raise ValueError(
+                    f"所有专项分析均失败，无法生成评审报告。失败原因：{failed_summary}"
+                )
+
+            valid_scores = [s for s in scores_by_dim.values() if s is not None]
+            overall_score = int(sum(valid_scores) / len(valid_scores))
 
             # 收集所有问题
             all_issues = []
@@ -3300,6 +3406,9 @@ class RequirementReviewEngine:
             summary = self._generate_summary(
                 overall_score, len(all_issues), len(high_priority)
             )
+            if failed_dims:
+                failed_names = "、".join(display for _k, display, _r in failed_dims)
+                summary += f"注意：{len(failed_dims)} 项专项分析失败（{failed_names}），未计入总体评分，对应维度显示为未评估。"
 
             # 构建综合报告
             comprehensive_report = {
@@ -3309,15 +3418,8 @@ class RequirementReviewEngine:
                 "high_priority_issues": len(high_priority),
                 "medium_priority_issues": len(medium_priority),
                 "low_priority_issues": len(low_priority),
-                # 详细评分（6个专项维度）
-                "scores": {
-                    "completeness": completeness.get("overall_score", 70),
-                    "consistency": consistency.get("overall_score", 70),
-                    "testability": testability.get("overall_score", 70),
-                    "feasibility": feasibility.get("overall_score", 70),
-                    "clarity": clarity.get("overall_score", 70),
-                    "logic": logic.get("overall_score", 70),
-                },
+                # 详细评分（6个专项维度；失败维度为 None，前端如实展示未评估）
+                "scores": scores_by_dim,
                 # 问题详情
                 "issues": all_issues,
                 "high_priority_issues_detail": high_priority,
@@ -3334,7 +3436,7 @@ class RequirementReviewEngine:
                 },
                 # 改进建议
                 "recommendations": recommendations,
-                # 总结
+                # 总结（如有失败维度，明确告知用户，不静默掩盖）
                 "summary": summary,
                 # 元数据
                 "analysis_architecture": "specialized_200k_context",
@@ -3706,9 +3808,13 @@ class RequirementReviewEngine:
 class RequirementReviewService:
     """需求评审服务 - 统一的评审管理服务"""
 
-    def __init__(self, user=None):
+    def __init__(self, user=None, resolved_bundle_id=None, module_key="requirement_review"):
         self.user = user
-        self.review_engine = RequirementReviewEngine(user=user)
+        self.review_engine = RequirementReviewEngine(
+            user=user,
+            resolved_bundle_id=resolved_bundle_id,
+            module_key=module_key,
+        )
 
     def start_direct_review(
         self, document: RequirementDocument, analysis_options: dict = None
@@ -3738,15 +3844,19 @@ class RequirementReviewService:
                 document.content, analysis_options or {}
             )
 
-            # 更新评审报告
-            review_report.overall_rating = review_result.get(
-                "overall_rating", "average"
+            # 更新评审报告（缺失的评分保持 None，不再用 0/70 伪造）
+            review_report.overall_rating = review_result.get("overall_rating")
+            review_report.completion_score = self.review_engine._to_score(
+                review_result.get("completion_score")
             )
-            review_report.completion_score = review_result.get("completion_score", 0)
-            review_report.clarity_score = review_result.get("clarity_score", 0)
-            review_report.consistency_score = review_result.get("consistency_score", 0)
-            review_report.completeness_score = review_result.get(
-                "completeness_score", 0
+            review_report.clarity_score = self.review_engine._to_score(
+                review_result.get("clarity_score")
+            )
+            review_report.consistency_score = self.review_engine._to_score(
+                review_result.get("consistency_score")
+            )
+            review_report.completeness_score = self.review_engine._to_score(
+                review_result.get("completeness_score")
             )
             review_report.summary = review_result.get("summary", "")
             review_report.recommendations = review_result.get("recommendations", "")
@@ -3779,7 +3889,8 @@ class RequirementReviewService:
 
             # 更新文档状态
             document.status = "review_completed"
-            document.save()
+            document.error_message = ""
+            document.save(update_fields=["status", "error_message", "updated_at"])
 
             logger.info(f"文档 {document.id} 直接评审完成")
             return review_report
@@ -3788,7 +3899,24 @@ class RequirementReviewService:
             logger.error(f"直接评审失败: {e}")
             if "review_report" in locals():
                 review_report.status = "failed"
-                review_report.save()
+                review_report.error_message = sanitize_error_message(str(e))
+                for field in (
+                    "completion_score", "clarity_score", "consistency_score",
+                    "completeness_score", "testability_score", "feasibility_score",
+                    "logic_score",
+                ):
+                    setattr(review_report, field, None)
+                review_report.save(
+                    update_fields=[
+                        "status", "error_message", "updated_at",
+                        "completion_score", "clarity_score", "consistency_score",
+                        "completeness_score", "testability_score",
+                        "feasibility_score", "logic_score",
+                    ]
+                )
+            document.status = "failed"
+            document.error_message = sanitize_error_message(str(e))
+            document.save(update_fields=["status", "error_message", "updated_at"])
             raise
 
     def start_comprehensive_review(
@@ -3863,11 +3991,12 @@ class RequirementReviewService:
 
             # 完成评审
             review_report.status = "completed"
-            review_report.save()
+            review_report.save(update_fields=["status", "updated_at"])
 
             # 更新文档状态
             document.status = "review_completed"
-            document.save()
+            document.error_message = ""
+            document.save(update_fields=["status", "error_message", "updated_at"])
 
             logger.info(
                 f"评审完成: {document.title}, 总体评分: {review_report.completion_score}"
@@ -3878,22 +4007,167 @@ class RequirementReviewService:
         except Exception as e:
             logger.error(f"评审失败: {e}")
 
-            # 更新失败状态
+            # 更新失败状态并记录失败原因（脱敏后）供前端展示；
+            # 失败报告不保留任何评分，避免 default=0 被当成真实评分展示
             if "review_report" in locals():
                 review_report.status = "failed"
-                review_report.save()
+                review_report.error_message = sanitize_error_message(str(e))
+                for field in (
+                    "completion_score", "clarity_score", "consistency_score",
+                    "completeness_score", "testability_score", "feasibility_score",
+                    "logic_score",
+                ):
+                    setattr(review_report, field, None)
+                review_report.save(
+                    update_fields=[
+                        "status", "error_message", "updated_at",
+                        "completion_score", "clarity_score", "consistency_score",
+                        "completeness_score", "testability_score",
+                        "feasibility_score", "logic_score",
+                    ]
+                )
 
             document.status = "failed"
-            document.save()
+            document.error_message = sanitize_error_message(str(e))
+            document.save(update_fields=["status", "error_message", "updated_at"])
 
+            raise
+
+    # 维度键 -> (中文名, 引擎分析方法名)：单维度重试的映射表
+    DIMENSION_ANALYSIS_MAP = {
+        "completeness": ("完整性", "analyze_completeness"),
+        "consistency": ("一致性", "analyze_consistency"),
+        "testability": ("可测性", "analyze_testability"),
+        "feasibility": ("可行性", "analyze_feasibility"),
+        "clarity": ("清晰度", "analyze_clarity"),
+        "logic": ("逻辑性", "analyze_logic"),
+    }
+
+    def retry_dimension_analysis(
+        self,
+        document: RequirementDocument,
+        dimension: str,
+        analysis_options: dict = None,
+        progress_callback=None,
+    ) -> "ReviewReport":
+        """对已完成（含部分维度失败）的综合评审报告重试单个维度，原位更新。
+
+        只重跑指定维度的 LLM 分析，其余维度沿用报告中已存的
+        specialized_analyses 结果，重新聚合总分/评级/问题统计；
+        问题记录（ReviewIssue）按六维合并结果整体重建。
+        注意：重建会丢失问题上手动标记的已解决状态。
+        """
+        if dimension not in self.DIMENSION_ANALYSIS_MAP:
+            raise ValueError(f"未知的分析维度: {dimension}")
+
+        display_name, analyze_method_name = self.DIMENSION_ANALYSIS_MAP[dimension]
+        review_report = document.review_reports.order_by("-review_date").first()
+        if not review_report:
+            raise ValueError("文档还没有评审报告，请先完成一次完整评审")
+        if review_report.status != "completed":
+            raise ValueError("仅支持对已完成（含部分维度失败）的报告重试单个维度")
+
+        stored = review_report.specialized_analyses or {}
+        if not stored:
+            raise ValueError("报告缺少专项分析详情，无法单维重试，请整体重新评审")
+
+        try:
+            document.status = "reviewing"
+            document.error_message = ""
+            document.save(
+                update_fields=["status", "error_message", "updated_at"]
+            )
+            review_report.status = "in_progress"
+            review_report.progress = 0.1
+            review_report.current_step = f"{display_name}重试中"
+            review_report.save(
+                update_fields=["status", "progress", "current_step", "updated_at"]
+            )
+            if progress_callback:
+                progress_callback(
+                    0.1, f"{display_name}重试中", review_report.completed_steps or []
+                )
+
+            analyze_method = getattr(self.review_engine, analyze_method_name)
+            new_result = analyze_method(document.content, document)
+
+            merged = {
+                key: stored.get(f"{key}_analysis", {})
+                for key in self.DIMENSION_ANALYSIS_MAP
+            }
+            merged[dimension] = new_result
+            merged["document"] = document
+            merged["image_warning"] = (new_result or {}).get("image_warning")
+
+            if progress_callback:
+                progress_callback(
+                    0.9, "重新汇总报告", review_report.completed_steps or []
+                )
+
+            # 复用综合聚合：成功维度计入均分；仍失败的维度保持未评估
+            comprehensive = (
+                self.review_engine._generate_comprehensive_report_v2(merged)
+            )
+
+            # 原位更新报告与问题记录
+            self._update_review_report(review_report, comprehensive)
+            review_report.issues.all().delete()
+            self._create_review_issues(review_report, comprehensive)
+            review_report.status = "completed"
+            review_report.progress = 1.0
+            review_report.current_step = "评审完成"
+            review_report.error_message = ""
+            review_report.save(
+                update_fields=[
+                    "status", "progress", "current_step", "error_message",
+                    "updated_at",
+                ]
+            )
+
+            document.status = "review_completed"
+            document.error_message = ""
+            document.save(
+                update_fields=["status", "error_message", "updated_at"]
+            )
+
+            if progress_callback:
+                progress_callback(
+                    1.0, "评审完成", review_report.completed_steps or []
+                )
+
+            logger.info(
+                f"文档 {document.id} 维度 {display_name} 重试完成, 报告 {review_report.id} 已原位更新"
+            )
+            return review_report
+
+        except Exception as e:
+            logger.error(f"{display_name}维度重试失败: {e}")
+            # 意外崩溃：报告旧结果仍有效，恢复 completed，不推翻整份报告
+            try:
+                review_report.status = "completed"
+                review_report.error_message = sanitize_error_message(
+                    f"{display_name}重试失败: {e}"
+                )
+                review_report.save(
+                    update_fields=["status", "error_message", "updated_at"]
+                )
+            except Exception as restore_error:
+                logger.error(f"恢复报告状态失败: {restore_error}")
+            document.status = "review_completed"
+            document.error_message = sanitize_error_message(
+                f"{display_name}重试失败: {e}"
+            )
+            document.save(
+                update_fields=["status", "error_message", "updated_at"]
+            )
             raise
 
     def _update_review_report(
         self, review_report: "ReviewReport", analysis_result: dict
     ):
         """更新评审报告基本信息和专项分析详情"""
-        review_report.overall_rating = analysis_result.get("overall_rating", "average")
-        review_report.completion_score = analysis_result.get("overall_score", 0)
+        review_report.overall_rating = analysis_result.get("overall_rating")
+        review_report.completion_score = analysis_result.get("overall_score")
         review_report.total_issues = analysis_result.get("total_issues", 0)
         review_report.high_priority_issues = analysis_result.get(
             "high_priority_issues", 0
@@ -3913,24 +4187,25 @@ class RequirementReviewService:
         specialized_analyses = analysis_result.get("specialized_analyses", {})
         review_report.specialized_analyses = specialized_analyses
 
-        # 同时保存各专项分析的分数到独立字段
-        review_report.completeness_score = specialized_analyses.get(
-            "completeness_analysis", {}
-        ).get("overall_score", 0)
-        review_report.consistency_score = specialized_analyses.get(
-            "consistency_analysis", {}
-        ).get("overall_score", 0)
-        review_report.clarity_score = specialized_analyses.get(
-            "clarity_analysis", {}
-        ).get("overall_score", 0)
-        review_report.testability_score = specialized_analyses.get(
-            "testability_analysis", {}
-        ).get("overall_score", 0)
-        review_report.feasibility_score = specialized_analyses.get(
-            "feasibility_analysis", {}
-        ).get("overall_score", 0)
-        review_report.logic_score = specialized_analyses.get("logic_analysis", {}).get(
-            "overall_score", 0
+        # 同时保存各专项分析的分数到独立字段；失败维度没有有效评分，保持 None。
+        # 统一经 _to_score 规整，避免 float 截断或垃圾字符串导致 save 失败。
+        review_report.completeness_score = self.review_engine._to_score(
+            specialized_analyses.get("completeness_analysis", {}).get("overall_score")
+        )
+        review_report.consistency_score = self.review_engine._to_score(
+            specialized_analyses.get("consistency_analysis", {}).get("overall_score")
+        )
+        review_report.clarity_score = self.review_engine._to_score(
+            specialized_analyses.get("clarity_analysis", {}).get("overall_score")
+        )
+        review_report.testability_score = self.review_engine._to_score(
+            specialized_analyses.get("testability_analysis", {}).get("overall_score")
+        )
+        review_report.feasibility_score = self.review_engine._to_score(
+            specialized_analyses.get("feasibility_analysis", {}).get("overall_score")
+        )
+        review_report.logic_score = self.review_engine._to_score(
+            specialized_analyses.get("logic_analysis", {}).get("overall_score")
         )
 
         review_report.save()
