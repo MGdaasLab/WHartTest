@@ -842,14 +842,17 @@ const INIT_SCRIPT = () => {
     var d = window.__whart.describe(el);
     if (!d) return;
     if (window.__whartReport) {
-      // native_select：原生 <select>（点击展开浏览器 UI 层弹层，非页面 DOM），
-      // 服务端据此进入键盘选择模式（弹层画面/交互特殊处理，见 selectNav）。
-      // viewportX/Y 为视口坐标，服务端用它反查 select DOM 提取选项列表。
+      // native_select：原生 <select> 或 <input list>（datalist，建议弹层同为
+      // 浏览器 UI 层、非页面 DOM），服务端据此进入可视化选择模式（弹层画面/
+      // 交互特殊处理，见 selectNav）。
+      // viewportX/Y 为视口坐标，服务端用它反查控件 DOM 提取选项列表。
       var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      var isDatalistInput = el.tagName === 'INPUT' && el.getAttribute('list')
+        && document.getElementById(el.getAttribute('list'));
       window.__whartReport({
         t: 'click',
         el: d,
-        native_select: el.tagName === 'SELECT',
+        native_select: el.tagName === 'SELECT' || isDatalistInput,
         viewportX: r ? r.left + r.width / 2 : 0,
         viewportY: r ? r.top + r.height / 2 : 0,
       });
@@ -912,6 +915,88 @@ const INIT_SCRIPT = () => {
       window.__whartReport({ t: 'press', el: d, key: 'Enter' });
     }
   }, true);
+
+  // ---------------------------------------------------------------------------
+  // 原生对话框兼容：alert/confirm/prompt 的浏览器 UI 层对话框无头下不可见、
+  // 不可交互，Playwright 还会自动 dismiss（confirm 走取消分支，页面行为与
+  // 真实浏览器不一致）。页内 DOM 无法同步阻塞等用户点击（confirm 必须同步
+  // 返回布尔值），因此采用「默认确定 + 可视化回显 + 显式取消录制」模型：
+  //   - confirm 同步返回 true、prompt 同步返回 defaultValue——与执行器
+  //     handle_dialog 自动 accept 的回放语义完全一致
+  //   - 同时渲染页内提示条数秒（画布可见，用户知道弹了什么）
+  //   - 上报 dialog 动作（类型/消息/返回值），录制为可回放步骤
+  //   - 用户要录「取消」分支：先点提示条上的「录制为取消」，本次调用同步
+  //     返回取消语义（false/null），后续对话框调用同理
+  // 覆写仅存在于录制会话页面内（addInitScript），不改动目标系统代码。
+  // ---------------------------------------------------------------------------
+  var whartDialogCancelNext = false;   // 提示条上点「录制为取消」→ 下次对话框走取消语义
+  function sandboxDialog(kind, message, defaultValue) {
+    var cancelled = whartDialogCancelNext;
+    whartDialogCancelNext = false;
+    var confirmed = !cancelled;
+    var result;
+    if (kind === 'alert') {
+      result = undefined;
+    } else if (kind === 'confirm') {
+      result = confirmed;
+    } else { // prompt
+      result = confirmed ? (defaultValue == null ? '' : String(defaultValue)) : null;
+    }
+    // 页内提示条：画布可见（原生对话框无头下完全不可见）。pointer-events:none
+    // 使其不拦截页面点击（否则盖住顶部区域时 elementFromPoint/录制目标全指向
+    // 提示条），仅「按取消返回」按钮单独恢复可点。
+    try {
+      var old = document.querySelector('[data-whart-dialog-tip]');
+      if (old) old.remove();
+      var tip = document.createElement('div');
+      tip.setAttribute('data-whart-dialog-tip', '');
+      tip.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;'
+        + 'align-items:center;gap:10px;padding:8px 14px;background:#fef0f0;color:#c45656;'
+        + 'font:13px/1.5 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;';
+      var text = document.createElement('span');
+      text.style.cssText = 'flex:1;white-space:pre-wrap;word-break:break-word;';
+      text.textContent = '【' + kind + ' 对话框】' + String(message == null ? '' : message)
+        + (kind === 'prompt' && confirmed ? '（prompt 返回默认值: ' + (result == null ? '' : result) + '）' : '');
+      tip.appendChild(text);
+      if (kind !== 'alert' && !cancelled) {
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = '本次按取消返回';
+        cancelBtn.style.cssText = 'padding:3px 10px;font-size:12px;cursor:pointer;border:1px solid #c45656;'
+          + 'background:#fff;color:#c45656;border-radius:3px;pointer-events:auto;';
+        cancelBtn.addEventListener('click', function () {
+          whartDialogCancelNext = true;
+          tip.remove();
+        });
+        tip.appendChild(cancelBtn);
+      }
+      var closeBtn = document.createElement('button');
+      closeBtn.textContent = '×';
+      closeBtn.style.cssText = 'padding:2px 8px;font-size:14px;cursor:pointer;border:none;background:transparent;color:#c45656;';
+      closeBtn.addEventListener('click', function () { tip.remove(); });
+      tip.appendChild(closeBtn);
+      document.body.appendChild(tip);
+      setTimeout(function () { try { tip.remove(); } catch (_) {} }, 8000);
+    } catch (_) {}
+    // 上报 dialog 动作（录制为可回放步骤）
+    try {
+      if (window.__whartReport) {
+        window.__whartReport({
+          t: 'dialog',
+          kind: kind,
+          message: String(message == null ? '' : message),
+          confirmed: kind === 'alert' ? true : confirmed,
+          prompt_value: kind === 'prompt' ? String(result == null ? '' : result) : undefined,
+        });
+      }
+    } catch (_) {}
+    return result;
+  }
+
+  try {
+    window.confirm = function (message) { return sandboxDialog('confirm', message); };
+    window.prompt = function (message, defaultValue) { return sandboxDialog('prompt', message, defaultValue); };
+    window.alert = function (message) { sandboxDialog('alert', message); };
+  } catch (_) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -1141,18 +1226,41 @@ async function handleReport(payload, frame) {
         try {
           const selInfo = await state.page.evaluate(({ x, y }) => {
             const el = document.elementFromPoint(x, y);
-            const sel = el && (el.tagName === 'SELECT' ? el : el.closest && el.closest('select'));
-            if (!sel) return null;
-            const r = sel.getBoundingClientRect();
-            return {
-              name: (window.__whart && window.__whart.describe) ? (window.__whart.describe(sel) || {}).name || '' : '',
-              value: sel.value || '',
-              options: Array.from(sel.options).map((o) => ({
+            if (!el) return null;
+            // select 直接取 options；input list=datalist 从关联 datalist 取 option
+            let ctrl = el.tagName === 'SELECT' ? el : (el.closest && el.closest('select'));
+            let options = [];
+            let value = '';
+            if (ctrl) {
+              value = ctrl.value || '';
+              options = Array.from(ctrl.options).map((o) => ({
                 value: String(o.value),
-                text: (o.textContent || '').trim(),
+                text: (o.textContent || '').trim() || String(o.value),
                 selected: o.selected,
-              })),
+              }));
+            } else {
+              const inp = (el.tagName === 'INPUT' && el.getAttribute('list'))
+                ? el
+                : (el.closest && el.closest('input[list]'));
+              const dl = inp && document.getElementById(inp.getAttribute('list'));
+              if (inp && dl) {
+                ctrl = inp;
+                value = inp.value || '';
+                options = Array.from(dl.querySelectorAll('option')).map((o) => ({
+                  value: String(o.getAttribute('value') !== null ? o.getAttribute('value') : (o.textContent || '').trim()),
+                  text: (o.getAttribute('value') !== null ? o.getAttribute('value') : (o.textContent || '').trim()),
+                  selected: String(inp.value || '') === String(o.getAttribute('value') !== null ? o.getAttribute('value') : (o.textContent || '').trim()),
+                }));
+              }
+            }
+            if (!ctrl) return null;
+            const r = ctrl.getBoundingClientRect();
+            return {
+              name: (window.__whart && window.__whart.describe) ? (window.__whart.describe(ctrl) || {}).name || '' : '',
+              value: value,
+              options: options,
               rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+              is_input: ctrl.tagName === 'INPUT',
             };
           }, { x: payload.viewportX, y: payload.viewportY });
           if (selInfo) {
@@ -1188,6 +1296,11 @@ async function handleReport(payload, frame) {
       }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
       recordAction({ type: 'fill', selector: payload.el, value: payload.value });
+      // datalist 点选走 fill 链路：同样退出选择模式（恢复推流与悬停移动）
+      if (state.selectNavActive) {
+        state.selectNavActive = false;
+        pushEvent('status', { status: 'select_nav_end' });
+      }
     } else if (payload.t === 'select') {
       // 原生下拉选择：同元素连续切换只保留最终值（复用 fill 的合并窗口）
       const selKey = JSON.stringify(payload.el);
@@ -1208,6 +1321,16 @@ async function handleReport(payload, frame) {
       // 选择完成：退出键盘选择模式，恢复推流与悬停移动转发
       state.selectNavActive = false;
       pushEvent('status', { status: 'select_nav_end' });
+    } else if (payload.t === 'dialog') {
+      // 原生对话框（alert/confirm/prompt 沙盒）：无元素定位，录为页面级动作
+      recordAction({
+        type: 'dialog',
+        kind: payload.kind || 'alert',
+        message: String(payload.message || ''),
+        confirmed: payload.confirmed !== false,
+        ...(payload.kind === 'prompt' ? { prompt_value: String(payload.prompt_value || '') } : {}),
+      });
+      pushEvent('status', { status: 'dialog', kind: payload.kind, message: String(payload.message || '') });
     } else if (payload.t === 'check' || payload.t === 'uncheck') {
       recordAction({ type: payload.t, selector: payload.el });
     } else if (payload.t === 'press') {
@@ -1385,6 +1508,13 @@ function buildScript(actions, startUrl) {
     }
     if (a.type === 'wait') {
       lines.push(`  await page.waitForTimeout(${Math.round((Number(a.seconds) || 1) * 1000)});`);
+      continue;
+    }
+    if (a.type === 'dialog') {
+      // 原生对话框：回放由 page.on('dialog') 自动 accept，脚本仅留注释标注语义
+      const branch = a.confirmed === false ? 'dismiss(注意: 回放为自动accept)' : 'accept';
+      lines.push(`  // 原生${String(a.kind || 'alert')} 对话框（自动${branch}）: ${String(a.message || '').replace(/\*\//g, '')}`);
+      lines.push('  await page.waitForTimeout(1000);');
       continue;
     }
     if (a.type === 'upload') {
@@ -2271,19 +2401,36 @@ async function cmdPickSelectOption(params) {
   }
   try {
     const picked = await state.page.evaluate((v) => {
-      const sel = document.activeElement && document.activeElement.tagName === 'SELECT'
-        ? document.activeElement
-        : document.querySelector('select:focus');
-      const target = sel || Array.from(document.querySelectorAll('select')).find((s) => {
-        return Array.from(s.options).some((o) => String(o.value) === v);
-      });
-      if (!target) return null;
-      const opt = Array.from(target.options).find((o) => String(o.value) === v);
-      if (!opt) return null;
-      target.value = v;
-      target.dispatchEvent(new Event('input', { bubbles: true }));
-      target.dispatchEvent(new Event('change', { bubbles: true }));
-      return { value: v, text: (opt.textContent || '').trim() };
+      // select：焦点控件或全文档匹配包含该 option 的 select；
+      // input[list]（datalist）：设 input.value 并派发 input/change（语义为填入该建议值）
+      const isSelect = (s) => s && s.tagName === 'SELECT' && Array.from(s.options).some((o) => String(o.value) === v);
+      let sel = document.activeElement && isSelect(document.activeElement) ? document.activeElement : null;
+      if (!sel) sel = Array.from(document.querySelectorAll('select')).find(isSelect) || null;
+      if (sel) {
+        const opt = Array.from(sel.options).find((o) => String(o.value) === v);
+        sel.value = v;
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return { value: v, text: (opt.textContent || '').trim(), is_input: false };
+      }
+      // datalist input：焦点优先，其次按 list 关联的 datalist 含该 option 的 input
+      const dlOptions = (inp) => {
+        const dl = inp.getAttribute('list') && document.getElementById(inp.getAttribute('list'));
+        return dl ? Array.from(dl.querySelectorAll('option')) : [];
+      };
+      const optText = (opt) => String(opt.getAttribute('value') !== null ? opt.getAttribute('value') : (opt.textContent || '').trim());
+      let inp = document.activeElement && document.activeElement.tagName === 'INPUT'
+        && document.activeElement.getAttribute('list') ? document.activeElement : null;
+      if (!inp || !dlOptions(inp).some((o) => optText(o) === v)) {
+        inp = Array.from(document.querySelectorAll('input[list]')).find((i) => dlOptions(i).some((o) => optText(o) === v)) || null;
+      }
+      if (inp) {
+        inp.value = v;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.dispatchEvent(new Event('change', { bubbles: true }));
+        return { value: v, text: v, is_input: true };
+      }
+      return null;
     }, value);
     if (!picked) {
       return { ok: false, error: '未找到匹配的选项: ' + value };

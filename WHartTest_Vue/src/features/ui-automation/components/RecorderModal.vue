@@ -499,6 +499,7 @@ const text = computed(() => (
         recordHint: 'Operate in the browser view below. Hover an element then click Assert to record an assertion.',
         selectNavHint: 'Native dropdown opened: its list cannot be shown in the canvas. Use ↓/↑ keys then Enter to pick an option (recorded automatically).',
         selectPanelTitle: 'Pick a dropdown option (click to select)',
+        dialogRecorded: '{kind} recorded',
         confirmCancel: 'Cancel recording? The unfinished recording will be discarded.',
         startFailed: 'Failed to start recording',
         finishFailed: 'Failed to finish recording',
@@ -595,6 +596,7 @@ const text = computed(() => (
         recordHint: '在左侧浏览器画面中操作；悬停目标元素后点击「断言」可记录断言。',
         selectNavHint: '已展开原生下拉框：列表无法在画布中显示。请用键盘 ↓/↑ 选择选项后按 Enter 确认（将自动记录为下拉选择步骤）。',
         selectPanelTitle: '选择下拉选项（点击选择）',
+        dialogRecorded: '已录制 {kind}',
         noActions: '暂无动作，请在浏览器画面中操作',
         confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
         startFailed: '启动录制失败',
@@ -1418,6 +1420,7 @@ function actionLabel(a: Record<string, any>): string {
     goto: isEnglish.value ? 'Navigate' : '跳转',
     assert: isEnglish.value ? 'Assert' : '断言',
     select: isEnglish.value ? 'Select' : '下拉选择',
+    dialog: isEnglish.value ? 'Dialog' : '对话框',
   }
   if (a.type === 'assert') {
     const modeMap: Record<string, string> = isEnglish.value
@@ -1439,6 +1442,7 @@ function actionLabel(a: Record<string, any>): string {
 function actionTagColor(type: string): string {
   if (type === 'assert') return 'gold'
   if (type === 'goto') return 'purple'
+  if (type === 'dialog') return 'orange'
   return 'arcoblue'
 }
 
@@ -1449,6 +1453,13 @@ function actionDesc(a: Record<string, any>): string {
   if (a.type === 'goto') return String(a.url || '')
   if (a.type === 'fill') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
   if (a.type === 'select') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
+  if (a.type === 'dialog') {
+    const kindMap: Record<string, string> = isEnglish.value
+      ? { alert: 'alert', confirm: 'confirm', prompt: 'prompt' }
+      : { alert: '提示框', confirm: '确认框', prompt: '输入框' }
+    const branch = a.confirmed === false ? (isEnglish.value ? ' [dismiss]' : ' [取消]') : ''
+    return `${kindMap[a.kind] || a.kind || ''}${branch} ${a.message || ''}`
+  }
   if (a.type === 'press') return `${sel?.name || sel?.locator_value || ''} [${a.key || 'Enter'}]`
   if (a.type === 'assert') {
     if (a.mode === 'url' || a.mode === 'title') return String(a.value || '')
@@ -1512,6 +1523,11 @@ function onRecorderStatus(data: any) {
   } else if (status === 'select_picked') {
     // 点选成功：录制进程派发 change 后会推 select 动作与 select_nav_end，
     // 这里只做即时反馈（面板由 select_nav_end 收起）
+  } else if (status === 'dialog') {
+    // 原生对话框（alert/confirm/prompt 沙盒化）：提示用户录制了什么语义
+    const kindText = args.kind === 'confirm' ? 'confirm 确认框'
+      : args.kind === 'prompt' ? 'prompt 输入框' : 'alert 提示框'
+    Message.info(`${text.value.dialogRecorded.replace('{kind}', kindText)}：${String(args.message || '').slice(0, 60)}`)
   } else if (status === 'asserted') {
     Message.success(text.value.assertRecorded)
   } else if (status === 'upload_located') {

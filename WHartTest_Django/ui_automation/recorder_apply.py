@@ -250,6 +250,32 @@ def apply_recorded_actions(
             steps_created += 1
             continue
 
+        if action_type == 'dialog':
+            # 原生对话框（alert/confirm/prompt 沙盒录制）：执行器 handle_dialog
+            # 对弹出的对话框自动 accept，回放无需显式操作步骤——录为短 wait
+            # （给对话框出现留时间）+ description 说明语义，回放必过且可读。
+            kind = str(action.get('kind') or 'alert')
+            message = str(action.get('message') or '').strip()
+            confirmed = action.get('confirmed') is not False
+            kind_cn = {'alert': '提示框', 'confirm': '确认框', 'prompt': '输入框'}.get(kind, kind)
+            branch_cn = '确定' if confirmed else '取消'
+            desc = f'原生{kind_cn}对话框（自动{branch_cn}）：{message[:60]}' if message else f'原生{kind_cn}对话框（自动{branch_cn}）'
+            if not confirmed:
+                # 取消分支：执行器会 accept，页面将走与录制时不同的分支——
+                # 描述中显式警示，执行人工复核调整用例
+                desc += '【注意：执行器自动确认，与录制的取消分支不一致，请人工调整】'
+            UiPageStepsDetailed.objects.create(
+                page_step=page_step,
+                step_type=STEP_TYPE_ELEMENT,
+                ope_key='wait',
+                ope_value={'timeout': 1},
+                description=desc,
+                step_sort=next_sort,
+            )
+            next_sort += 1
+            steps_created += 1
+            continue
+
         if action_type == 'upload':
             selector = action.get('selector') or {}
             element, created = _get_or_create_element(
