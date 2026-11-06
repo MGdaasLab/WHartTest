@@ -1059,6 +1059,7 @@ function handleCancel() {
   if (recording.value || starting.value) {
     // 同 handleFinish：确认弹窗期间/REST cancel 等待期间停掉输入转发，
     // 避免残余输入命中已解绑会话触发错误弹窗
+    const wasRecording = recording.value
     recording.value = false
     Modal.confirm({
       title: text.value.confirmCancel,
@@ -1074,6 +1075,10 @@ function handleCancel() {
           /* 忽略取消阶段的错误 */
         }
         closeModal()
+      },
+      onCancel: () => {
+        // 用户放弃取消：恢复输入转发继续录制（监听器未解绑，只差此门闩标志）
+        if (wasRecording) recording.value = true
       },
     })
     return

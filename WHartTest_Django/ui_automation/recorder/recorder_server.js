@@ -881,13 +881,36 @@ const INIT_SCRIPT = () => {
     if (!d) return;
     if (window.__whartReport) {
       if (tag === 'SELECT') {
-        // 原生下拉框：录成 select（执行器走 select_option），值取 option 的 value
-        // 原生下拉框：录成 select（执行器走 select_option），值取选中项的可见
-        // 文本（执行器 selectOption 两者都能匹配，文本对用户可读、步骤展示直观）
+        // 原生下拉框：录成 select（执行器走 select_option）。执行器传字符串时
+        // 按「value 或 label 相等（label 两侧空白归一化）→ DOM 序首个命中」
+        // 匹配，因此 value/label 在选项间重复时，首个命中项可能并非用户实际
+        // 选中项。预检按执行器同款匹配语义确认命中项就是选中项：label 命中
+        // 则录 label（对用户可读、步骤展示直观），label 歧义改录唯一 value，
+        // 两者都无法唯一定中才兜底录 label（与旧行为一致，尽最大努力）。
+        var picked = el.selectedOptions && el.selectedOptions[0];
+        var normWs = function (s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); };
+        var selectOptionMatch = function (s) {
+          // 复刻执行器 selectOption(string) 匹配：value 严格相等或 label
+          // （原始/归一化两种）相等即命中，返回 DOM 序首个命中项
+          var opts = el.options || [];
+          for (var i = 0; i < opts.length; i++) {
+            var lb = String(opts[i].label == null ? '' : opts[i].label);
+            if (String(opts[i].value) === s || lb === s || normWs(lb) === normWs(s)) return opts[i];
+          }
+          return null;
+        };
+        var value;
+        if (picked && selectOptionMatch(picked.label || '') === picked) {
+          value = picked.label || picked.value || '';
+        } else if (picked && selectOptionMatch(picked.value || '') === picked) {
+          value = picked.value || '';
+        } else {
+          value = (picked ? picked.label : '') || el.value || '';
+        }
         window.__whartReport({
           t: 'select',
           el: d,
-          value: String(el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent.trim() || el.value || '' : el.value || ''),
+          value: String(value),
         });
       } else if (el.type === 'checkbox' || el.type === 'radio') {
         // 点击已收敛录制（勾选动作由可见 label 的 click 承担）时不再重复报
@@ -1162,7 +1185,7 @@ const FILL_MERGE_WINDOW = 1500;
 
 function recordAction(action) {
   state.seq += 1;
-  const entry = Object.assign({ seq: state.seq }, action);
+  const entry = Object.assign({}, action, { seq: state.seq, ts: Date.now() });
   state.recorded.push(entry);
   if (state.recorded.length > 1000) {
     state.recorded.splice(0, state.recorded.length - 1000);
@@ -1217,7 +1240,13 @@ async function handleReport(payload, frame) {
       // 无法与弹层交互），后续 change 事件会录成 select_option。
       // 展开期间冻结推流（弹层不在 screencast/screenshot 合成帧里，刷新
       // 交替产生"忽隐忽现"），并抑制悬停移动（move 会关闭展开的弹层）。
+      // 点击其他元素（含点空白/外部收起下拉弹层、未产生 change）即退出选择
+      // 模式——此前处于选择模式时须通知前端收起点选面板，否则面板残留。
+      const wasSelectNav = state.selectNavActive;
       state.selectNavActive = !!payload.native_select;
+      if (wasSelectNav && !payload.native_select) {
+        pushEvent('status', { status: 'select_nav_end' });
+      }
       if (payload.native_select) {
         state.selectNavFrameTs = Date.now();
         // 提取全部选项（选项数据在 DOM 里，弹层本身不是 DOM）推给前端渲染
@@ -1322,12 +1351,17 @@ async function handleReport(payload, frame) {
       state.selectNavActive = false;
       pushEvent('status', { status: 'select_nav_end' });
     } else if (payload.t === 'dialog') {
-      // 原生对话框（alert/confirm/prompt 沙盒）：无元素定位，录为页面级动作
+      // 原生对话框（alert/confirm/prompt 沙盒）：无元素定位，录为页面级动作。
+      // gap_s 为上一动作到对话框弹出的实测间隔（秒）：页面较慢或连击后才弹窗时，
+      // 回放的固定短 wait 可能不够，入库按实测值给 wait 时长。
+      const prev = state.recorded[state.recorded.length - 1];
+      const gapS = prev && prev.ts ? Math.max(0, (Date.now() - prev.ts) / 1000) : null;
       recordAction({
         type: 'dialog',
         kind: payload.kind || 'alert',
         message: String(payload.message || ''),
         confirmed: payload.confirmed !== false,
+        ...(gapS != null ? { gap_s: Math.round(gapS * 10) / 10 } : {}),
         ...(payload.kind === 'prompt' ? { prompt_value: String(payload.prompt_value || '') } : {}),
       });
       pushEvent('status', { status: 'dialog', kind: payload.kind, message: String(payload.message || '') });
@@ -1420,7 +1454,10 @@ function startFrameLoop(intervalMs = 250, minGapMs = 0) {
     // 冻结（画面维持弹层展开前的最后一帧）；超时未完成选择则退出模式恢复推流。
     if (state.selectNavActive) {
       if (Date.now() - state.selectNavFrameTs > 15000) {
+        // 超时兜底退出：除恢复推流外，还须通知前端收起点选面板（面板仅监听
+        // select_nav_end，否则 15s 后画布恢复推流而面板仍残留）
         state.selectNavActive = false;
+        pushEvent('status', { status: 'select_nav_end' });
       } else {
         return;
       }
