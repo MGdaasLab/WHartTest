@@ -768,6 +768,8 @@ const INIT_SCRIPT = () => {
 
   window.__whart.describe = describe;
   window.__whart.buildXPath = buildXPath;
+  // 供服务端命令（断言/上传定位的 evaluate）选点时同样收敛可交互祖先
+  window.__whart.interactiveZoneTarget = interactiveZoneTarget;
 
   // 复选框/单选框的"可见点击目标"：浏览器会为 label 关联的隐藏原生 input
   // 补发一次 click，随后 change 事件再报一次 check/uncheck——EP 等组件库的
@@ -790,9 +792,27 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
+  // 可交互祖先收敛：图标按钮（button>a>svg 等）的点击事件 target 是最深层
+  // 图标节点（svg/path/use），原样录制会生成以 svg 结尾的结构 xpath。SVG 处于
+  // SVG 命名空间，XPath 1.0 无前缀节点测试只匹配空命名空间元素——回放时
+  // svg[n] 恒匹配 0 个元素（调试必超时）。收敛为最近可交互祖先（与浏览器
+  // 实际交互语义一致：人点的是按钮），Playwright codegen 同规则。
+  // input/textarea/select 自身就是交互终点，上溯反而破坏 fill/select 录制。
+  function interactiveZoneTarget(el) {
+    if (!el || el.nodeType !== 1 || !el.closest) return null;
+    var tag = el.tagName || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY') {
+      return null;
+    }
+    var hit = el.closest('button, a[href], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="treeitem"], [role="switch"], summary');
+    return hit && hit !== el ? hit : null;
+  }
+
   document.addEventListener('pointermove', function (e) {
     if (e.target && e.target.nodeType === 1) {
-      window.__whart.hovered = e.target;
+      // 悬停元素同样收敛：断言选点走 hovered，图标上需断言到按钮而非 svg
+      window.__whart.hovered = interactiveZoneTarget(e.target) || e.target;
     }
   }, true);
 
@@ -815,10 +835,24 @@ const INIT_SCRIPT = () => {
       }
       return;
     }
+    // 图标按钮（button 内 svg/span 等装饰子层）：收敛为可交互祖先录制，
+    // 避免以 svg 结尾的 xpath（SVG 命名空间在 XPath 1.0 下恒不匹配，回放必超时）
+    var izone = interactiveZoneTarget(el);
+    if (izone) el = izone;
     var d = window.__whart.describe(el);
     if (!d) return;
     if (window.__whartReport) {
-      window.__whartReport({ t: 'click', el: d });
+      // native_select：原生 <select>（点击展开浏览器 UI 层弹层，非页面 DOM），
+      // 服务端据此进入键盘选择模式（弹层画面/交互特殊处理，见 selectNav）。
+      // viewportX/Y 为视口坐标，服务端用它反查 select DOM 提取选项列表。
+      var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      window.__whartReport({
+        t: 'click',
+        el: d,
+        native_select: el.tagName === 'SELECT',
+        viewportX: r ? r.left + r.width / 2 : 0,
+        viewportY: r ? r.top + r.height / 2 : 0,
+      });
     }
   }, true);
 
@@ -845,7 +879,13 @@ const INIT_SCRIPT = () => {
     if (window.__whartReport) {
       if (tag === 'SELECT') {
         // 原生下拉框：录成 select（执行器走 select_option），值取 option 的 value
-        window.__whartReport({ t: 'select', el: d, value: String(el.value || '') });
+        // 原生下拉框：录成 select（执行器走 select_option），值取选中项的可见
+        // 文本（执行器 selectOption 两者都能匹配，文本对用户可读、步骤展示直观）
+        window.__whartReport({
+          t: 'select',
+          el: d,
+          value: String(el.selectedOptions && el.selectedOptions[0] ? el.selectedOptions[0].textContent.trim() || el.value || '' : el.value || ''),
+        });
       } else if (el.type === 'checkbox' || el.type === 'radio') {
         // 点击已收敛录制（勾选动作由可见 label 的 click 承担）时不再重复报
         var zone = checkboxZoneTarget(el);
@@ -1022,6 +1062,10 @@ const state = {
   lastClick: { sel: '', ts: 0 },
   lastFill: { sel: '', value: '', ts: 0 },
   lastPress: { sel: '', ts: 0 },
+  // 原生 <select> 键盘选择模式：点击展开弹层期间冻结推流、抑制悬停移动，
+  // change（select 动作）或超时后退出。弹层是浏览器 UI 层，不在页面合成帧里。
+  selectNavActive: false,
+  selectNavFrameTs: 0,
   lastFrameTs: 0,          // 最近一次推帧时间（screencast 高帧率 / 截图基线兜底）
   tracePath: null,         // 执行 trace.zip 落盘路径（start_trace 设置，stop_trace 消费）
   pageErrors: [],          // 页面 JS 错误（pageerror 事件，执行日志展示用）
@@ -1084,6 +1128,44 @@ async function handleReport(payload, frame) {
   const now = Date.now();
   try {
     if (payload.t === 'click') {
+      // 原生 <select>：不录 click 步骤（点击只展开浏览器 UI 层弹层，回放时
+      // 无法与弹层交互），后续 change 事件会录成 select_option。
+      // 展开期间冻结推流（弹层不在 screencast/screenshot 合成帧里，刷新
+      // 交替产生"忽隐忽现"），并抑制悬停移动（move 会关闭展开的弹层）。
+      state.selectNavActive = !!payload.native_select;
+      if (payload.native_select) {
+        state.selectNavFrameTs = Date.now();
+        // 提取全部选项（选项数据在 DOM 里，弹层本身不是 DOM）推给前端渲染
+        // 可视化面板——画布拍不到浏览器 UI 层弹层，用户在画布上看不到列表内容，
+        // 无法盲选；面板点选走 pick_select_option 命令在页面里选中并派发 change。
+        try {
+          const selInfo = await state.page.evaluate(({ x, y }) => {
+            const el = document.elementFromPoint(x, y);
+            const sel = el && (el.tagName === 'SELECT' ? el : el.closest && el.closest('select'));
+            if (!sel) return null;
+            const r = sel.getBoundingClientRect();
+            return {
+              name: (window.__whart && window.__whart.describe) ? (window.__whart.describe(sel) || {}).name || '' : '',
+              value: sel.value || '',
+              options: Array.from(sel.options).map((o) => ({
+                value: String(o.value),
+                text: (o.textContent || '').trim(),
+                selected: o.selected,
+              })),
+              rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+            };
+          }, { x: payload.viewportX, y: payload.viewportY });
+          if (selInfo) {
+            pushEvent('status', { status: 'select_nav', element: payload.el.name || selInfo.name || '', options: selInfo.options, current_value: selInfo.value, rect: selInfo.rect });
+            return;
+          }
+        } catch (e) {
+          serverLog('select 选项提取失败:', e && e.message ? e.message : String(e));
+        }
+        // 提取失败（如坐标失配）退回纯键盘模式提示
+        pushEvent('status', { status: 'select_nav', element: payload.el.name || '' });
+        return;
+      }
       const selKey = JSON.stringify(payload.el);
       if (selKey === state.lastClick.sel && now - state.lastClick.ts < 400) return;
       state.lastClick = { sel: selKey, ts: now };
@@ -1123,6 +1205,9 @@ async function handleReport(payload, frame) {
       }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
       recordAction({ type: 'select', selector: payload.el, value: payload.value });
+      // 选择完成：退出键盘选择模式，恢复推流与悬停移动转发
+      state.selectNavActive = false;
+      pushEvent('status', { status: 'select_nav_end' });
     } else if (payload.t === 'check' || payload.t === 'uncheck') {
       recordAction({ type: payload.t, selector: payload.el });
     } else if (payload.t === 'press') {
@@ -1155,6 +1240,14 @@ async function startFrameStream(page) {
     const cdpSession = await page.context().newCDPSession(page);
     cdpSession.on('Page.screencastFrame', (params) => {
       if (!state.running || state.finished || !params.data) return;
+      // 键盘选择模式：弹层是浏览器 UI 层，不在 screencast 合成帧里。此刻
+      // 用户正用键盘选选项，页面其余部分在动（焦点环/滚动），每帧都会推给
+      // 前端造成画面闪变（列表区域永远空白 →"忽隐忽现"）。冻结推流，退出
+      // 模式后由基线截图循环自然恢复画面。
+      if (state.selectNavActive) {
+        cdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {});
+        return;
+      }
       pushEvent('frame', {
         mime: 'image/jpeg',
         data: params.data.replace(/^data:image\/jpeg;base64,/, ''),
@@ -1200,6 +1293,15 @@ function startFrameLoop(intervalMs = 250, minGapMs = 0) {
   if (state.frameTimer) return;
   state.frameTimer = setInterval(async () => {
     if (!state.running || state.finished || state.capturing || !state.page) return;
+    // 键盘选择模式：弹层不在截图合成帧里，截图循环只会让画面闪烁。保持
+    // 冻结（画面维持弹层展开前的最后一帧）；超时未完成选择则退出模式恢复推流。
+    if (state.selectNavActive) {
+      if (Date.now() - state.selectNavFrameTs > 15000) {
+        state.selectNavActive = false;
+      } else {
+        return;
+      }
+    }
     const gap = Date.now() - state.lastFrameTs;
     if (minGapMs > 0 && gap < minGapMs) return;
     state.capturing = true;
@@ -1607,6 +1709,9 @@ async function applyInput(params) {
     const y = Number(params.y) || 0;
     const button = params.button || 'left';
     if (params.event === 'move') {
+      // 键盘选择模式：悬停移动会关闭已展开的原生 select 弹层（用户点列表项
+      // 前鼠标必然扫过页面），全部抑制；超时兜底见 selectNavFrameTs 消费处
+      if (state.selectNavActive) return;
       await state.page.mouse.move(x, y);
     } else if (params.event === 'down') {
       await state.page.mouse.down({ button, clickCount: Number(params.clickCount) || 1 });
@@ -2089,8 +2194,13 @@ async function cmdLocateUpload(params) {
     const info = await state.page.evaluate(([x, y]) => {
       const w = window.__whart;
       if (!w || !w.describe) return null;
-      const el = document.elementFromPoint(x, y);
+      let el = document.elementFromPoint(x, y);
       if (!el || !(el instanceof Element)) return null;
+      // 图标上传按钮收敛为可交互祖先（非 file input 场景的定位兜底不再以 svg 结尾）
+      if (w.interactiveZoneTarget) {
+        const zone = w.interactiveZoneTarget(el);
+        if (zone) el = zone;
+      }
       let fileInput = null;
       let node = el;
       while (node && node.nodeType === 1 && node !== document.documentElement && node !== document.body) {
@@ -2142,6 +2252,46 @@ async function cmdRemoveAction(params) {
   state.recorded = state.recorded.filter((a) => a.seq !== seq);
   const removed = before - state.recorded.length;
   return { ok: true, state: { removed } };
+}
+
+// 可视化点选原生 select 选项（select_nav 模式）：
+// 在页面里直接选中目标 option 并派发 change —— 事件被注入脚本捕获后走
+// 标准 select 上报链路（录制 select 动作、退出 select_nav、恢复推流）。
+// 合成点击无法命中浏览器 UI 层弹层，选中必须在 DOM 层完成。
+async function cmdPickSelectOption(params) {
+  if (!state.page || !state.running) {
+    return { ok: false, error: '录制会话未启动' };
+  }
+  if (!state.selectNavActive) {
+    return { ok: false, error: '当前没有展开中的原生下拉框' };
+  }
+  const value = String((params && params.value) ?? '');
+  if (!value) {
+    return { ok: false, error: '缺少选项 value' };
+  }
+  try {
+    const picked = await state.page.evaluate((v) => {
+      const sel = document.activeElement && document.activeElement.tagName === 'SELECT'
+        ? document.activeElement
+        : document.querySelector('select:focus');
+      const target = sel || Array.from(document.querySelectorAll('select')).find((s) => {
+        return Array.from(s.options).some((o) => String(o.value) === v);
+      });
+      if (!target) return null;
+      const opt = Array.from(target.options).find((o) => String(o.value) === v);
+      if (!opt) return null;
+      target.value = v;
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      target.dispatchEvent(new Event('change', { bubbles: true }));
+      return { value: v, text: (opt.textContent || '').trim() };
+    }, value);
+    if (!picked) {
+      return { ok: false, error: '未找到匹配的选项: ' + value };
+    }
+    return { ok: true, state: { picked } };
+  } catch (e) {
+    return { ok: false, error: '选项选中失败: ' + (e && e.message ? e.message : String(e)) };
+  }
 }
 
 async function cmdRunSteps(params) {
@@ -2520,9 +2670,11 @@ async function cmdAssert(params) {
     let info = null;
     if (hasPoint) {
       info = await state.page.evaluate(([x, y]) => {
-        const el = document.elementFromPoint(x, y);
+        const el0 = document.elementFromPoint(x, y);
         const w = window.__whart;
-        if (!el || !w || !w.describe) return null;
+        if (!el0 || !w || !w.describe) return null;
+        // 图标按钮等装饰子层收敛为可交互祖先（与 click 录制同规则）
+        const el = (w.interactiveZoneTarget && w.interactiveZoneTarget(el0)) || el0;
         const sel = w.describe(el);
         if (!sel) return null;
         return {
@@ -2683,6 +2835,8 @@ rl.on('line', (line) => {
           return respond(await cmdRunSteps(msg.params || {}));
         case 'remove_action':
           return respond(await cmdRemoveAction(msg.params || {}));
+        case 'pick_select_option':
+          return respond(await cmdPickSelectOption(msg.params || {}));
         case 'add_wait':
           return respond(await cmdAddWait(msg.params || {}));
         case 'locate_upload':

@@ -402,6 +402,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
                 UiSocketEnum.RECORDER_ADD_UPLOAD: self.handle_recorder_add_upload,
                 UiSocketEnum.RECORDER_SWITCH_ACCOUNT: self.handle_recorder_switch_account,
                 UiSocketEnum.RECORDER_STOP: self.handle_recorder_stop,
+                UiSocketEnum.RECORDER_PICK_SELECT: self.handle_recorder_pick_select,
             }
         
         handler = handler_map.get(func_name)
@@ -621,6 +622,29 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             )
         except Exception as exc:
             await self._send_recorder_error(f'插入上传动作失败: {exc}')
+
+    async def handle_recorder_pick_select(self, args, user):
+        """原生下拉可视化点选：面板点选选项 → 录制进程在页面里选中并派发 change。"""
+        from .recorder.session_manager import recorder_manager
+
+        if getattr(self, '_recorder_stopped', False):
+            return
+        session = recorder_manager.get(self._recorder_session_id or '')
+        if session is None:
+            await self._send_recorder_error('录制会话不存在或已结束')
+            return
+        try:
+            result = await sync_to_async(session.request)(
+                'pick_select_option', {'value': args.get('value') or ''}, timeout=10,
+            )
+        except Exception as exc:
+            await self._send_recorder_error(f'选项选择失败: {exc}')
+            return
+        state = result.get('state') or {}
+        await self._send_recorder(
+            UiSocketEnum.RECORDER_STATUS,
+            {'status': 'select_picked', 'picked': state.get('picked') or {}},
+        )
 
     async def handle_recorder_stop(self, args, user):
         """停止帧中继（结束录制走 REST finish）。"""

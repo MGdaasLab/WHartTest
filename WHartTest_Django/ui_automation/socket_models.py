@@ -44,6 +44,7 @@ class UiSocketEnum:
     RECORDER_ADD_UPLOAD = 'u_recorder_add_upload'        # 前端→后端：插入上传动作
     RECORDER_SWITCH_ACCOUNT = 'u_recorder_switch_account'  # 前端→后端：无痕切换账号（不登出旧账号）
     RECORDER_STOP = 'u_recorder_stop'      # 前端→后端：停止帧中继
+    RECORDER_PICK_SELECT = 'u_recorder_pick_select'  # 前端→后端：原生下拉可视化点选选项
     RECORDER_FRAME = 'u_recorder_frame'    # 后端→前端：浏览器画面帧（base64 jpeg）
     RECORDER_ACTION = 'u_recorder_action'  # 后端→前端：录制动作增量
     RECORDER_STATUS = 'u_recorder_status'  # 后端→前端：录制状态/错误

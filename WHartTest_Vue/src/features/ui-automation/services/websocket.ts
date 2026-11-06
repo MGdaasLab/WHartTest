@@ -29,6 +29,7 @@ export const UiSocketEnum = {
   RECORDER_ADD_UPLOAD: 'u_recorder_add_upload', // 插入上传动作
   RECORDER_SWITCH_ACCOUNT: 'u_recorder_switch_account', // 无痕切换账号（不登出旧账号）
   RECORDER_STOP: 'u_recorder_stop',       // 停止帧中继
+  RECORDER_PICK_SELECT: 'u_recorder_pick_select', // 原生下拉可视化点选选项
   RECORDER_FRAME: 'u_recorder_frame',     // 浏览器画面帧
   RECORDER_ACTION: 'u_recorder_action',   // 录制动作增量
   RECORDER_STATUS: 'u_recorder_status',   // 录制状态/错误
@@ -373,6 +374,11 @@ class UiWebSocketService {
   /** 停止帧中继 */
   recorderStop(): boolean {
     return this.send(UiSocketEnum.RECORDER_STOP, {})
+  }
+
+  /** 原生下拉可视化点选：面板点选选项 → 服务端在页面里选中并派发 change */
+  recorderPickSelectOption(value: string): boolean {
+    return this.send(UiSocketEnum.RECORDER_PICK_SELECT, { value })
   }
 }
 
