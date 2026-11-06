@@ -966,6 +966,10 @@ async function handleStart() {
 async function handleFinish() {
   if (!sessionId.value) return
   finishing.value = true
+  // 立即停输入转发：REST finish 等待期间（动作优化/入库，耗时数秒）画布与键盘
+  // 监听尚未解绑，残余 pointermove/滚轮/按键若继续转发，后端会话已解绑会回
+  // "录制会话不存在或已结束"错误弹窗。recording=false 后所有转发入口静默返回。
+  recording.value = false
   try {
     uiWebSocket.recorderStop()
     const result = extractResponseData<RecorderFinishResult>(await recorderApi.finish(sessionId.value))
@@ -1021,6 +1025,9 @@ async function submitSaveLoginState() {
 
 function handleCancel() {
   if (recording.value || starting.value) {
+    // 同 handleFinish：确认弹窗期间/REST cancel 等待期间停掉输入转发，
+    // 避免残余输入命中已解绑会话触发错误弹窗
+    recording.value = false
     Modal.confirm({
       title: text.value.confirmCancel,
       content: '',

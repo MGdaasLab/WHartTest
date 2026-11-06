@@ -201,6 +201,8 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         self._recorder_session_id: Optional[str] = None
         self._recorder_relay_task: Optional[asyncio.Task] = None
         self._recorder_closed: bool = False
+        # 前端已主动停止（finish/cancel）：之后的残余输入静默丢弃
+        self._recorder_stopped: bool = False
 
     def _get_query_params(self) -> dict[str, list[str]]:
         query_string = self.scope.get('query_string', b'').decode('utf-8')
@@ -454,6 +456,7 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             return
 
         self._recorder_session_id = session_id
+        self._recorder_stopped = False  # 新一轮录制：恢复输入转发
         if self._recorder_relay_task is None or self._recorder_relay_task.done():
             self._recorder_closed = False
             self._recorder_relay_task = asyncio.create_task(self._recorder_relay(session_id))
@@ -487,6 +490,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
         """转发前端输入事件到录制进程（fire-and-forget）。"""
         from .recorder.session_manager import recorder_manager
 
+        # 停止后的残余输入（finish/cancel 到 closeModal 窗口期）：静默丢弃
+        if getattr(self, '_recorder_stopped', False):
+            return
         session = recorder_manager.get(self._recorder_session_id or '')
         if session is None:
             await self._send_recorder_error('录制会话不存在或已结束')
@@ -623,6 +629,9 @@ class UiAutomationConsumer(AsyncWebsocketConsumer):
             self._recorder_relay_task.cancel()
         self._recorder_relay_task = None
         self._recorder_session_id = None
+        # 前端停止后仍可能有残余输入事件（pointermove/滚轮/按键在 REST finish
+        # 等待期间到达）：会话已解绑，属预期噪声，静默丢弃而非回错误弹窗。
+        self._recorder_stopped = True
         await self._send_recorder(UiSocketEnum.RECORDER_STATUS, {'status': 'stopped'})
 
     async def handle_recorder_remove_action(self, args, user):

@@ -137,6 +137,20 @@ const INIT_SCRIPT = () => {
     }
   }
 
+  // 文本锚点终验：唯一匹配必须是目标节点自身。文本中的引号在拼谓词时被剥离，
+  // 剥离后的谓词可能恰好等于另一元素的文本而"唯一"命中别的节点——
+  // 唯一性只保证全文档 1 个匹配，不保证匹配的就是目标（同类缺陷在
+  // 容器>子级组合定位上出现过：.over-collapse > div 唯一却指向装饰块）。
+  function textXpathPointsAt(node, xp) {
+    if (!isUniqueXPath(xp)) return false;
+    try {
+      var res = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return res.singleNodeValue === node;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // 分层锚点：data-testid → 稳定 id → name（表单）→ placeholder（input/textarea/select）→
   // img 的 alt（语义文本）。每个候选都带元素标签且校验唯一，不唯一自动降级。
   function pickAnchor(el) {
@@ -225,8 +239,8 @@ const INIT_SCRIPT = () => {
       });
       if (matched.length === 1) {
         var pred = '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
-        // 用绝对形式校验唯一性，返回相对步（与前段路径拼接）
-        return isUniqueXPath('//' + tag + pred) ? tag + pred : null;
+        // 终验唯一匹配即目标节点（文本含引号被剥离时防错位），返回相对步
+        return textXpathPointsAt(node, '//' + tag + pred) ? tag + pred : null;
       }
     } catch (_) {}
     return null;
@@ -354,7 +368,7 @@ const INIT_SCRIPT = () => {
       });
       if (matched.length === 1) {
         var xp = '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
-        return isUniqueXPath(xp) ? xp : null;
+        return textXpathPointsAt(el, xp) ? xp : null;
       }
     } catch (_) {}
     return null;
@@ -382,7 +396,7 @@ const INIT_SCRIPT = () => {
       });
       if (matched.length === 1) {
         var xp = '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
-        return isUniqueXPath(xp) ? xp : null;
+        return textXpathPointsAt(el, xp) ? xp : null;
       }
     } catch (_) {}
     return null;
@@ -509,6 +523,10 @@ const INIT_SCRIPT = () => {
   }
 
   // T3：父级语义容器 > 子级组合定位（缩小查找范围的组合 css）
+  // 唯一性校验只保证组合选择器全文档恰好匹配 1 个元素，不保证匹配的就是
+  // el 本身——如侧栏 .over-collapse > div 全页唯一，匹配的却是容器里另一
+  // 个装饰子块（menu-footer），并非点击的菜单标题。必须再校验 el 命中该
+  // 选择器，否则会把毫无关系的元素写进主定位。
   function containerComboCandidate(el) {
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     var node = el;
@@ -525,13 +543,13 @@ const INIT_SCRIPT = () => {
         // 容器内定位子元素：tag 优先，容器内唯一即用；否则用自身语义 class
         var childTag = tag;
         var inner = containerSel + ' > ' + childTag;
-        if (isUniqueCss(inner)) return { type: 'css', value: inner };
+        if (isUniqueCss(inner) && el.matches(inner)) return { type: 'css', value: inner };
         var ownCls = (el.getAttribute && el.getAttribute('class')) || '';
         var ownTokens = ownCls.trim().split(/\s+/);
         for (var j = 0; j < ownTokens.length; j++) {
           if (!ownTokens[j] || isStateClass(ownTokens[j]) || isDynamicClassToken(ownTokens[j])) continue;
           var combo = containerSel + ' > ' + childTag + '.' + ownTokens[j].replace(/([:.#\\\s])/g, '\\$1');
-          if (isUniqueCss(combo)) return { type: 'css', value: combo };
+          if (isUniqueCss(combo) && el.matches(combo)) return { type: 'css', value: combo };
         }
       }
     }
