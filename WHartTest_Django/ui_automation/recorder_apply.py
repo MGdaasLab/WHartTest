@@ -34,6 +34,7 @@ STEP_TYPE_ASSERT = 1    # 断言操作
 _OP_KEY = {
     'click': 'click',
     'fill': 'fill',
+    'select': 'select_option',
     'check': 'check',
     'uncheck': 'uncheck',
     'press': 'press',
@@ -73,7 +74,7 @@ def _element_name(action_type: str, selector: dict | None) -> str:
     fallback = 'element'
     if selector:
         fallback = str(selector.get('locator_value') or 'element')[:20]
-    op = {'click': '点击', 'fill': '输入', 'check': '勾选', 'uncheck': '取消勾选',
+    op = {'click': '点击', 'fill': '输入', 'select': '选择', 'check': '勾选', 'uncheck': '取消勾选',
           'press': '按键', 'assert': '断言', 'upload': '上传'}.get(action_type, action_type)
     return f'{op}-{fallback}'[:_MAX_NAME]
 
@@ -166,9 +167,9 @@ def _coalesce_consecutive_fills(actions: list[dict[str, Any]]) -> list[dict[str,
     merged: list[dict[str, Any]] = []
     for action in actions:
         if (
-            action.get('type') == 'fill'
+            action.get('type') in ('fill', 'select')
             and merged
-            and merged[-1].get('type') == 'fill'
+            and merged[-1].get('type') == action.get('type')
             and merged[-1].get('selector') == action.get('selector')
         ):
             merged[-1] = {**merged[-1], 'value': action.get('value')}
@@ -331,7 +332,7 @@ def apply_recorded_actions(
             elements_updated += 1
 
         ope_value: dict[str, Any] = {}
-        if action_type == 'fill':
+        if action_type in ('fill', 'select'):
             ope_value = {'value': str(action.get('value') or '')}
         elif action_type == 'press':
             ope_value = {'key': str(action.get('key') or 'Enter')}

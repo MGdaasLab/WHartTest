@@ -808,8 +808,8 @@ const INIT_SCRIPT = () => {
     var el = e.target;
     if (!el || el.nodeType !== 1) return;
     var tag = el.tagName || '';
-    if (tag === 'CHECKBOX' || tag === 'RADIO') return;
-    if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+    if (tag === 'CHECKBOX' || tag === 'RADIO' || tag === 'SELECT') return;
+    if (tag !== 'INPUT' && tag !== 'TEXTAREA') return;
     if (el.type === 'checkbox' || el.type === 'radio') return;
     var d = window.__whart.describe(el);
     if (!d) return;
@@ -826,7 +826,8 @@ const INIT_SCRIPT = () => {
     if (!d) return;
     if (window.__whartReport) {
       if (tag === 'SELECT') {
-        window.__whartReport({ t: 'fill', el: d, value: String(el.value || '') });
+        // 原生下拉框：录成 select（执行器走 select_option），值取 option 的 value
+        window.__whartReport({ t: 'select', el: d, value: String(el.value || '') });
       } else if (el.type === 'checkbox' || el.type === 'radio') {
         // 点击已收敛录制（勾选动作由可见 label 的 click 承担）时不再重复报
         var zone = checkboxZoneTarget(el);
@@ -1087,6 +1088,23 @@ async function handleReport(payload, frame) {
       }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
       recordAction({ type: 'fill', selector: payload.el, value: payload.value });
+    } else if (payload.t === 'select') {
+      // 原生下拉选择：同元素连续切换只保留最终值（复用 fill 的合并窗口）
+      const selKey = JSON.stringify(payload.el);
+      if (selKey === state.lastFill.sel && now - state.lastFill.ts < FILL_MERGE_WINDOW) {
+        for (let i = state.recorded.length - 1; i >= 0; i--) {
+          const prev = state.recorded[i];
+          if (prev.type === 'select' && JSON.stringify(prev.selector) === selKey) {
+            prev.value = payload.value;
+            state.lastFill = { sel: selKey, value: payload.value, ts: now };
+            pushEvent('actions', prev);
+            return;
+          }
+          if (i < state.recorded.length - 8) break;
+        }
+      }
+      state.lastFill = { sel: selKey, value: payload.value, ts: now };
+      recordAction({ type: 'select', selector: payload.el, value: payload.value });
     } else if (payload.t === 'check' || payload.t === 'uncheck') {
       recordAction({ type: payload.t, selector: payload.el });
     } else if (payload.t === 'press') {
@@ -1271,6 +1289,9 @@ function buildScript(actions, startUrl) {
         break;
       case 'fill':
         lines.push(`  await ${loc}.fill('${val}');`);
+        break;
+      case 'select':
+        lines.push(`  await ${loc}.selectOption('${val}');`);
         break;
       case 'check':
         lines.push(`  await ${loc}.check();`);
