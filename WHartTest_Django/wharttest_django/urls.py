@@ -19,6 +19,9 @@ from django.conf import settings
 # 导入开发环境静态路由辅助函数。
 from django.conf.urls.static import static
 
+# 导入媒体文件服务视图与路由前缀构造（生产环境同样需要可访问）。
+from .media_views import build_media_url_pattern, serve_media
+
 # 导入 DRF 默认路由器。
 from rest_framework.routers import DefaultRouter
 
@@ -193,8 +196,13 @@ urlpatterns = [
     ),
 ]
 
-# 追加媒体文件访问路由（开发/容器环境使用）。
-urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# 追加媒体文件访问路由。
+# 注意：不能用 django.conf.urls.static.static()，该辅助函数仅在 settings.DEBUG=True 时
+# 才注册路由；生产部署（DJANGO_DEBUG=False）时前端 nginx 仍会把 /media/ 反代到后端，
+# 若只依赖 static() 会导致所有用户上传文件（用例截图、附件等）返回 404。
+_media_url_pattern = build_media_url_pattern(settings.MEDIA_URL)
+if _media_url_pattern:
+    urlpatterns += [re_path(_media_url_pattern, serve_media)]
 
 
 # 追加静态文件访问路由。
