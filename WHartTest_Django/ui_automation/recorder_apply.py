@@ -268,7 +268,8 @@ def apply_recorded_actions(
             if kind == 'prompt':
                 if confirmed:
                     prompt_replay = str(action.get('prompt_value') or '')
-                    desc += f'，输入值: {prompt_replay[:60]}' if prompt_replay else '，输入值: （空）'
+                    # 输入值不写入描述（可能含敏感信息，入库有泄露风险），仅记录长度供复核
+                    desc += f'，输入值: （长度{len(prompt_replay)}，回放时自动填入）' if prompt_replay else '，输入值: （空）'
                 else:
                     prompt_replay = False
                     desc += '，输入值: （取消，无输入）'

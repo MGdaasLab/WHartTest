@@ -505,7 +505,9 @@ class RecorderDialogApplyTests(TestCase):
             'confirmed': True, 'prompt_value': '默认名', 'gap_s': 1.2,
         })
         self.assertEqual(detail.ope_value['prompt_value'], '默认名')
-        self.assertIn('输入值: 默认名', detail.description)
+        # 输入值不落描述（敏感信息不入库明文），仅记录长度供复核
+        self.assertIn('输入值: （长度3，回放时自动填入）', detail.description)
+        self.assertNotIn('默认名', detail.description)
 
     def test_prompt_cancel_branch_saved_as_sentinel(self):
         """prompt 取消分支：ope_value.prompt_value 存 False 哨兵（执行器 dismiss 回放）。"""

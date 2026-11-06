@@ -1528,6 +1528,16 @@ function locatorExpr(selector) {
   }
 }
 
+// 单行注释安全化：去除换行（防 // 注释被截断后注入任意代码）与注释终结符，
+// 并裁掉控制字符；仅用于注释文本，不参与代码拼接执行。
+function commentSafe(text) {
+  return String(text || '')
+    .replace(/[\r\n\u2028\u2029]+/g, ' ')
+    .replace(/\*\//g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, '');
+}
+
 function buildScript(actions, startUrl) {
   const lines = [];
   lines.push("const { chromium } = require('playwright');");
@@ -1535,6 +1545,9 @@ function buildScript(actions, startUrl) {
   lines.push('(async () => {');
   lines.push(`  const browser = await chromium.launch({ headless: true });`);
   lines.push(`  const page = await browser.newPage();`);
+  // 原生对话框回放：注册 dialog 处理器自动 accept（Playwright 不注册时默认
+  // dismiss，与录制语义不符——录制时 alert/confirm/prompt 均以确定分支为准）
+  lines.push(`  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));`);
   if (startUrl) {
     lines.push(`  await page.goto('${startUrl.replace(/'/g, "\\'")}');`);
   }
@@ -1548,15 +1561,15 @@ function buildScript(actions, startUrl) {
       continue;
     }
     if (a.type === 'dialog') {
-      // 原生对话框：回放由 page.on('dialog') 自动 accept，脚本仅留注释标注语义
+      // 原生对话框：回放由顶部 page.on('dialog') 自动 accept，仅留注释标注语义
       const branch = a.confirmed === false ? 'dismiss(注意: 回放为自动accept)' : 'accept';
-      lines.push(`  // 原生${String(a.kind || 'alert')} 对话框（自动${branch}）: ${String(a.message || '').replace(/\*\//g, '')}`);
+      lines.push(`  // 原生${commentSafe(a.kind || 'alert')} 对话框（自动${branch}）: ${commentSafe(a.message)}`);
       lines.push('  await page.waitForTimeout(1000);');
       continue;
     }
     if (a.type === 'upload') {
       // 文件存在于平台文件管理，脚本中仅标注占位，执行时以平台 file_id 解析
-      lines.push(`  // TODO upload: file_id=${String(a.file_id || '')} ${a.file_name || ''}`.trim());
+      lines.push(`  // TODO upload: file_id=${commentSafe(a.file_id || '')} ${commentSafe(a.file_name)}`.trim());
       continue;
     }
     // 页面校验断言（URL/标题）不需要元素定位
