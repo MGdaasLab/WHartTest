@@ -413,6 +413,23 @@ class RecorderCoalesceTests(TestCase):
             2,
         )
 
+    def test_select_action_applied_as_select_option(self):
+        """原生下拉选择：入库为 select_option，值入 ope_value。"""
+        sel = {'locator_type': 'name', 'locator_value': 'city', 'name': '城市下拉框'}
+        actions = [
+            {'seq': 1, 'type': 'click', 'selector': {'locator_type': 'id', 'locator_value': 'form', 'name': '表单'}},
+            {'seq': 2, 'type': 'select', 'selector': sel, 'value': '60000003'},
+            {'seq': 3, 'type': 'select', 'selector': sel, 'value': '60000004'},
+        ]
+        stats = apply_recorded_actions(page=self.page, page_step=self.page_step, user=self.user, actions=actions)
+        from ui_automation.models import UiPageStepsDetailed
+        details = list(UiPageStepsDetailed.objects.filter(page_step=self.page_step).order_by('step_sort'))
+        select_steps = [d for d in details if d.ope_key == 'select_option']
+        self.assertEqual(len(select_steps), 1)  # 同元素连续切换合并为一条
+        self.assertEqual(select_steps[0].ope_value, {'value': '60000004'})
+        self.assertEqual(select_steps[0].step_type, 0)
+        self.assertEqual(stats['steps_created'], 2)  # click + select
+
 
 class RecorderWaitApplyTests(TestCase):
     """等待动作入库：无元素 wait 步骤，timeout 毫秒入 ope_value。"""
