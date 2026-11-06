@@ -106,3 +106,4 @@ docker-compose.local-runner-override.yml
 
 # 本地 Actuator 运行时配置（各机器各自维护）
 WHartTest_Actuator/config.toml
+.dsh-scratch
