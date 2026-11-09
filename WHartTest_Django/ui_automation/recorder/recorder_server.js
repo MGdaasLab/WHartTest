@@ -137,6 +137,20 @@ const INIT_SCRIPT = () => {
     }
   }
 
+  // 文本锚点终验：唯一匹配必须是目标节点自身。文本中的引号在拼谓词时被剥离，
+  // 剥离后的谓词可能恰好等于另一元素的文本而"唯一"命中别的节点——
+  // 唯一性只保证全文档 1 个匹配，不保证匹配的就是目标（同类缺陷在
+  // 容器>子级组合定位上出现过：.over-collapse > div 唯一却指向装饰块）。
+  function textXpathPointsAt(node, xp) {
+    if (!isUniqueXPath(xp)) return false;
+    try {
+      var res = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null);
+      return res.singleNodeValue === node;
+    } catch (_) {
+      return false;
+    }
+  }
+
   // 分层锚点：data-testid → 稳定 id → name（表单）→ placeholder（input/textarea/select）→
   // img 的 alt（语义文本）。每个候选都带元素标签且校验唯一，不唯一自动降级。
   function pickAnchor(el) {
@@ -225,8 +239,8 @@ const INIT_SCRIPT = () => {
       });
       if (matched.length === 1) {
         var pred = '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
-        // 用绝对形式校验唯一性，返回相对步（与前段路径拼接）
-        return isUniqueXPath('//' + tag + pred) ? tag + pred : null;
+        // 终验唯一匹配即目标节点（文本含引号被剥离时防错位），返回相对步
+        return textXpathPointsAt(node, '//' + tag + pred) ? tag + pred : null;
       }
     } catch (_) {}
     return null;
@@ -354,7 +368,7 @@ const INIT_SCRIPT = () => {
       });
       if (matched.length === 1) {
         var xp = '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
-        return isUniqueXPath(xp) ? xp : null;
+        return textXpathPointsAt(el, xp) ? xp : null;
       }
     } catch (_) {}
     return null;
@@ -382,7 +396,7 @@ const INIT_SCRIPT = () => {
       });
       if (matched.length === 1) {
         var xp = '//' + selector + '[normalize-space()="' + text.replace(/["']/g, '') + '"]';
-        return isUniqueXPath(xp) ? xp : null;
+        return textXpathPointsAt(el, xp) ? xp : null;
       }
     } catch (_) {}
     return null;
@@ -509,6 +523,10 @@ const INIT_SCRIPT = () => {
   }
 
   // T3：父级语义容器 > 子级组合定位（缩小查找范围的组合 css）
+  // 唯一性校验只保证组合选择器全文档恰好匹配 1 个元素，不保证匹配的就是
+  // el 本身——如侧栏 .over-collapse > div 全页唯一，匹配的却是容器里另一
+  // 个装饰子块（menu-footer），并非点击的菜单标题。必须再校验 el 命中该
+  // 选择器，否则会把毫无关系的元素写进主定位。
   function containerComboCandidate(el) {
     var tag = el.tagName ? el.tagName.toLowerCase() : '';
     var node = el;
@@ -525,13 +543,13 @@ const INIT_SCRIPT = () => {
         // 容器内定位子元素：tag 优先，容器内唯一即用；否则用自身语义 class
         var childTag = tag;
         var inner = containerSel + ' > ' + childTag;
-        if (isUniqueCss(inner)) return { type: 'css', value: inner };
+        if (isUniqueCss(inner) && el.matches(inner)) return { type: 'css', value: inner };
         var ownCls = (el.getAttribute && el.getAttribute('class')) || '';
         var ownTokens = ownCls.trim().split(/\s+/);
         for (var j = 0; j < ownTokens.length; j++) {
           if (!ownTokens[j] || isStateClass(ownTokens[j]) || isDynamicClassToken(ownTokens[j])) continue;
           var combo = containerSel + ' > ' + childTag + '.' + ownTokens[j].replace(/([:.#\\\s])/g, '\\$1');
-          if (isUniqueCss(combo)) return { type: 'css', value: combo };
+          if (isUniqueCss(combo) && el.matches(combo)) return { type: 'css', value: combo };
         }
       }
     }
@@ -750,6 +768,8 @@ const INIT_SCRIPT = () => {
 
   window.__whart.describe = describe;
   window.__whart.buildXPath = buildXPath;
+  // 供服务端命令（断言/上传定位的 evaluate）选点时同样收敛可交互祖先
+  window.__whart.interactiveZoneTarget = interactiveZoneTarget;
 
   // 复选框/单选框的"可见点击目标"：浏览器会为 label 关联的隐藏原生 input
   // 补发一次 click，随后 change 事件再报一次 check/uncheck——EP 等组件库的
@@ -772,9 +792,27 @@ const INIT_SCRIPT = () => {
     return null;
   }
 
+  // 可交互祖先收敛：图标按钮（button>a>svg 等）的点击事件 target 是最深层
+  // 图标节点（svg/path/use），原样录制会生成以 svg 结尾的结构 xpath。SVG 处于
+  // SVG 命名空间，XPath 1.0 无前缀节点测试只匹配空命名空间元素——回放时
+  // svg[n] 恒匹配 0 个元素（调试必超时）。收敛为最近可交互祖先（与浏览器
+  // 实际交互语义一致：人点的是按钮），Playwright codegen 同规则。
+  // input/textarea/select 自身就是交互终点，上溯反而破坏 fill/select 录制。
+  function interactiveZoneTarget(el) {
+    if (!el || el.nodeType !== 1 || !el.closest) return null;
+    var tag = el.tagName || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        tag === 'BUTTON' || tag === 'A' || tag === 'LABEL' || tag === 'SUMMARY') {
+      return null;
+    }
+    var hit = el.closest('button, a[href], [role="button"], [role="link"], [role="tab"], [role="menuitem"], [role="option"], [role="treeitem"], [role="switch"], summary');
+    return hit && hit !== el ? hit : null;
+  }
+
   document.addEventListener('pointermove', function (e) {
     if (e.target && e.target.nodeType === 1) {
-      window.__whart.hovered = e.target;
+      // 悬停元素同样收敛：断言选点走 hovered，图标上需断言到按钮而非 svg
+      window.__whart.hovered = interactiveZoneTarget(e.target) || e.target;
     }
   }, true);
 
@@ -797,10 +835,27 @@ const INIT_SCRIPT = () => {
       }
       return;
     }
+    // 图标按钮（button 内 svg/span 等装饰子层）：收敛为可交互祖先录制，
+    // 避免以 svg 结尾的 xpath（SVG 命名空间在 XPath 1.0 下恒不匹配，回放必超时）
+    var izone = interactiveZoneTarget(el);
+    if (izone) el = izone;
     var d = window.__whart.describe(el);
     if (!d) return;
     if (window.__whartReport) {
-      window.__whartReport({ t: 'click', el: d });
+      // native_select：原生 <select> 或 <input list>（datalist，建议弹层同为
+      // 浏览器 UI 层、非页面 DOM），服务端据此进入可视化选择模式（弹层画面/
+      // 交互特殊处理，见 selectNav）。
+      // viewportX/Y 为视口坐标，服务端用它反查控件 DOM 提取选项列表。
+      var r = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+      var isDatalistInput = el.tagName === 'INPUT' && el.getAttribute('list')
+        && document.getElementById(el.getAttribute('list'));
+      window.__whartReport({
+        t: 'click',
+        el: d,
+        native_select: el.tagName === 'SELECT' || isDatalistInput,
+        viewportX: r ? r.left + r.width / 2 : 0,
+        viewportY: r ? r.top + r.height / 2 : 0,
+      });
     }
   }, true);
 
@@ -826,8 +881,37 @@ const INIT_SCRIPT = () => {
     if (!d) return;
     if (window.__whartReport) {
       if (tag === 'SELECT') {
-        // 原生下拉框：录成 select（执行器走 select_option），值取 option 的 value
-        window.__whartReport({ t: 'select', el: d, value: String(el.value || '') });
+        // 原生下拉框：录成 select（执行器走 select_option）。执行器传字符串时
+        // 按「value 或 label 相等（label 两侧空白归一化）→ DOM 序首个命中」
+        // 匹配，因此 value/label 在选项间重复时，首个命中项可能并非用户实际
+        // 选中项。预检按执行器同款匹配语义确认命中项就是选中项：label 命中
+        // 则录 label（对用户可读、步骤展示直观），label 歧义改录唯一 value，
+        // 两者都无法唯一定中才兜底录 label（与旧行为一致，尽最大努力）。
+        var picked = el.selectedOptions && el.selectedOptions[0];
+        var normWs = function (s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim(); };
+        var selectOptionMatch = function (s) {
+          // 复刻执行器 selectOption(string) 匹配：value 严格相等或 label
+          // （原始/归一化两种）相等即命中，返回 DOM 序首个命中项
+          var opts = el.options || [];
+          for (var i = 0; i < opts.length; i++) {
+            var lb = String(opts[i].label == null ? '' : opts[i].label);
+            if (String(opts[i].value) === s || lb === s || normWs(lb) === normWs(s)) return opts[i];
+          }
+          return null;
+        };
+        var value;
+        if (picked && selectOptionMatch(picked.label || '') === picked) {
+          value = picked.label || picked.value || '';
+        } else if (picked && selectOptionMatch(picked.value || '') === picked) {
+          value = picked.value || '';
+        } else {
+          value = (picked ? picked.label : '') || el.value || '';
+        }
+        window.__whartReport({
+          t: 'select',
+          el: d,
+          value: String(value),
+        });
       } else if (el.type === 'checkbox' || el.type === 'radio') {
         // 点击已收敛录制（勾选动作由可见 label 的 click 承担）时不再重复报
         var zone = checkboxZoneTarget(el);
@@ -854,6 +938,88 @@ const INIT_SCRIPT = () => {
       window.__whartReport({ t: 'press', el: d, key: 'Enter' });
     }
   }, true);
+
+  // ---------------------------------------------------------------------------
+  // 原生对话框兼容：alert/confirm/prompt 的浏览器 UI 层对话框无头下不可见、
+  // 不可交互，Playwright 还会自动 dismiss（confirm 走取消分支，页面行为与
+  // 真实浏览器不一致）。页内 DOM 无法同步阻塞等用户点击（confirm 必须同步
+  // 返回布尔值），因此采用「默认确定 + 可视化回显 + 显式取消录制」模型：
+  //   - confirm 同步返回 true、prompt 同步返回 defaultValue——与执行器
+  //     handle_dialog 自动 accept 的回放语义完全一致
+  //   - 同时渲染页内提示条数秒（画布可见，用户知道弹了什么）
+  //   - 上报 dialog 动作（类型/消息/返回值），录制为可回放步骤
+  //   - 用户要录「取消」分支：先点提示条上的「录制为取消」，本次调用同步
+  //     返回取消语义（false/null），后续对话框调用同理
+  // 覆写仅存在于录制会话页面内（addInitScript），不改动目标系统代码。
+  // ---------------------------------------------------------------------------
+  var whartDialogCancelNext = false;   // 提示条上点「录制为取消」→ 下次对话框走取消语义
+  function sandboxDialog(kind, message, defaultValue) {
+    var cancelled = whartDialogCancelNext;
+    whartDialogCancelNext = false;
+    var confirmed = !cancelled;
+    var result;
+    if (kind === 'alert') {
+      result = undefined;
+    } else if (kind === 'confirm') {
+      result = confirmed;
+    } else { // prompt
+      result = confirmed ? (defaultValue == null ? '' : String(defaultValue)) : null;
+    }
+    // 页内提示条：画布可见（原生对话框无头下完全不可见）。pointer-events:none
+    // 使其不拦截页面点击（否则盖住顶部区域时 elementFromPoint/录制目标全指向
+    // 提示条），仅「按取消返回」按钮单独恢复可点。
+    try {
+      var old = document.querySelector('[data-whart-dialog-tip]');
+      if (old) old.remove();
+      var tip = document.createElement('div');
+      tip.setAttribute('data-whart-dialog-tip', '');
+      tip.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;'
+        + 'align-items:center;gap:10px;padding:8px 14px;background:#fef0f0;color:#c45656;'
+        + 'font:13px/1.5 sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.15);pointer-events:none;';
+      var text = document.createElement('span');
+      text.style.cssText = 'flex:1;white-space:pre-wrap;word-break:break-word;';
+      text.textContent = '【' + kind + ' 对话框】' + String(message == null ? '' : message)
+        + (kind === 'prompt' && confirmed ? '（prompt 返回默认值: ' + (result == null ? '' : result) + '）' : '');
+      tip.appendChild(text);
+      if (kind !== 'alert' && !cancelled) {
+        var cancelBtn = document.createElement('button');
+        cancelBtn.textContent = '本次按取消返回';
+        cancelBtn.style.cssText = 'padding:3px 10px;font-size:12px;cursor:pointer;border:1px solid #c45656;'
+          + 'background:#fff;color:#c45656;border-radius:3px;pointer-events:auto;';
+        cancelBtn.addEventListener('click', function () {
+          whartDialogCancelNext = true;
+          tip.remove();
+        });
+        tip.appendChild(cancelBtn);
+      }
+      var closeBtn = document.createElement('button');
+      closeBtn.textContent = '×';
+      closeBtn.style.cssText = 'padding:2px 8px;font-size:14px;cursor:pointer;border:none;background:transparent;color:#c45656;';
+      closeBtn.addEventListener('click', function () { tip.remove(); });
+      tip.appendChild(closeBtn);
+      document.body.appendChild(tip);
+      setTimeout(function () { try { tip.remove(); } catch (_) {} }, 8000);
+    } catch (_) {}
+    // 上报 dialog 动作（录制为可回放步骤）
+    try {
+      if (window.__whartReport) {
+        window.__whartReport({
+          t: 'dialog',
+          kind: kind,
+          message: String(message == null ? '' : message),
+          confirmed: kind === 'alert' ? true : confirmed,
+          prompt_value: kind === 'prompt' ? String(result == null ? '' : result) : undefined,
+        });
+      }
+    } catch (_) {}
+    return result;
+  }
+
+  try {
+    window.confirm = function (message) { return sandboxDialog('confirm', message); };
+    window.prompt = function (message, defaultValue) { return sandboxDialog('prompt', message, defaultValue); };
+    window.alert = function (message) { sandboxDialog('alert', message); };
+  } catch (_) {}
 };
 
 // ---------------------------------------------------------------------------
@@ -1004,6 +1170,10 @@ const state = {
   lastClick: { sel: '', ts: 0 },
   lastFill: { sel: '', value: '', ts: 0 },
   lastPress: { sel: '', ts: 0 },
+  // 原生 <select> 键盘选择模式：点击展开弹层期间冻结推流、抑制悬停移动，
+  // change（select 动作）或超时后退出。弹层是浏览器 UI 层，不在页面合成帧里。
+  selectNavActive: false,
+  selectNavFrameTs: 0,
   lastFrameTs: 0,          // 最近一次推帧时间（screencast 高帧率 / 截图基线兜底）
   tracePath: null,         // 执行 trace.zip 落盘路径（start_trace 设置，stop_trace 消费）
   pageErrors: [],          // 页面 JS 错误（pageerror 事件，执行日志展示用）
@@ -1015,7 +1185,7 @@ const FILL_MERGE_WINDOW = 1500;
 
 function recordAction(action) {
   state.seq += 1;
-  const entry = Object.assign({ seq: state.seq }, action);
+  const entry = Object.assign({}, action, { seq: state.seq, ts: Date.now() });
   state.recorded.push(entry);
   if (state.recorded.length > 1000) {
     state.recorded.splice(0, state.recorded.length - 1000);
@@ -1066,6 +1236,73 @@ async function handleReport(payload, frame) {
   const now = Date.now();
   try {
     if (payload.t === 'click') {
+      // 原生 <select>：不录 click 步骤（点击只展开浏览器 UI 层弹层，回放时
+      // 无法与弹层交互），后续 change 事件会录成 select_option。
+      // 展开期间冻结推流（弹层不在 screencast/screenshot 合成帧里，刷新
+      // 交替产生"忽隐忽现"），并抑制悬停移动（move 会关闭展开的弹层）。
+      // 点击其他元素（含点空白/外部收起下拉弹层、未产生 change）即退出选择
+      // 模式——此前处于选择模式时须通知前端收起点选面板，否则面板残留。
+      const wasSelectNav = state.selectNavActive;
+      state.selectNavActive = !!payload.native_select;
+      if (wasSelectNav && !payload.native_select) {
+        pushEvent('status', { status: 'select_nav_end' });
+      }
+      if (payload.native_select) {
+        state.selectNavFrameTs = Date.now();
+        // 提取全部选项（选项数据在 DOM 里，弹层本身不是 DOM）推给前端渲染
+        // 可视化面板——画布拍不到浏览器 UI 层弹层，用户在画布上看不到列表内容，
+        // 无法盲选；面板点选走 pick_select_option 命令在页面里选中并派发 change。
+        try {
+          const selInfo = await state.page.evaluate(({ x, y }) => {
+            const el = document.elementFromPoint(x, y);
+            if (!el) return null;
+            // select 直接取 options；input list=datalist 从关联 datalist 取 option
+            let ctrl = el.tagName === 'SELECT' ? el : (el.closest && el.closest('select'));
+            let options = [];
+            let value = '';
+            if (ctrl) {
+              value = ctrl.value || '';
+              options = Array.from(ctrl.options).map((o) => ({
+                value: String(o.value),
+                text: (o.textContent || '').trim() || String(o.value),
+                selected: o.selected,
+              }));
+            } else {
+              const inp = (el.tagName === 'INPUT' && el.getAttribute('list'))
+                ? el
+                : (el.closest && el.closest('input[list]'));
+              const dl = inp && document.getElementById(inp.getAttribute('list'));
+              if (inp && dl) {
+                ctrl = inp;
+                value = inp.value || '';
+                options = Array.from(dl.querySelectorAll('option')).map((o) => ({
+                  value: String(o.getAttribute('value') !== null ? o.getAttribute('value') : (o.textContent || '').trim()),
+                  text: (o.getAttribute('value') !== null ? o.getAttribute('value') : (o.textContent || '').trim()),
+                  selected: String(inp.value || '') === String(o.getAttribute('value') !== null ? o.getAttribute('value') : (o.textContent || '').trim()),
+                }));
+              }
+            }
+            if (!ctrl) return null;
+            const r = ctrl.getBoundingClientRect();
+            return {
+              name: (window.__whart && window.__whart.describe) ? (window.__whart.describe(ctrl) || {}).name || '' : '',
+              value: value,
+              options: options,
+              rect: { x: r.x, y: r.y, w: r.width, h: r.height },
+              is_input: ctrl.tagName === 'INPUT',
+            };
+          }, { x: payload.viewportX, y: payload.viewportY });
+          if (selInfo) {
+            pushEvent('status', { status: 'select_nav', element: payload.el.name || selInfo.name || '', options: selInfo.options, current_value: selInfo.value, rect: selInfo.rect });
+            return;
+          }
+        } catch (e) {
+          serverLog('select 选项提取失败:', e && e.message ? e.message : String(e));
+        }
+        // 提取失败（如坐标失配）退回纯键盘模式提示
+        pushEvent('status', { status: 'select_nav', element: payload.el.name || '' });
+        return;
+      }
       const selKey = JSON.stringify(payload.el);
       if (selKey === state.lastClick.sel && now - state.lastClick.ts < 400) return;
       state.lastClick = { sel: selKey, ts: now };
@@ -1088,6 +1325,11 @@ async function handleReport(payload, frame) {
       }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
       recordAction({ type: 'fill', selector: payload.el, value: payload.value });
+      // datalist 点选走 fill 链路：同样退出选择模式（恢复推流与悬停移动）
+      if (state.selectNavActive) {
+        state.selectNavActive = false;
+        pushEvent('status', { status: 'select_nav_end' });
+      }
     } else if (payload.t === 'select') {
       // 原生下拉选择：同元素连续切换只保留最终值（复用 fill 的合并窗口）
       const selKey = JSON.stringify(payload.el);
@@ -1105,6 +1347,24 @@ async function handleReport(payload, frame) {
       }
       state.lastFill = { sel: selKey, value: payload.value, ts: now };
       recordAction({ type: 'select', selector: payload.el, value: payload.value });
+      // 选择完成：退出键盘选择模式，恢复推流与悬停移动转发
+      state.selectNavActive = false;
+      pushEvent('status', { status: 'select_nav_end' });
+    } else if (payload.t === 'dialog') {
+      // 原生对话框（alert/confirm/prompt 沙盒）：无元素定位，录为页面级动作。
+      // gap_s 为上一动作到对话框弹出的实测间隔（秒）：页面较慢或连击后才弹窗时，
+      // 回放的固定短 wait 可能不够，入库按实测值给 wait 时长。
+      const prev = state.recorded[state.recorded.length - 1];
+      const gapS = prev && prev.ts ? Math.max(0, (Date.now() - prev.ts) / 1000) : null;
+      recordAction({
+        type: 'dialog',
+        kind: payload.kind || 'alert',
+        message: String(payload.message || ''),
+        confirmed: payload.confirmed !== false,
+        ...(gapS != null ? { gap_s: Math.round(gapS * 10) / 10 } : {}),
+        ...(payload.kind === 'prompt' ? { prompt_value: String(payload.prompt_value || '') } : {}),
+      });
+      pushEvent('status', { status: 'dialog', kind: payload.kind, message: String(payload.message || '') });
     } else if (payload.t === 'check' || payload.t === 'uncheck') {
       recordAction({ type: payload.t, selector: payload.el });
     } else if (payload.t === 'press') {
@@ -1137,6 +1397,14 @@ async function startFrameStream(page) {
     const cdpSession = await page.context().newCDPSession(page);
     cdpSession.on('Page.screencastFrame', (params) => {
       if (!state.running || state.finished || !params.data) return;
+      // 键盘选择模式：弹层是浏览器 UI 层，不在 screencast 合成帧里。此刻
+      // 用户正用键盘选选项，页面其余部分在动（焦点环/滚动），每帧都会推给
+      // 前端造成画面闪变（列表区域永远空白 →"忽隐忽现"）。冻结推流，退出
+      // 模式后由基线截图循环自然恢复画面。
+      if (state.selectNavActive) {
+        cdpSession.send('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => {});
+        return;
+      }
       pushEvent('frame', {
         mime: 'image/jpeg',
         data: params.data.replace(/^data:image\/jpeg;base64,/, ''),
@@ -1182,6 +1450,18 @@ function startFrameLoop(intervalMs = 250, minGapMs = 0) {
   if (state.frameTimer) return;
   state.frameTimer = setInterval(async () => {
     if (!state.running || state.finished || state.capturing || !state.page) return;
+    // 键盘选择模式：弹层不在截图合成帧里，截图循环只会让画面闪烁。保持
+    // 冻结（画面维持弹层展开前的最后一帧）；超时未完成选择则退出模式恢复推流。
+    if (state.selectNavActive) {
+      if (Date.now() - state.selectNavFrameTs > 15000) {
+        // 超时兜底退出：除恢复推流外，还须通知前端收起点选面板（面板仅监听
+        // select_nav_end，否则 15s 后画布恢复推流而面板仍残留）
+        state.selectNavActive = false;
+        pushEvent('status', { status: 'select_nav_end' });
+      } else {
+        return;
+      }
+    }
     const gap = Date.now() - state.lastFrameTs;
     if (minGapMs > 0 && gap < minGapMs) return;
     state.capturing = true;
@@ -1248,6 +1528,16 @@ function locatorExpr(selector) {
   }
 }
 
+// 单行注释安全化：去除换行（防 // 注释被截断后注入任意代码）与注释终结符，
+// 并裁掉控制字符；仅用于注释文本，不参与代码拼接执行。
+function commentSafe(text) {
+  return String(text || '')
+    .replace(/[\r\n\u2028\u2029]+/g, ' ')
+    .replace(/\*\//g, '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, '');
+}
+
 function buildScript(actions, startUrl) {
   const lines = [];
   lines.push("const { chromium } = require('playwright');");
@@ -1255,6 +1545,9 @@ function buildScript(actions, startUrl) {
   lines.push('(async () => {');
   lines.push(`  const browser = await chromium.launch({ headless: true });`);
   lines.push(`  const page = await browser.newPage();`);
+  // 原生对话框回放：注册 dialog 处理器自动 accept（Playwright 不注册时默认
+  // dismiss，与录制语义不符——录制时 alert/confirm/prompt 均以确定分支为准）
+  lines.push(`  page.on('dialog', (dialog) => dialog.accept().catch(() => {}));`);
   if (startUrl) {
     lines.push(`  await page.goto('${startUrl.replace(/'/g, "\\'")}');`);
   }
@@ -1267,9 +1560,16 @@ function buildScript(actions, startUrl) {
       lines.push(`  await page.waitForTimeout(${Math.round((Number(a.seconds) || 1) * 1000)});`);
       continue;
     }
+    if (a.type === 'dialog') {
+      // 原生对话框：回放由顶部 page.on('dialog') 自动 accept，仅留注释标注语义
+      const branch = a.confirmed === false ? 'dismiss(注意: 回放为自动accept)' : 'accept';
+      lines.push(`  // 原生${commentSafe(a.kind || 'alert')} 对话框（自动${branch}）: ${commentSafe(a.message)}`);
+      lines.push('  await page.waitForTimeout(1000);');
+      continue;
+    }
     if (a.type === 'upload') {
       // 文件存在于平台文件管理，脚本中仅标注占位，执行时以平台 file_id 解析
-      lines.push(`  // TODO upload: file_id=${String(a.file_id || '')} ${a.file_name || ''}`.trim());
+      lines.push(`  // TODO upload: file_id=${commentSafe(a.file_id || '')} ${commentSafe(a.file_name)}`.trim());
       continue;
     }
     // 页面校验断言（URL/标题）不需要元素定位
@@ -1589,6 +1889,9 @@ async function applyInput(params) {
     const y = Number(params.y) || 0;
     const button = params.button || 'left';
     if (params.event === 'move') {
+      // 键盘选择模式：悬停移动会关闭已展开的原生 select 弹层（用户点列表项
+      // 前鼠标必然扫过页面），全部抑制；超时兜底见 selectNavFrameTs 消费处
+      if (state.selectNavActive) return;
       await state.page.mouse.move(x, y);
     } else if (params.event === 'down') {
       await state.page.mouse.down({ button, clickCount: Number(params.clickCount) || 1 });
@@ -2071,8 +2374,13 @@ async function cmdLocateUpload(params) {
     const info = await state.page.evaluate(([x, y]) => {
       const w = window.__whart;
       if (!w || !w.describe) return null;
-      const el = document.elementFromPoint(x, y);
+      let el = document.elementFromPoint(x, y);
       if (!el || !(el instanceof Element)) return null;
+      // 图标上传按钮收敛为可交互祖先（非 file input 场景的定位兜底不再以 svg 结尾）
+      if (w.interactiveZoneTarget) {
+        const zone = w.interactiveZoneTarget(el);
+        if (zone) el = zone;
+      }
       let fileInput = null;
       let node = el;
       while (node && node.nodeType === 1 && node !== document.documentElement && node !== document.body) {
@@ -2124,6 +2432,63 @@ async function cmdRemoveAction(params) {
   state.recorded = state.recorded.filter((a) => a.seq !== seq);
   const removed = before - state.recorded.length;
   return { ok: true, state: { removed } };
+}
+
+// 可视化点选原生 select 选项（select_nav 模式）：
+// 在页面里直接选中目标 option 并派发 change —— 事件被注入脚本捕获后走
+// 标准 select 上报链路（录制 select 动作、退出 select_nav、恢复推流）。
+// 合成点击无法命中浏览器 UI 层弹层，选中必须在 DOM 层完成。
+async function cmdPickSelectOption(params) {
+  if (!state.page || !state.running) {
+    return { ok: false, error: '录制会话未启动' };
+  }
+  if (!state.selectNavActive) {
+    return { ok: false, error: '当前没有展开中的原生下拉框' };
+  }
+  const value = String((params && params.value) ?? '');
+  if (!value) {
+    return { ok: false, error: '缺少选项 value' };
+  }
+  try {
+    const picked = await state.page.evaluate((v) => {
+      // select：焦点控件或全文档匹配包含该 option 的 select；
+      // input[list]（datalist）：设 input.value 并派发 input/change（语义为填入该建议值）
+      const isSelect = (s) => s && s.tagName === 'SELECT' && Array.from(s.options).some((o) => String(o.value) === v);
+      let sel = document.activeElement && isSelect(document.activeElement) ? document.activeElement : null;
+      if (!sel) sel = Array.from(document.querySelectorAll('select')).find(isSelect) || null;
+      if (sel) {
+        const opt = Array.from(sel.options).find((o) => String(o.value) === v);
+        sel.value = v;
+        sel.dispatchEvent(new Event('input', { bubbles: true }));
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return { value: v, text: (opt.textContent || '').trim(), is_input: false };
+      }
+      // datalist input：焦点优先，其次按 list 关联的 datalist 含该 option 的 input
+      const dlOptions = (inp) => {
+        const dl = inp.getAttribute('list') && document.getElementById(inp.getAttribute('list'));
+        return dl ? Array.from(dl.querySelectorAll('option')) : [];
+      };
+      const optText = (opt) => String(opt.getAttribute('value') !== null ? opt.getAttribute('value') : (opt.textContent || '').trim());
+      let inp = document.activeElement && document.activeElement.tagName === 'INPUT'
+        && document.activeElement.getAttribute('list') ? document.activeElement : null;
+      if (!inp || !dlOptions(inp).some((o) => optText(o) === v)) {
+        inp = Array.from(document.querySelectorAll('input[list]')).find((i) => dlOptions(i).some((o) => optText(o) === v)) || null;
+      }
+      if (inp) {
+        inp.value = v;
+        inp.dispatchEvent(new Event('input', { bubbles: true }));
+        inp.dispatchEvent(new Event('change', { bubbles: true }));
+        return { value: v, text: v, is_input: true };
+      }
+      return null;
+    }, value);
+    if (!picked) {
+      return { ok: false, error: '未找到匹配的选项: ' + value };
+    }
+    return { ok: true, state: { picked } };
+  } catch (e) {
+    return { ok: false, error: '选项选中失败: ' + (e && e.message ? e.message : String(e)) };
+  }
 }
 
 async function cmdRunSteps(params) {
@@ -2502,9 +2867,11 @@ async function cmdAssert(params) {
     let info = null;
     if (hasPoint) {
       info = await state.page.evaluate(([x, y]) => {
-        const el = document.elementFromPoint(x, y);
+        const el0 = document.elementFromPoint(x, y);
         const w = window.__whart;
-        if (!el || !w || !w.describe) return null;
+        if (!el0 || !w || !w.describe) return null;
+        // 图标按钮等装饰子层收敛为可交互祖先（与 click 录制同规则）
+        const el = (w.interactiveZoneTarget && w.interactiveZoneTarget(el0)) || el0;
         const sel = w.describe(el);
         if (!sel) return null;
         return {
@@ -2665,6 +3032,8 @@ rl.on('line', (line) => {
           return respond(await cmdRunSteps(msg.params || {}));
         case 'remove_action':
           return respond(await cmdRemoveAction(msg.params || {}));
+        case 'pick_select_option':
+          return respond(await cmdPickSelectOption(msg.params || {}));
         case 'add_wait':
           return respond(await cmdAddWait(msg.params || {}));
         case 'locate_upload':

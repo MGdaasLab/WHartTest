@@ -12,6 +12,8 @@ import os
 import shutil
 import time
 import traceback
+from collections import deque
+from weakref import WeakKeyDictionary
 from pathlib import Path
 from typing import Any, Optional, Union
 from dataclasses import dataclass, field
@@ -188,6 +190,13 @@ class PlaywrightExecutor:
         self._auth_context_key: Optional[str] = None  # 当前 context 对应 auth 签名（组间切换判断）
         # 执行画面帧采集钩子：browser_session 上下文进入后回调 page（consumer 侧挂 FrameStreamer）
         self.on_execution_page = None
+        # 录制 prompt 对话框的回放值队列：原生 prompt 由前序步骤（如 click）同步
+        # 触发，browser dialog 事件先于后续 dialog wait 步骤——按页面步骤预载
+        # （ope_value.prompt_value，False 表示录的是取消分支，回放 dismiss），
+        # handle_dialog 弹出时按录制顺序出队带值 accept（无队列数据回退空串 accept，
+        # 与旧行为一致）。按 page 隔离（WeakKeyDictionary）：并发执行多用例时
+        # 各用例持有独立 page，队列互不清空、互不串用；page 关闭后条目自动回收。
+        self._prompt_dialog_queues: WeakKeyDictionary = WeakKeyDictionary()
         
         Path(self.user_data_dir).mkdir(parents=True, exist_ok=True)
         Path(self.screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -861,14 +870,62 @@ class PlaywrightExecutor:
         except Exception as e:
             logger.warning('stop_now 关闭浏览器异常: %s', e)
 
+    def _load_prompt_dialog_queue(self, page: Page, steps: list['StepConfig']) -> None:
+        """预载页面步骤内所有 dialog 步骤的 prompt 回放值（按步骤顺序）。
+
+        原生 prompt 由前序步骤（如 click）同步触发：browser dialog 事件发生在
+        触发它的步骤执行瞬间，早于后续 dialog wait 步骤——执行整组页面步骤前
+        一次性入队，handle_dialog 弹出时按录制顺序出队。None 清空队列。
+        队列按 page 隔离：并发执行多用例时互不干扰。
+        """
+        queue = self._prompt_dialog_queues.get(page)
+        if queue is None:
+            queue = deque()
+            self._prompt_dialog_queues[page] = queue
+        queue.clear()
+        if steps is None:
+            return
+        for step in steps:
+            if (step.operation_type or '').lower() != 'wait' or not isinstance(step.ope_value, dict):
+                continue
+            if 'prompt_value' not in step.ope_value:
+                continue
+            if step.ope_value.get('prompt_value') is False:
+                # 录制为取消分支：False 作为哨兵，弹出时 dismiss
+                queue.append(False)
+            else:
+                queue.append(str(step.ope_value.get('prompt_value') or ''))
+
     def _setup_page_listeners(self, page: Page):
         """注册页面基础事件监听（自动处理弹窗、记录控制台 JS 错误）"""
         async def handle_dialog(dialog):
-            logger.warning(f"检测到浏览器弹窗 [{dialog.type}]: '{dialog.message}'，已自动 accept。")
-            try:
-                await dialog.accept()
-            except Exception as e:
-                logger.error(f"处理浏览器弹窗异常: {e}")
+            if dialog.type != 'prompt':
+                # alert/confirm：保持自动 accept（confirm 走确定分支）
+                logger.warning(f"检测到浏览器弹窗 [{dialog.type}]: '{dialog.message}'，已自动 accept。")
+                try:
+                    await dialog.accept()
+                except Exception as e:
+                    logger.error(f"处理浏览器弹窗异常: {e}")
+                return
+            queue = self._prompt_dialog_queues.get(page)
+            if queue:
+                prompt_val = queue.popleft()
+            else:
+                # 未录制 prompt 值（手写用例/旧数据）：保持旧行为 accept 空串
+                prompt_val = ''
+            if prompt_val is False:
+                logger.warning(f"检测到 prompt 弹窗: '{dialog.message}'，录制为取消分支，已 dismiss。")
+                try:
+                    await dialog.dismiss()
+                except Exception as e:
+                    logger.error(f"处理浏览器弹窗异常: {e}")
+            else:
+                # 输入值不写日志（可能含敏感信息），仅记录值长度供排查
+                logger.info(f"检测到 prompt 弹窗: '{dialog.message}'，以值(长度 {len(prompt_val)}) accept。")
+                try:
+                    await dialog.accept(prompt_val)
+                except Exception as e:
+                    logger.error(f"处理浏览器弹窗异常: {e}")
 
         def handle_pageerror(exception):
             logger.error(f"页面 JS 抛出未捕获异常: {exception}")
@@ -1652,6 +1709,10 @@ class PlaywrightExecutor:
                         if nav_url:
                             await self._goto_with_login_check(page, nav_url, wait_until="domcontentloaded")
 
+                    # 预载本页面步骤的 prompt 回放值（prompt 由前序步骤同步触发，
+                    # 须在步骤组执行前入队，见 _load_prompt_dialog_queue）
+                    self._load_prompt_dialog_queue(page, page_step.steps)
+
                     logger.info(f"执行页面步骤: {page_step.page_name}")
 
                     # 确保使用最新的页签引用进行环境跳转检测
@@ -1816,6 +1877,9 @@ class PlaywrightExecutor:
 
         try:
             async with self.browser_session() as page:
+                # 预载本页面步骤的 prompt 回放值（prompt 由前序步骤同步触发，
+                # 须在步骤组执行前入队，见 _load_prompt_dialog_queue）
+                self._load_prompt_dialog_queue(page, config.steps)
                 logger.info(f"开始执行页面步骤: {config.page_name}")
                 self._page_errors = []
                 self._setup_page_listeners(page)
@@ -1942,6 +2006,10 @@ class PlaywrightExecutor:
             for page_step in config.page_steps:
                 if self._stop_requested:
                     raise Exception("用例被手动停止")
+
+                # 预载本页面步骤的 prompt 回放值（prompt 由前序步骤同步触发，
+                # 须在步骤组执行前入队，见 _load_prompt_dialog_queue）
+                self._load_prompt_dialog_queue(page, page_step.steps)
 
                 logger.info(f"[并发] 执行页面步骤: {page_step.page_name}")
 
