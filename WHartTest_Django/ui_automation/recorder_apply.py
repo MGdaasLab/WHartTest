@@ -250,6 +250,57 @@ def apply_recorded_actions(
             steps_created += 1
             continue
 
+        if action_type == 'dialog':
+            # 原生对话框（alert/confirm/prompt 沙盒录制）：执行器 handle_dialog
+            # 对弹出的对话框自动 accept，回放无需显式操作步骤——录为短 wait
+            # （给对话框出现留时间）+ description 说明语义，回放必过且可读。
+            kind = str(action.get('kind') or 'alert')
+            message = str(action.get('message') or '').strip()
+            confirmed = action.get('confirmed') is not False
+            kind_cn = {'alert': '提示框', 'confirm': '确认框', 'prompt': '输入框'}.get(kind, kind)
+            branch_cn = '确定' if confirmed else '取消'
+            desc = f'原生{kind_cn}对话框（自动{branch_cn}）：{message[:60]}' if message else f'原生{kind_cn}对话框（自动{branch_cn}）'
+            # prompt 录制的默认值必须入库回放：执行器 handle_dialog accept 不带
+            # 文本会让 prompt 返回空串，页面走与录制不同的分支。确定分支存实际
+            # 输入值（执行器按序带值 accept）；取消分支存 False 哨兵（执行器
+            # dismiss，回放与录制语义一致）。
+            prompt_replay: str | bool | None = None
+            if kind == 'prompt':
+                if confirmed:
+                    prompt_replay = str(action.get('prompt_value') or '')
+                    # 输入值不写入描述（可能含敏感信息，入库有泄露风险），仅记录长度供复核
+                    desc += f'，输入值: （长度{len(prompt_replay)}，回放时自动填入）' if prompt_replay else '，输入值: （空）'
+                else:
+                    prompt_replay = False
+                    desc += '，输入值: （取消，无输入）'
+            if not confirmed and kind != 'prompt':
+                # 取消分支：执行器会 accept，页面将走与录制时不同的分支——
+                # 描述中显式警示，执行人工复核调整用例（prompt 已按哨兵回放
+                # 取消语义，无需警示）
+                desc += '【注意：执行器自动确认，与录制的取消分支不一致，请人工调整】'
+            # wait 时长取录制时「上一动作到对话框弹出」的实测间隔（秒），钳制在
+            # [1, 10]：下限给对话框渲染留保底时间，上限防异常数据录出超长等待；
+            # 无实测值（旧数据/首动作即弹窗）回退 1 秒。
+            try:
+                gap = float(action.get('gap_s') or 0)
+            except (TypeError, ValueError):
+                gap = 0.0
+            wait_seconds = min(10, max(1, int(gap + 0.5)))
+            dialog_ope_value: dict[str, Any] = {'timeout': wait_seconds}
+            if kind == 'prompt':
+                dialog_ope_value['prompt_value'] = prompt_replay
+            UiPageStepsDetailed.objects.create(
+                page_step=page_step,
+                step_type=STEP_TYPE_ELEMENT,
+                ope_key='wait',
+                ope_value=dialog_ope_value,
+                description=desc,
+                step_sort=next_sort,
+            )
+            next_sort += 1
+            steps_created += 1
+            continue
+
         if action_type == 'upload':
             selector = action.get('selector') or {}
             element, created = _get_or_create_element(

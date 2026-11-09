@@ -462,6 +462,96 @@ class RecorderWaitApplyTests(TestCase):
         self.assertIsNone(wait_step.element)
 
 
+class RecorderDialogApplyTests(TestCase):
+    """原生对话框动作入库：录为短 wait，时长取实测间隔（gap_s）并钳制 [1,10]。"""
+
+    def setUp(self):
+        self.user = User.objects.create_superuser(username='dialog-rec', password='secret')
+        self.project = Project.objects.create(name='Dialog Project')
+        ProjectMember.objects.create(project=self.project, user=self.user, role='admin')
+        self.module = UiModule.objects.create(project=self.project, name='M', creator=self.user)
+        self.page = UiPage.objects.create(
+            project=self.project, module=self.module, name='Page', url='/login', creator=self.user,
+        )
+        self.page_step = UiPageSteps.objects.create(
+            project=self.project, page=self.page, module=self.module, name='Steps', creator=self.user,
+        )
+
+    def _apply_and_get_wait(self, dialog_action):
+        """入库单个 dialog 动作，返回生成的 wait 步骤。"""
+        stats = apply_recorded_actions(
+            page=self.page, page_step=self.page_step, user=self.user, actions=[dict(dialog_action)],
+        )
+        self.assertEqual(stats['steps_created'], 1)
+        from ui_automation.models import UiPageStepsDetailed
+        detail = UiPageStepsDetailed.objects.get(page_step=self.page_step)
+        self.assertEqual(detail.ope_key, 'wait')
+        self.assertIsNone(detail.element)
+        return detail
+
+    def test_dialog_uses_measured_gap(self):
+        """携带实测间隔 gap_s 时 wait 取实测值（向上取整）。"""
+        detail = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'confirm', 'message': '确认删除？',
+            'confirmed': True, 'gap_s': 2.6,
+        })
+        self.assertEqual(detail.ope_value, {'timeout': 3})  # 2.6 → 3
+        self.assertIn('原生确认框对话框（自动确定）', detail.description)
+
+    def test_prompt_value_saved_to_ope_value(self):
+        """prompt 确定分支：录制输入值入库 ope_value.prompt_value（执行器据此带值 accept）。"""
+        detail = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'prompt', 'message': '输入名称',
+            'confirmed': True, 'prompt_value': '默认名', 'gap_s': 1.2,
+        })
+        self.assertEqual(detail.ope_value['prompt_value'], '默认名')
+        # 输入值不落描述（敏感信息不入库明文），仅记录长度供复核
+        self.assertIn('输入值: （长度3，回放时自动填入）', detail.description)
+        self.assertNotIn('默认名', detail.description)
+
+    def test_prompt_cancel_branch_saved_as_sentinel(self):
+        """prompt 取消分支：ope_value.prompt_value 存 False 哨兵（执行器 dismiss 回放）。"""
+        detail = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'prompt', 'message': '输入名称',
+            'confirmed': False, 'prompt_value': '', 'gap_s': 1.2,
+        })
+        self.assertIs(detail.ope_value['prompt_value'], False)
+        self.assertIn('取消，无输入', detail.description)
+        # prompt 取消分支已按哨兵回放取消语义，不应再有人工复核警示
+        self.assertNotIn('请人工调整', detail.description)
+
+    def test_dialog_without_gap_falls_back_to_one(self):
+        """无实测值（旧数据/首动作即弹窗）回退 1 秒。"""
+        detail = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'alert', 'message': '提示', 'confirmed': True,
+        })
+        self.assertEqual(detail.ope_value, {'timeout': 1})
+
+    def test_dialog_gap_clamped_to_bounds(self):
+        """异常间隔钳制在 [1, 10]：超长间隔封顶 10，负值/非法值保底 1。"""
+        detail = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'alert', 'message': '', 'confirmed': True,
+            'gap_s': 99,
+        })
+        self.assertEqual(detail.ope_value, {'timeout': 10})
+        from ui_automation.models import UiPageStepsDetailed
+        UiPageStepsDetailed.objects.all().delete()
+        detail2 = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'prompt', 'message': '输入名称',
+            'confirmed': True, 'prompt_value': 'x', 'gap_s': 'bad',
+        })
+        # 非法 gap_s 回退 1 秒；prompt 步骤同时携带录制输入值（回放带值 accept）
+        self.assertEqual(detail2.ope_value, {'timeout': 1, 'prompt_value': 'x'})
+
+    def test_dialog_cancel_branch_warns_in_description(self):
+        """取消分支：描述中包含与执行器自动确认不一致的人工复核警示。"""
+        detail = self._apply_and_get_wait({
+            'seq': 1, 'type': 'dialog', 'kind': 'confirm', 'message': '离开页面？',
+            'confirmed': False, 'gap_s': 1.1,
+        })
+        self.assertIn('请人工调整', detail.description)
+
+
 class BatchDeleteApiTests(TestCase):
     """元素 / 步骤明细批量删除接口。"""
 
