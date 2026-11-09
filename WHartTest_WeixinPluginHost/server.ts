@@ -313,7 +313,7 @@ async function dispatchReplyFromWhartTest(params: {
 }
 
 const runtime = {
-  version: "2026.3.23",
+  version: "2026.6.35",
   channel: {
     commands: {
       shouldComputeCommandAuthorized,
