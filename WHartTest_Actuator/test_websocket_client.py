@@ -197,5 +197,60 @@ class AuthRejectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(client._extract_close_code(e), 4401)
 
 
+class HandshakeStatusClassificationTests(unittest.IsolatedAsyncioTestCase):
+    """握手层 HTTP 状态分类：认证拒绝（401/403/407）停止重连，
+    瞬时故障（后端重启时代理返回的 502/503 等）保留重连。"""
+
+    async def _run_connect_with_status(self, status_code: int) -> WebSocketClient:
+        from types import SimpleNamespace
+        import websockets.exceptions as we
+        import websocket_client as wc_module
+
+        client = WebSocketClient('ws://127.0.0.1:8000/ws/ui/actuator/', 'act-1')
+
+        async def fake_connect(url, **kwargs):
+            raise we.InvalidStatus(SimpleNamespace(
+                status_code=status_code, reason='test', headers=[]))
+
+        original = wc_module.websockets.connect
+        wc_module.websockets.connect = fake_connect
+        try:
+            with self.assertLogs('actuator', level='ERROR'):
+                await client.connect()
+        finally:
+            wc_module.websockets.connect = original
+        return client
+
+    async def test_403_marks_auth_rejected(self):
+        """403 是确定性认证拒绝：停止重连。"""
+        client = await self._run_connect_with_status(403)
+        self.assertTrue(client._auth_rejected)
+        self.assertFalse(client.connected)
+
+    async def test_401_marks_auth_rejected(self):
+        client = await self._run_connect_with_status(401)
+        self.assertTrue(client._auth_rejected)
+
+    async def test_502_does_not_stop_reconnect(self):
+        """后端重启时代理返回 502：瞬时故障，不标记认证被拒。"""
+        client = await self._run_connect_with_status(502)
+        self.assertFalse(client._auth_rejected)
+        self.assertFalse(client.connected)
+
+    async def test_503_does_not_stop_reconnect(self):
+        client = await self._run_connect_with_status(503)
+        self.assertFalse(client._auth_rejected)
+
+    async def test_auth_reject_message_mentions_actual_reason(self):
+        """403 路径日志应写明 HTTP 403 而非硬编码 4401。"""
+        client = await self._run_connect_with_status(403)
+        # _mark_auth_rejected 只输出一次，重放日志需重置后触发
+        client._auth_rejected = False
+        with self.assertLogs('actuator', level='ERROR') as captured:
+            client._mark_auth_rejected(f"HTTP 403")
+        self.assertIn('HTTP 403', '\n'.join(captured.output))
+        self.assertNotIn('关闭码 4401', '\n'.join(captured.output))
+
+
 if __name__ == '__main__':
     unittest.main()

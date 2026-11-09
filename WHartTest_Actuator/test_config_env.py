@@ -145,16 +145,37 @@ class WsTokenConfigCheckTest(unittest.TestCase):
             with self.assertNoLogs("actuator", level="WARNING"):
                 self._run_check(config, config_dir)
 
-    @patch.dict(os.environ, {"WHARTTEST_ACTUATOR_WS_TOKEN": "injected"}, clear=True)
     def test_env_injection_skips_check(self):
-        """容器部署经环境变量注入 token 时跳过检测。"""
+        """容器部署经环境变量注入 token 时跳过检测。
+
+        注意：load_from_env 会 pop 环境变量，检测逻辑依赖
+        config.ws_token_from_env 标志而非环境变量本身。
+        """
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp)
             self._write_env(config_dir, self.TOKEN)
             config = Config()
             config.ws_token = ""
+            # 复刻 main() 真实时序：load_from_env 先执行（pop 后标志置位）
+            with patch.dict(os.environ, {"WHARTTEST_ACTUATOR_WS_TOKEN": "injected"}):
+                config.load_from_env()
+            self.assertTrue(config.ws_token_from_env)
+            self.assertNotIn("WHARTTEST_ACTUATOR_WS_TOKEN", os.environ)
 
             with self.assertNoLogs("actuator", level="WARNING"):
+                self._run_check(config, config_dir)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_env_injection_flag_default_off(self):
+        """未注入环境变量时标志默认关闭，检测正常执行。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp)
+            self._write_env(config_dir, self.TOKEN)
+            config = Config()
+            config.ws_token = "wrong"
+
+            self.assertFalse(config.ws_token_from_env)
+            with self.assertLogs("actuator", level="WARNING"):
                 self._run_check(config, config_dir)
 
     @patch.dict(os.environ, {"WHARTTEST_ACTUATOR_ENV_FILE": ""}, clear=True)

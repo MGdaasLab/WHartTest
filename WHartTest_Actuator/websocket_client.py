@@ -57,6 +57,9 @@ class WebSocketClient:
 
     # 后端认证失败时 accept 握手后立即以该码关闭（wharttest_django/websocket_auth.py）
     WS_CLOSE_UNAUTHENTICATED = 4401
+    # 握手层确定性认证拒绝的 HTTP 状态码（401/403/407）：配置错误，重连不会成功。
+    # 其余非 101 响应（如后端重启时代理返回的 502/503）属瞬时故障，继续重连。
+    AUTH_REJECT_HTTP_STATUS = {401, 403, 407}
 
     def __init__(self, url: str, actuator_id: str = 'default', config: Any = None):
         self.url = url
@@ -90,15 +93,16 @@ class WebSocketClient:
             return e.sent.code
         return None
 
-    def _mark_auth_rejected(self) -> None:
+    def _mark_auth_rejected(self, reason: str) -> None:
         """记录认证被拒并给出可操作的修复提示。"""
         if self._auth_rejected:
             return
         self._auth_rejected = True
         logger.error(
-            "WS 认证失败（服务端关闭码 4401）：本执行器未配置或配置了错误的 ws_token。"
+            "WS 认证失败（%s）：本执行器未配置或配置了错误的 ws_token。"
             "请在 config.toml [server] 段配置 ws_token（值同后端 UI_WS_ACTUATOR_TOKEN，"
-            "可查看项目根目录 .env），或运行 run_compose.sh 自动同步。停止重连。"
+            "可查看项目根目录 .env），或运行 run_compose.sh 自动同步。停止重连。",
+            reason,
         )
 
     async def connect(self) -> bool:
@@ -131,7 +135,7 @@ class WebSocketClient:
             if close_code == self.WS_CLOSE_UNAUTHENTICATED:
                 self.connected = False
                 self.websocket = None
-                self._mark_auth_rejected()
+                self._mark_auth_rejected("服务端关闭码 4401")
                 return False
 
             self.connected = True
@@ -141,10 +145,16 @@ class WebSocketClient:
             await self._send_actuator_info()
             return True
         except websockets.exceptions.InvalidStatus as e:
-            # 握手被拒（如代理层直接返回 HTTP 403）：
-            # 按认证问题给可操作的提示，并停止重连（确定性配置错误）
-            logger.error("连接被服务端拒绝（HTTP %s）", e.response.status_code)
-            self._mark_auth_rejected()
+            status_code = e.response.status_code
+            if status_code in self.AUTH_REJECT_HTTP_STATUS:
+                # 握手层认证拒绝（401/403/407）：确定性配置错误，重连不会成功
+                logger.error("连接被服务端拒绝（HTTP %s）", status_code)
+                self._mark_auth_rejected(f"HTTP {status_code}")
+                self.connected = False
+                return False
+            # 其余非 101 响应（如后端重启瞬间代理返回的 502/503）：
+            # 瞬时故障，保留重连
+            logger.error("连接被服务端拒绝（HTTP %s），稍后重试", status_code)
             self.connected = False
             return False
         except Exception as e:
@@ -254,7 +264,7 @@ class WebSocketClient:
             close_code = self._extract_close_code(e)
             self.connected = False
             if close_code == self.WS_CLOSE_UNAUTHENTICATED:
-                self._mark_auth_rejected()
+                self._mark_auth_rejected("服务端关闭码 4401")
             else:
                 logger.error(f"发送消息失败: {e}")
             return False
@@ -311,7 +321,7 @@ class WebSocketClient:
             except websockets.exceptions.ConnectionClosed as e:
                 close_code = self._extract_close_code(e)
                 if close_code == self.WS_CLOSE_UNAUTHENTICATED:
-                    self._mark_auth_rejected()
+                    self._mark_auth_rejected("服务端关闭码 4401")
                 else:
                     logger.warning("连接已关闭，准备重连")
                 self.connected = False
