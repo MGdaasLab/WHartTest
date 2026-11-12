@@ -238,8 +238,9 @@
           <a-spin :loading="true" />
           <span>{{ text.connecting }}</span>
         </div>
-        <!-- 原生下拉可视化点选面板：弹层不在画布合成帧里，选项从 DOM 提取后在此渲染 -->
-        <div v-if="selectNavActive && selectNavOptions.length" class="recorder-select-panel">
+        <!-- 原生下拉可视化点选面板：弹层不在画布合成帧里，选项从 DOM 提取后在此渲染，
+             位置按控件 rect 换算，显示在下拉框正下方 -->
+        <div v-if="selectNavActive && selectNavOptions.length" class="recorder-select-panel" :style="selectNavPanelStyle">
           <div class="recorder-select-panel-title">{{ text.selectPanelTitle }}</div>
           <div class="recorder-select-panel-list">
             <div
@@ -788,10 +789,38 @@ const assertActive = ref(false)   // 断言模式：激活后下一次画布点�
 const selectNavActive = ref(false) // 原生下拉选择模式：面板/提示 + 保持最后一帧
 const selectNavOptions = ref<Array<{ value: string; text: string; selected?: boolean }>>([])
 const selectNavCurrentValue = ref('')
+// 面板位置（canvas-wrap 内 CSS 像素）：由 select_nav 事件的控件 rect 换算，
+// 面板显示在控件正下方；无 rect 时回退画布左上角
+const selectNavPanelStyle = ref<Record<string, string>>({})
 
 /** 面板点选选项：WS 回传服务端，在页面 DOM 里选中并派发 change（录成 select 动作） */
 function pickSelectOption(opt: { value: string }) {
   uiWebSocket.recorderPickSelectOption(opt.value)
+}
+
+/** 控件页面坐标（rect）→ 画布显示坐标：画布按 viewport 等比缩放，按显示宽度比例换算 */
+function updateSelectNavPanelStyle(rect?: { x: number; y: number; w: number; h: number }) {
+  const canvas = canvasRef.value
+  if (!canvas || !rect || !viewport.width) {
+    selectNavPanelStyle.value = { top: '40px', left: '12px' }
+    return
+  }
+  const dispW = canvas.getBoundingClientRect().width
+  if (!dispW) {
+    selectNavPanelStyle.value = { top: '40px', left: '12px' }
+    return
+  }
+  const scale = dispW / viewport.width
+  // 页面坐标 → 画布 CSS 像素
+  let left = rect.x * scale
+  let top = (rect.y + rect.h) * scale + 4 // 控件下沿 + 4px 间距
+  const PANEL_MIN_W = 180
+  const PANEL_MAX_H = 252 // list max-height 240 + title 约 12+边框
+  // 越界收敛：右侧不超出画布，下方空间不足时改弹到控件上方
+  const dispH = canvas.getBoundingClientRect().height || viewport.height * scale
+  if (left + PANEL_MIN_W > dispW) left = Math.max(0, dispW - PANEL_MIN_W - 8)
+  if (top + PANEL_MAX_H > dispH) top = Math.max(0, rect.y * scale - PANEL_MAX_H - 4)
+  selectNavPanelStyle.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` }
 }
 
 // 断言方法三分类（与执行器 assert_* 词汇表对齐）
@@ -1515,9 +1544,11 @@ function onRecorderStatus(data: any) {
     Message.error(args.message || text.value.assertFailed)
   } else if (status === 'select_nav') {
     // 原生下拉弹层不在画布合成帧里：选项数据由服务端从 DOM 提取，
-    // 渲染可视化面板供鼠标点选（键盘 ↓/↑ + Enter 仍可用）
+    // 渲染可视化面板供鼠标点选（键盘 ↓/↑ + Enter 仍可用）；
+    // 面板按控件 rect 定位到下拉框正下方
     selectNavOptions.value = Array.isArray(args.options) ? args.options : []
     selectNavCurrentValue.value = String(args.current_value ?? '')
+    updateSelectNavPanelStyle(args.rect)
     selectNavActive.value = true
     if (!selectNavOptions.value.length) {
       Message.info(text.value.selectNavHint)
@@ -1800,9 +1831,13 @@ onUnmounted(() => {
   z-index: 2;
 }
 
-/* 原生下拉可视化点选面板：画布内悬浮列表，模拟浏览器弹层观感 */
+/* 原生下拉可视化点选面板：画布内悬浮列表，模拟浏览器弹层观感。
+   位置由 selectNavPanelStyle 动态指定（控件 rect 换算，下拉框正下方）；
+   CSS top/left 仅作无 rect 时的回退定位 */
 .recorder-select-panel {
   position: absolute;
+  top: 40px;
+  left: 12px;
   z-index: 3;
   min-width: 180px;
   max-width: 60%;

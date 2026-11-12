@@ -2461,6 +2461,9 @@ async function cmdPickSelectOption(params) {
         sel.value = v;
         sel.dispatchEvent(new Event('input', { bubbles: true }));
         sel.dispatchEvent(new Event('change', { bubbles: true }));
+        // DOM 赋值不会关闭已展开的原生弹层（浏览器 UI 层，非 DOM）：焦点移走
+        // 令其收起，否则悬停移动时弹层反复重绘，画布画面闪来闪去
+        try { sel.blur(); } catch (_) {}
         return { value: v, text: (opt.textContent || '').trim(), is_input: false };
       }
       // datalist input：焦点优先，其次按 list 关联的 datalist 含该 option 的 input
@@ -2478,6 +2481,8 @@ async function cmdPickSelectOption(params) {
         inp.value = v;
         inp.dispatchEvent(new Event('input', { bubbles: true }));
         inp.dispatchEvent(new Event('change', { bubbles: true }));
+        // 同 select：移开焦点收起 datalist 建议弹层，避免悬停重绘闪烁
+        try { inp.blur(); } catch (_) {}
         return { value: v, text: v, is_input: true };
       }
       return null;
