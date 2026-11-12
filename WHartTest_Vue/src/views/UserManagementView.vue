@@ -126,75 +126,61 @@
       :mask-closable="false"
       :width="1000"
     >
-      <a-tabs default-active-key="basic" @change="onEditUserTabChange">
-        <a-tab-pane key="basic" :title="pageText.basicInfo">
-          <a-form ref="editUserFormRef" :model="editUserForm" :rules="editUserRules" layout="vertical" :auto-label-width="false">
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item field="username" :label="pageText.username">
-                  <a-input v-model="editUserForm.username" :placeholder="pageText.enterUsername" disabled />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item field="email" :label="pageText.email">
-                  <a-input v-model="editUserForm.email" :placeholder="pageText.enterEmail" />
-                </a-form-item>
-              </a-col>
-            </a-row>
+      <a-form ref="editUserFormRef" :model="editUserForm" :rules="editUserRules" layout="vertical" :auto-label-width="false">
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item field="username" :label="pageText.username">
+              <a-input v-model="editUserForm.username" :placeholder="pageText.enterUsername" disabled />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="email" :label="pageText.email">
+              <a-input v-model="editUserForm.email" :placeholder="pageText.enterEmail" />
+            </a-form-item>
+          </a-col>
+        </a-row>
 
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item field="first_name" :label="pageText.firstName">
-                  <a-input v-model="editUserForm.first_name" :placeholder="pageText.enterFirstName" />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item field="last_name" :label="pageText.lastName">
-                  <a-input v-model="editUserForm.last_name" :placeholder="pageText.enterLastName" />
-                </a-form-item>
-              </a-col>
-            </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item field="first_name" :label="pageText.firstName">
+              <a-input v-model="editUserForm.first_name" :placeholder="pageText.enterFirstName" />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="last_name" :label="pageText.lastName">
+              <a-input v-model="editUserForm.last_name" :placeholder="pageText.enterLastName" />
+            </a-form-item>
+          </a-col>
+        </a-row>
 
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item field="is_staff" label=" ">
-                  <a-checkbox v-model="editUserForm.is_staff">{{ pageText.adminPrivileges }}</a-checkbox>
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item field="is_active" label=" ">
-                  <a-checkbox v-model="editUserForm.is_active">{{ pageText.enableAccount }}</a-checkbox>
-                </a-form-item>
-              </a-col>
-            </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item field="is_staff" label=" ">
+              <a-checkbox v-model="editUserForm.is_staff">{{ pageText.adminPrivileges }}</a-checkbox>
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="is_active" label=" ">
+              <a-checkbox v-model="editUserForm.is_active">{{ pageText.enableAccount }}</a-checkbox>
+            </a-form-item>
+          </a-col>
+        </a-row>
 
-            <a-divider>{{ pageText.changePasswordOptional }}</a-divider>
+        <a-divider>{{ pageText.changePasswordOptional }}</a-divider>
 
-            <a-row :gutter="16">
-              <a-col :span="12">
-                <a-form-item field="password" :label="pageText.newPassword">
-                  <a-input-password v-model="editUserForm.password" :placeholder="pageText.enterNewPassword" allow-clear />
-                </a-form-item>
-              </a-col>
-              <a-col :span="12">
-                <a-form-item field="confirmPassword" :label="pageText.confirmNewPassword">
-                  <a-input-password v-model="editUserForm.confirmPassword" :placeholder="pageText.enterConfirmNewPassword" allow-clear />
-                </a-form-item>
-              </a-col>
-            </a-row>
-          </a-form>
-        </a-tab-pane>
-        
-        <a-tab-pane key="permissions" :title="pageText.permissionsManagement">
-          <permission-tree-selector
-            v-if="editUserModalVisible && editUserForm.id"
-            type="user"
-            :id="editUserForm.id"
-            lazy
-            @refresh="refreshUserList"
-          />
-        </a-tab-pane>
-      </a-tabs>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item field="password" :label="pageText.newPassword">
+              <a-input-password v-model="editUserForm.password" :placeholder="pageText.enterNewPassword" allow-clear />
+            </a-form-item>
+          </a-col>
+          <a-col :span="12">
+            <a-form-item field="confirmPassword" :label="pageText.confirmNewPassword">
+              <a-input-password v-model="editUserForm.confirmPassword" :placeholder="pageText.enterConfirmNewPassword" allow-clear />
+            </a-form-item>
+          </a-col>
+        </a-row>
+      </a-form>
     </a-modal>
   </div>
 </template>
@@ -239,11 +225,9 @@ const pageText = computed(() => (
         lastName: 'Last name',
         adminPrivileges: 'Admin privileges',
         enableAccount: 'Enable account',
-        basicInfo: 'Basic info',
         changePasswordOptional: 'Change password (optional)',
         newPassword: 'New password',
         confirmNewPassword: 'Confirm new password',
-        permissionsManagement: 'Permissions',
         enterUsername: 'Enter username',
         enterEmail: 'Enter email',
         enterPassword: 'Enter password',
@@ -302,11 +286,9 @@ const pageText = computed(() => (
         lastName: '姓',
         adminPrivileges: '管理员权限',
         enableAccount: '启用账户',
-        basicInfo: '基本信息',
         changePasswordOptional: '修改密码（可选）',
         newPassword: '新密码',
         confirmNewPassword: '确认新密码',
-        permissionsManagement: '权限管理',
         enterUsername: '请输入用户名',
         enterEmail: '请输入邮箱',
         enterPassword: '请输入密码',
@@ -646,14 +628,6 @@ const editUserRules = computed(() => ({
 }));
 
 // 显示编辑用户模态框
-// 编辑用户弹窗中的标签切换处理
-const onEditUserTabChange = async (key: string) => {
-  if (key === 'permissions' && editUserForm.id) {
-    await nextTick()
-    permissionTreeSelectorRef.value?.loadPermissions(editUserForm.id)
-  }
-}
-
 const editUser = async (user: User) => {
   // 设置表单数据
   Object.assign(editUserForm, {
@@ -668,7 +642,7 @@ const editUser = async (user: User) => {
     is_active: user.is_active
   });
 
-  // 显示模态框，不立即加载权限
+  // 显示模态框
   editUserModalVisible.value = true;
 };
 
