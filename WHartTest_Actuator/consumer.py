@@ -727,9 +727,10 @@ class TaskConsumer:
         page_step_data = await self._fetch_page_step(page_step_id)
         if not page_step_data:
             return
-        
+
         # 获取环境配置
         env_config = None
+        project_id = page_step_data.get('project')
         base_url = ''
         if env_config_id:
             env_config = await self._fetch_env_config(env_config_id)

@@ -91,6 +91,8 @@ use_gui = true
 api_username = "admin"
 # 安全：不内置默认口令，请首次配置时填写（或改用 api_key 认证）
 api_password = ""
+# WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 保持一致（硬性要求）
+ws_token = ""
 
 [actuator]
 
@@ -147,6 +149,9 @@ class Config:
         # WS 认证共享密钥：与后端 UI_WS_ACTUATOR_TOKEN 一致（硬性要求，
         # 未配置或配置错误时连接会被拒绝 close 4401；run_compose.sh 会自动同步）
         self.ws_token = ""
+        # ws_token 是否来自环境变量 WHARTTEST_ACTUATOR_WS_TOKEN（容器部署）。
+        # load_from_env 会 pop 该变量，检测逻辑须以此标志判断注入来源
+        self.ws_token_from_env = False
         self.actuator_id: str | None = None
         self.actuator_name: str | None = None
         self.actuator_description: str | None = None
@@ -268,6 +273,7 @@ class Config:
             self.api_key = api_key.strip()
         if ws_token := os.environ.pop('WHARTTEST_ACTUATOR_WS_TOKEN', None):
             self.ws_token = ws_token.strip()
+            self.ws_token_from_env = True
         if browser_type := os.environ.get('WHARTTEST_ACTUATOR_BROWSER_TYPE'):
             self.browser_type = browser_type.strip()
         if stealth_user_agent := os.environ.get('WHARTTEST_ACTUATOR_STEALTH_USER_AGENT'):
@@ -311,6 +317,104 @@ class Config:
             self.use_gui = False
         if args.log_level:
             self.log_level = args.log_level
+
+
+def load_expected_ws_token(config_path: Path) -> str | None:
+    """读取后端 .env 中的 UI_WS_ACTUATOR_TOKEN 作为期望值。
+
+    查找顺序：
+    1. WHARTTEST_ACTUATOR_ENV_FILE 指定的 .env 路径
+    2. 执行器目录上一级（源码部署：执行器位于仓库 WHartTest_Actuator/ 下，
+       .env 在仓库根目录，由 run_compose.sh 生成并同步 ws_token）
+    3. config.toml 所在目录及其上级（逐级向上，最多到文件系统根）
+
+    找不到 .env 或该文件未配置 UI_WS_ACTUATOR_TOKEN 时返回 None，跳过比对。
+    """
+    candidates: list[Path] = []
+    env_file_override = os.environ.get('WHARTTEST_ACTUATOR_ENV_FILE')
+    if env_file_override:
+        candidates.append(Path(env_file_override))
+
+    # 注意 Path('config.toml').parent 是 Path('.')，而 Path('.').parent 仍是
+    # Path('.')——相对路径必须先 resolve 成绝对路径才能逐级向上查找
+    search_root = Path(_base_path if getattr(sys, 'frozen', False) else config_path).resolve().parent
+    current = search_root
+    while True:
+        candidates.append(current / '.env')
+        # 仓库根目录（run_compose.sh 所在处）即查找终点
+        if (current / 'run_compose.sh').is_file() or current == current.parent:
+            break
+        current = current.parent
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if not candidate.is_file():
+            continue
+        try:
+            for line in candidate.read_text(encoding='utf-8', errors='replace').splitlines():
+                line = line.strip()
+                if line.startswith('#') or '=' not in line:
+                    continue
+                name, _, value = line.partition('=')
+                if name.strip() == 'UI_WS_ACTUATOR_TOKEN':
+                    value = value.strip().strip('"').strip("'")
+                    if value:
+                        return value
+                    return None  # 已配置但为空：后端会拒绝所有连接，跳过比对
+        except OSError as e:
+            logging.warning(f"读取 {candidate} 失败，跳过 ws_token 比对: {e}")
+            return None
+    return None
+
+
+def check_ws_token_config(config: Config, config_path: Path) -> None:
+    """启动时检测 ws_token 配置，缺失或不一致时在日志中给出可操作提示。
+
+    背景：2.9.0 起执行器 WS 连接需要认证（后端 close 4401 / HTTP 403），
+    ws_token 通常由 run_compose.sh 自动同步到 config.toml；但习惯用 docker
+    命令直接重建容器的用户不会执行该脚本，升级后的旧 config.toml 没有
+    ws_token 字段，连接会被拒绝。这里在启动阶段提前发现并提示，不阻断启动
+    （GUI 改配置、环境变量注入等场景由后续流程自行处理）。
+
+    检测逻辑：
+    - ws_token 由环境变量 WHARTTEST_ACTUATOR_WS_TOKEN 注入（容器部署）时
+      跳过提示：注意 load_from_env 已把该变量从 os.environ pop 掉，
+      必须判断 config.ws_token 的来源标志而非环境变量；
+    - config.toml 缺少 ws_token 字段 → 提示补字段并与 .env 的
+      UI_WS_ACTUATOR_TOKEN 保持一致；
+    - 字段存在但与期望值不一致 → 提示改为一致。
+    """
+    # 容器部署通过环境变量注入 token，值由编排层保证一致，无需检测
+    if getattr(config, 'ws_token_from_env', False):
+        return
+
+    expected = load_expected_ws_token(config_path)
+    if expected is None:
+        # 找不到 .env 或后端未配置密钥：无法比对，跳过（exe 独立部署等场景）
+        return
+
+    if not config.ws_token:
+        logger = logging.getLogger('actuator')
+        logger.warning(
+            "检测到 config.toml 中不存在 ws_token 字段（2.9.0 起执行器 WS 连接需要认证）。"
+            "请在 config.toml 的 [server] 段添加 ws_token 字段，"
+            "并将值设置为与项目根目录 .env 中 UI_WS_ACTUATOR_TOKEN 一致，"
+            "否则连接平台时会被拒绝（close 4401）。"
+            "也可以直接运行 run_compose.sh 自动完成同步。"
+        )
+        return
+
+    if config.ws_token != expected:
+        logger = logging.getLogger('actuator')
+        logger.warning(
+            "检测到 config.toml 中的 ws_token 与 .env 中 UI_WS_ACTUATOR_TOKEN 不一致，"
+            "连接平台时会被拒绝（close 4401）。"
+            "请将 config.toml 的 [server] ws_token 修改为与 .env 中 UI_WS_ACTUATOR_TOKEN 保持一致，"
+            "或直接运行 run_compose.sh 自动完成同步。"
+        )
 
 
 def setup_logging(level: str = 'INFO', log_file: str | None = None):
@@ -407,7 +511,10 @@ async def main():
     config.normalize_for_runtime()
     ensure_runtime_dirs(config)
     logger = logging.getLogger('actuator')
-    
+
+    # WS 认证配置检测：config.toml 缺少 ws_token 或与 .env 不一致时提前提示
+    check_ws_token_config(config, config_path)
+
     # 检查并安装浏览器（首次运行时需要）
     if not args.skip_browser_check:
         logger.info("检查浏览器安装状态...")

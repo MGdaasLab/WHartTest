@@ -238,6 +238,26 @@
           <a-spin :loading="true" />
           <span>{{ text.connecting }}</span>
         </div>
+        <!-- 原生下拉可视化点选面板：弹层不在画布合成帧里，选项从 DOM 提取后在此渲染，
+             位置按控件 rect 换算，显示在下拉框正下方 -->
+        <div v-if="selectNavActive && selectNavOptions.length" class="recorder-select-panel" :style="selectNavPanelStyle">
+          <div class="recorder-select-panel-title">{{ text.selectPanelTitle }}</div>
+          <div class="recorder-select-panel-list">
+            <div
+              v-for="opt in selectNavOptions"
+              :key="opt.value"
+              class="recorder-select-panel-item"
+              :class="{ 'is-current': opt.value === selectNavCurrentValue }"
+              @click.stop.prevent="pickSelectOption(opt)"
+            >
+              {{ opt.text || opt.value }}
+            </div>
+          </div>
+        </div>
+        <!-- 提取不到选项时退回键盘模式提示 -->
+        <div v-else-if="selectNavActive" class="recorder-select-nav-hint">
+          {{ text.selectNavHint }}
+        </div>
       </div>
 
       <div class="recorder-side">
@@ -478,7 +498,9 @@ const text = computed(() => (
         saveLoginStateSuccess: 'Login state saved (cookies={cookies}, localStorage={keys}, sessionStorage={sessionKeys}), executions will auto-inject it',
         saveLoginStateFailed: 'Failed to save login state',
         recordHint: 'Operate in the browser view below. Hover an element then click Assert to record an assertion.',
-        noActions: 'No actions yet. Operate in the browser view.',
+        selectNavHint: 'Native dropdown opened: its list cannot be shown in the canvas. Use ↓/↑ keys then Enter to pick an option (recorded automatically).',
+        selectPanelTitle: 'Pick a dropdown option (click to select)',
+        dialogRecorded: '{kind} recorded',
         confirmCancel: 'Cancel recording? The unfinished recording will be discarded.',
         startFailed: 'Failed to start recording',
         finishFailed: 'Failed to finish recording',
@@ -573,6 +595,9 @@ const text = computed(() => (
         saveLoginStateSuccess: '登录态已保存（cookies={cookies}，localStorage={keys}，sessionStorage={sessionKeys}），执行时会自动注入',
         saveLoginStateFailed: '保存登录态失败',
         recordHint: '在左侧浏览器画面中操作；悬停目标元素后点击「断言」可记录断言。',
+        selectNavHint: '已展开原生下拉框：列表无法在画布中显示。请用键盘 ↓/↑ 选择选项后按 Enter 确认（将自动记录为下拉选择步骤）。',
+        selectPanelTitle: '选择下拉选项（点击选择）',
+        dialogRecorded: '已录制 {kind}',
         noActions: '暂无动作，请在浏览器画面中操作',
         confirmCancel: '确定取消录制？未完成的录制将被丢弃。',
         startFailed: '启动录制失败',
@@ -761,6 +786,42 @@ const lastFrameData = ref('')
 const assertMode = ref('visible')
 const assertValue = ref('')
 const assertActive = ref(false)   // 断言模式：激活后下一次画布点击用于定位断言目标
+const selectNavActive = ref(false) // 原生下拉选择模式：面板/提示 + 保持最后一帧
+const selectNavOptions = ref<Array<{ value: string; text: string; selected?: boolean }>>([])
+const selectNavCurrentValue = ref('')
+// 面板位置（canvas-wrap 内 CSS 像素）：由 select_nav 事件的控件 rect 换算，
+// 面板显示在控件正下方；无 rect 时回退画布左上角
+const selectNavPanelStyle = ref<Record<string, string>>({})
+
+/** 面板点选选项：WS 回传服务端，在页面 DOM 里选中并派发 change（录成 select 动作） */
+function pickSelectOption(opt: { value: string }) {
+  uiWebSocket.recorderPickSelectOption(opt.value)
+}
+
+/** 控件页面坐标（rect）→ 画布显示坐标：画布按 viewport 等比缩放，按显示宽度比例换算 */
+function updateSelectNavPanelStyle(rect?: { x: number; y: number; w: number; h: number }) {
+  const canvas = canvasRef.value
+  if (!canvas || !rect || !viewport.width) {
+    selectNavPanelStyle.value = { top: '40px', left: '12px' }
+    return
+  }
+  const dispW = canvas.getBoundingClientRect().width
+  if (!dispW) {
+    selectNavPanelStyle.value = { top: '40px', left: '12px' }
+    return
+  }
+  const scale = dispW / viewport.width
+  // 页面坐标 → 画布 CSS 像素
+  let left = rect.x * scale
+  let top = (rect.y + rect.h) * scale + 4 // 控件下沿 + 4px 间距
+  const PANEL_MIN_W = 180
+  const PANEL_MAX_H = 252 // list max-height 240 + title 约 12+边框
+  // 越界收敛：右侧不超出画布，下方空间不足时改弹到控件上方
+  const dispH = canvas.getBoundingClientRect().height || viewport.height * scale
+  if (left + PANEL_MIN_W > dispW) left = Math.max(0, dispW - PANEL_MIN_W - 8)
+  if (top + PANEL_MAX_H > dispH) top = Math.max(0, rect.y * scale - PANEL_MAX_H - 4)
+  selectNavPanelStyle.value = { top: `${Math.round(top)}px`, left: `${Math.round(left)}px` }
+}
 
 // 断言方法三分类（与执行器 assert_* 词汇表对齐）
 const assertStateOptions = computed(() => [
@@ -966,6 +1027,10 @@ async function handleStart() {
 async function handleFinish() {
   if (!sessionId.value) return
   finishing.value = true
+  // 立即停输入转发：REST finish 等待期间（动作优化/入库，耗时数秒）画布与键盘
+  // 监听尚未解绑，残余 pointermove/滚轮/按键若继续转发，后端会话已解绑会回
+  // "录制会话不存在或已结束"错误弹窗。recording=false 后所有转发入口静默返回。
+  recording.value = false
   try {
     uiWebSocket.recorderStop()
     const result = extractResponseData<RecorderFinishResult>(await recorderApi.finish(sessionId.value))
@@ -1021,6 +1086,10 @@ async function submitSaveLoginState() {
 
 function handleCancel() {
   if (recording.value || starting.value) {
+    // 同 handleFinish：确认弹窗期间/REST cancel 等待期间停掉输入转发，
+    // 避免残余输入命中已解绑会话触发错误弹窗
+    const wasRecording = recording.value
+    recording.value = false
     Modal.confirm({
       title: text.value.confirmCancel,
       content: '',
@@ -1036,6 +1105,10 @@ function handleCancel() {
         }
         closeModal()
       },
+      onCancel: () => {
+        // 用户放弃取消：恢复输入转发继续录制（监听器未解绑，只差此门闩标志）
+        if (wasRecording) recording.value = true
+      },
     })
     return
   }
@@ -1045,6 +1118,7 @@ function handleCancel() {
 function closeModal() {
   unbindCanvasListeners()
   recording.value = false
+  selectNavActive.value = false
   phase.value = 'setup'
   emit('update:visible', false)
 }
@@ -1379,6 +1453,8 @@ function actionLabel(a: Record<string, any>): string {
     press: isEnglish.value ? 'Press' : '按键',
     goto: isEnglish.value ? 'Navigate' : '跳转',
     assert: isEnglish.value ? 'Assert' : '断言',
+    select: isEnglish.value ? 'Select' : '下拉选择',
+    dialog: isEnglish.value ? 'Dialog' : '对话框',
   }
   if (a.type === 'assert') {
     const modeMap: Record<string, string> = isEnglish.value
@@ -1400,6 +1476,7 @@ function actionLabel(a: Record<string, any>): string {
 function actionTagColor(type: string): string {
   if (type === 'assert') return 'gold'
   if (type === 'goto') return 'purple'
+  if (type === 'dialog') return 'orange'
   return 'arcoblue'
 }
 
@@ -1409,6 +1486,14 @@ function actionDesc(a: Record<string, any>): string {
   if (a.type === 'wait') return `${a.seconds || 1} ${isEnglish.value ? 's' : '秒'}`
   if (a.type === 'goto') return String(a.url || '')
   if (a.type === 'fill') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
+  if (a.type === 'select') return `${sel?.name || sel?.locator_value || ''} = ${a.value || ''}`
+  if (a.type === 'dialog') {
+    const kindMap: Record<string, string> = isEnglish.value
+      ? { alert: 'alert', confirm: 'confirm', prompt: 'prompt' }
+      : { alert: '提示框', confirm: '确认框', prompt: '输入框' }
+    const branch = a.confirmed === false ? (isEnglish.value ? ' [dismiss]' : ' [取消]') : ''
+    return `${kindMap[a.kind] || a.kind || ''}${branch} ${a.message || ''}`
+  }
   if (a.type === 'press') return `${sel?.name || sel?.locator_value || ''} [${a.key || 'Enter'}]`
   if (a.type === 'assert') {
     if (a.mode === 'url' || a.mode === 'title') return String(a.value || '')
@@ -1457,6 +1542,28 @@ function onRecorderStatus(data: any) {
   if (status === 'error') {
     assertActive.value = false
     Message.error(args.message || text.value.assertFailed)
+  } else if (status === 'select_nav') {
+    // 原生下拉弹层不在画布合成帧里：选项数据由服务端从 DOM 提取，
+    // 渲染可视化面板供鼠标点选（键盘 ↓/↑ + Enter 仍可用）；
+    // 面板按控件 rect 定位到下拉框正下方
+    selectNavOptions.value = Array.isArray(args.options) ? args.options : []
+    selectNavCurrentValue.value = String(args.current_value ?? '')
+    updateSelectNavPanelStyle(args.rect)
+    selectNavActive.value = true
+    if (!selectNavOptions.value.length) {
+      Message.info(text.value.selectNavHint)
+    }
+  } else if (status === 'select_nav_end') {
+    selectNavActive.value = false
+    selectNavOptions.value = []
+  } else if (status === 'select_picked') {
+    // 点选成功：录制进程派发 change 后会推 select 动作与 select_nav_end，
+    // 这里只做即时反馈（面板由 select_nav_end 收起）
+  } else if (status === 'dialog') {
+    // 原生对话框（alert/confirm/prompt 沙盒化）：提示用户录制了什么语义
+    const kindText = args.kind === 'confirm' ? 'confirm 确认框'
+      : args.kind === 'prompt' ? 'prompt 输入框' : 'alert 提示框'
+    Message.info(`${text.value.dialogRecorded.replace('{kind}', kindText)}：${String(args.message || '').slice(0, 60)}`)
   } else if (status === 'asserted') {
     Message.success(text.value.assertRecorded)
   } else if (status === 'upload_located') {
@@ -1708,6 +1815,69 @@ onUnmounted(() => {
   justify-content: center;
   gap: 12px;
   color: var(--color-text-2);
+}
+
+/* 原生下拉键盘选择提示：置顶悬浮条（画面此时冻结，需要明确引导） */
+.recorder-select-nav-hint {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 6px 12px;
+  background: rgb(255 215 87 / 0.92);
+  color: rgb(32 32 32);
+  font-size: 12px;
+  line-height: 1.5;
+  z-index: 2;
+}
+
+/* 原生下拉可视化点选面板：画布内悬浮列表，模拟浏览器弹层观感。
+   位置由 selectNavPanelStyle 动态指定（控件 rect 换算，下拉框正下方）；
+   CSS top/left 仅作无 rect 时的回退定位 */
+.recorder-select-panel {
+  position: absolute;
+  top: 40px;
+  left: 12px;
+  z-index: 3;
+  min-width: 180px;
+  max-width: 60%;
+  background: var(--color-bg-popup, #fff);
+  border: 1px solid var(--color-border-2);
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgb(0 0 0 / 0.15);
+  overflow: hidden;
+}
+
+.recorder-select-panel-title {
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--color-text-3);
+  background: var(--color-fill-quaternary);
+  user-select: none;
+}
+
+.recorder-select-panel-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.recorder-select-panel-item {
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--color-text-1);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recorder-select-panel-item:hover {
+  background: var(--color-fill-2);
+}
+
+.recorder-select-panel-item.is-current {
+  background: rgb(var(--primary-6));
+  color: #fff;
 }
 
 .recorder-side {

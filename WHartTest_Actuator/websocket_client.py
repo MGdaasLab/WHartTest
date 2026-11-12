@@ -52,9 +52,15 @@ def build_websocket_origin(url: str) -> str | None:
 
 class WebSocketClient:
     """WebSocket客户端 - 连接Django后端"""
-    
+
     VERSION = '1.0.0'
-    
+
+    # 后端认证失败时 accept 握手后立即以该码关闭（wharttest_django/websocket_auth.py）
+    WS_CLOSE_UNAUTHENTICATED = 4401
+    # 握手层确定性认证拒绝的 HTTP 状态码（401/403/407）：配置错误，重连不会成功。
+    # 其余非 101 响应（如后端重启时代理返回的 502/503）属瞬时故障，继续重连。
+    AUTH_REJECT_HTTP_STATUS = {401, 403, 407}
+
     def __init__(self, url: str, actuator_id: str = 'default', config: Any = None):
         self.url = url
         self.actuator_id = actuator_id
@@ -65,13 +71,44 @@ class WebSocketClient:
         self.max_reconnect_attempts = 0  # 0表示无限重试
         self._message_handler: Optional[Callable] = None
         self._stop_event = asyncio.Event()
+        # 认证被拒（close 4401 / HTTP 403）：确定性配置错误，重连不会成功
+        self._auth_rejected = False
     
     def set_message_handler(self, handler: Callable[[SocketDataModel], Any]):
         """设置消息处理器"""
         self._message_handler = handler
-    
+
+    @staticmethod
+    def _extract_close_code(e: Exception) -> int | None:
+        """从 ConnectionClosed 异常中提取服务端发来的关闭码。
+
+        服务端 close 后客户端未再发送时 rcvd 有值；优先取 rcvd，
+        e.code 在 rcvd 为空时会退回 1006 造成误判。
+        """
+        if not isinstance(e, websockets.exceptions.ConnectionClosed):
+            return None
+        if e.rcvd is not None:
+            return e.rcvd.code
+        if e.sent is not None:
+            return e.sent.code
+        return None
+
+    def _mark_auth_rejected(self, reason: str) -> None:
+        """记录认证被拒并给出可操作的修复提示。"""
+        if self._auth_rejected:
+            return
+        self._auth_rejected = True
+        logger.error(
+            "WS 认证失败（%s）：本执行器未配置或配置了错误的 ws_token。"
+            "请在 config.toml [server] 段配置 ws_token（值同后端 UI_WS_ACTUATOR_TOKEN，"
+            "可查看项目根目录 .env），或运行 run_compose.sh 自动同步。停止重连。",
+            reason,
+        )
+
     async def connect(self) -> bool:
         """建立WebSocket连接"""
+        if self._auth_rejected:
+            return False
         try:
             # WS 认证 token：config.ws_token（TOML [server] ws_token 或环境变量
             # WHARTTEST_ACTUATOR_WS_TOKEN），与后端 UI_WS_ACTUATOR_TOKEN 一致
@@ -90,28 +127,55 @@ class WebSocketClient:
                 connect_url,
                 **connect_kwargs,
             )
+
+            # 认证失败时后端 accept 握手后立即 close 4401（浏览器 WS 无法在
+            # 握手前传码），HTTP 状态看不到业务码。此处借「连接后立即探测」
+            # 识别：若连接已被服务端关闭则读取关闭码判定。
+            close_code = await self._probe_immediate_close()
+            if close_code == self.WS_CLOSE_UNAUTHENTICATED:
+                self.connected = False
+                self.websocket = None
+                self._mark_auth_rejected("服务端关闭码 4401")
+                return False
+
             self.connected = True
             logger.info(f"已连接到服务器: {connect_url}")
-            
+
             # 连接成功后发送执行器信息
             await self._send_actuator_info()
             return True
         except websockets.exceptions.InvalidStatus as e:
-            # 握手被拒（如后端严格模式拒绝无 token/错 token 的连接）：
-            # HTTP 403 里看不到业务关闭码，按认证问题给可操作的提示。
-            logger.error("连接被服务端拒绝（HTTP %s）", e.response.status_code)
-            logger.error(
-                "WS 认证为平台硬性安全要求（不可关闭），"
-                "本执行器未配置或配置了错误的 ws_token。"
-                "请在 config.toml [server] 段配置 ws_token（值同后端 UI_WS_ACTUATOR_TOKEN），"
-                "或联系平台管理员获取。5 秒后重试。"
-            )
+            status_code = e.response.status_code
+            if status_code in self.AUTH_REJECT_HTTP_STATUS:
+                # 握手层认证拒绝（401/403/407）：确定性配置错误，重连不会成功
+                logger.error("连接被服务端拒绝（HTTP %s）", status_code)
+                self._mark_auth_rejected(f"HTTP {status_code}")
+                self.connected = False
+                return False
+            # 其余非 101 响应（如后端重启瞬间代理返回的 502/503）：
+            # 瞬时故障，保留重连
+            logger.error("连接被服务端拒绝（HTTP %s），稍后重试", status_code)
             self.connected = False
             return False
         except Exception as e:
             logger.error(f"连接失败: {e}")
             self.connected = False
             return False
+
+    async def _probe_immediate_close(self) -> int | None:
+        """连接建立后短等待，探测服务端是否已立即关闭（认证拒绝模式）。
+
+        返回服务端关闭码；连接保持打开则返回 None。
+        """
+        try:
+            await asyncio.wait_for(self.websocket.ping(), timeout=0.5)
+            return None
+        except asyncio.TimeoutError:
+            # ping 无响应：服务端可能已关闭但未到达，继续按打开处理，
+            # 后续 send/recv 捕获 ConnectionClosed 后再判定
+            return None
+        except websockets.exceptions.ConnectionClosed as e:
+            return self._extract_close_code(e)
     
     async def _send_actuator_info(self):
         """发送执行器信息到服务端（连接/重连/配置更新后调用）"""
@@ -192,10 +256,18 @@ class WebSocketClient:
         if not self.websocket or not self.connected:
             logger.error("未连接，无法发送消息")
             return False
-        
+
         try:
             await self.websocket.send(data.model_dump_json())
             return True
+        except websockets.exceptions.ConnectionClosed as e:
+            close_code = self._extract_close_code(e)
+            self.connected = False
+            if close_code == self.WS_CLOSE_UNAUTHENTICATED:
+                self._mark_auth_rejected("服务端关闭码 4401")
+            else:
+                logger.error(f"发送消息失败: {e}")
+            return False
         except Exception as e:
             logger.error(f"发送消息失败: {e}")
             self.connected = False
@@ -229,10 +301,15 @@ class WebSocketClient:
         """接收消息循环"""
         while not self._stop_event.is_set():
             if not self.connected or not self.websocket:
+                if self._auth_rejected:
+                    # 认证被拒是确定性配置错误，重连不会成功，停止循环
+                    logger.error("WS 认证被拒，已停止重连。请修正 ws_token 配置后重启执行器")
+                    self._stop_event.set()
+                    continue
                 # 尝试重连
                 await self._reconnect()
                 continue
-            
+
             try:
                 message = await asyncio.wait_for(
                     self.websocket.recv(),
@@ -241,28 +318,38 @@ class WebSocketClient:
                 await self._handle_message(message)
             except asyncio.TimeoutError:
                 continue
-            except websockets.exceptions.ConnectionClosed:
-                logger.warning("连接已关闭，准备重连")
+            except websockets.exceptions.ConnectionClosed as e:
+                close_code = self._extract_close_code(e)
+                if close_code == self.WS_CLOSE_UNAUTHENTICATED:
+                    self._mark_auth_rejected("服务端关闭码 4401")
+                else:
+                    logger.warning("连接已关闭，准备重连")
                 self.connected = False
             except Exception as e:
                 logger.error(f"接收消息错误: {e}")
                 self.connected = False
-    
+
     async def _reconnect(self):
         """重连逻辑"""
         attempts = 0
         while not self._stop_event.is_set():
+            if self._auth_rejected:
+                return
             attempts += 1
             logger.info(f"尝试重连 ({attempts})...")
-            
+
             if await self.connect():
                 return
-            
+
+            if self._auth_rejected:
+                logger.error("WS 认证被拒，已停止重连。请修正 ws_token 配置后重启执行器")
+                return
+
             if self.max_reconnect_attempts > 0 and attempts >= self.max_reconnect_attempts:
                 logger.error("达到最大重连次数，停止重连")
                 self._stop_event.set()
                 return
-            
+
             await asyncio.sleep(self.reconnect_interval)
     
     async def _handle_message(self, message: str):
